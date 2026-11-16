@@ -1,0 +1,114 @@
+<resources>
+    <string name="app_name">Voice Pro</string>
+    <string name="studio_tagline">استوديو المعالجة الصوتية المتقدم</string>
+
+    <!-- Navigation & Focus Workspace -->
+    <string name="back">رجوع</string>
+    <string name="home_title">مساحة العمل الرئيسية</string>
+    <string name="active_project">المشروع النشط</string>
+    <string name="untitled_project">مشروع صوتي جديد</string>
+    <string name="no_audio_loaded">لا يوجد مقطع صوتي بعد — ابدأ بالتسجيل أو الاستيراد</string>
+
+    <!-- Main Studio Sections -->
+    <string name="section_record_title">استوديو التسجيل</string>
+    <string name="section_record_subtitle">تسجيل حي، استيراد ملفات، ومراقبة الموجة</string>
+    <string name="section_echo_title">مساحة الصدى والعمق</string>
+    <string name="section_echo_subtitle">لوحة تفاعلية ثلاثية الأبعاد للصدى والتردد</string>
+    <string name="section_chain_title">سلسلة المؤثرات</string>
+    <string name="section_chain_subtitle">ترتيب المعالجة و١٢ مؤثراً احترافياً</string>
+    <string name="section_editor_title">التحرير والدمج</string>
+    <string name="section_editor_subtitle">قص الموجة، دمج المقاطع، وتعديل الشدة</string>
+    <string name="section_presets_title">القوالب الصوتية</string>
+    <string name="section_presets_subtitle">قوالب استوديو جاهزة وحفظ قوالبك الخاصة</string>
+    <string name="section_projects_title">المشاريع والتصدير</string>
+    <string name="section_projects_subtitle">حفظ المشاريع وتصدير الصوت بجودة عالية</string>
+    <string name="section_ai_title">استوديو الذكاء الصوتي</string>
+    <string name="section_ai_subtitle">تفريغ الصوت، توليد الموسيقى، وبحث الاستوديو</string>
+
+    <!-- Transport -->
+    <string name="play">تشغيل</string>
+    <string name="pause">إيقاف مؤقت</string>
+    <string name="stop">إيقاف</string>
+    <string name="loop_selection">تكرار المقطع</string>
+    <string name="bypass_all">تجاوز المؤثرات</string>
+    <string name="dsp_active">المعالج نشط</string>
+
+    <!-- Recording Studio -->
+    <string name="record_start">بدء التسجيل</string>
+    <string name="record_pause">إيقاف مؤقت</string>
+    <string name="record_resume">استكمال التسجيل</string>
+    <string name="record_finish">إنهاء وحفظ بالاستوديو</string>
+    <string name="record_discard">إلغاء التسجيل</string>
+    <string name="import_audio">استيراد ملف صوتي</string>
+    <string name="mic_permission_title">صلاحية الميكروفون مطلوبة</string>
+    <string name="mic_permission_desc">يحتاج Voice Pro إلى الوصول للميكروفون لتسجيل صوتك ومعالجته مباشرة.</string>
+    <string name="grant_permission">منح الصلاحية</string>
+    <string name="mic_level">مستوى الإدخال</string>
+
+    <!-- Echo & Reverb Space -->
+    <string name="mode_simple">الوضع البسيط</string>
+    <string name="mode_pro">وضع المحترفين</string>
+    <string name="echo_pad_hint">حرّك إصبعك داخل المجال الصوتي لتشكيل الصدى والعمق</string>
+    <string name="echo_node_core">نواة الصدى</string>
+    <string name="echo_node_reflections">الانعكاسات والانتشار</string>
+    <string name="echo_node_space">الفراغ واللون الصوتي</string>
+    <string name="param_echo_strength">شدة الصدى</string>
+    <string name="param_echo_depth">عمق الصدى</string>
+    <string name="param_delay_time">زمن التأخير</string>
+    <string name="param_feedback">التغذية الراجعة</string>
+    <string name="param_reverb_size">حجم القاعة</string>
+    <string name="param_reverb_decay">تلاشي التردد</string>
+    <string name="param_pre_delay">التأخير المسبق</string>
+    <string name="param_wet_dry">مزج التأثير</string>
+    <string name="param_stereo_width">اتساع الستيريو</string>
+    <string name="param_early_reflections">الانعكاسات المبكرة</string>
+    <string name="param_late_reflections">الانعكاسات المتأخرة</string>
+    <string name="param_damping">التخميد</string>
+    <string name="param_diffusion">الانتشار</string>
+
+    <!-- Effects Chain & Additional Effects -->
+    <string name="chain_order_hint">تحكم بترتيب المعالجة وتفعيل كل مؤثر أو تعديل تفاصيله</string>
+    <string name="move_up">تحريك لأعلى</string>
+    <string name="move_down">تحريك لأسفل</string>
+    <string name="effect_echo_reverb">الصدى والتردد</string>
+    <string name="effect_equalizer">المعادل متعدد النطاقات</string>
+    <string name="effect_bass_boost">تعزيز الجهير</string>
+    <string name="effect_treble">التحكم بالحدّة</string>
+    <string name="effect_pitch_shift">تغيير الطبقة</string>
+    <string name="effect_time_stretch">تغيير السرعة</string>
+    <string name="effect_chorus">كورس (Chorus)</string>
+    <string name="effect_flanger">فلانجر (Flanger)</string>
+    <string name="effect_phaser">فيزر (Phaser)</string>
+    <string name="effect_distortion">تشويه صوتي</string>
+    <string name="effect_compressor">ضاغط الديناميكيات</string>
+    <string name="effect_limiter">محدّد القمم</string>
+    <string name="effect_noise_reduction">عزل الضوضاء</string>
+
+    <!-- Editor -->
+    <string name="trim_keep">الإبقاء على المحدد</string>
+    <string name="cut_selection">حذف المحدد</string>
+    <string name="merge_clip">دمج مقطع إضافي</string>
+    <string name="normalize_audio">موازنة الصوت</string>
+    <string name="undo_edit">تراجع</string>
+    <string name="reset_selection">تحديد الكل</string>
+    <string name="clip_volume">مستوى صوت المقطع</string>
+
+    <!-- Presets -->
+    <string name="save_custom_preset">حفظ الإعدادات كقالب خاص</string>
+    <string name="preset_name_hint">اسم القالب الجديد</string>
+    <string name="built_in_presets">قوالب احترافية جاهزة</string>
+    <string name="custom_presets">قوالبي الخاصة</string>
+
+    <!-- Projects & Export -->
+    <string name="save_project">حفظ المشروع</string>
+    <string name="new_project">مشروع جديد</string>
+    <string name="export_wav">تصدير ملف صوتي (WAV)</string>
+    <string name="share_audio">مشاركة الصوت المعالج</string>
+    <string name="saved_projects">المشاريع المحفوظة</string>
+    <string name="exporting_progress">جارٍ تصدير الصوت ومعالجة المؤثرات…</string>
+    <string name="export_success">تم تصدير الملف الصوتي بنجاح</string>
+    <string name="confirm">تأكيد</string>
+    <string name="cancel">إلغاء</string>
+    <string name="delete">حذف</string>
+    <string name="load">فتح</string>
+</resources>

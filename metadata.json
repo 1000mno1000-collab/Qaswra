@@ -1,0 +1,6 @@
+{
+  "name": "Voice Pro",
+  "description": "استوديو صوتي عربي متطور لتسجيل الصوت ومعالجته بمحرك DSP احترافي ومؤثرات الصدى والتردد والتحرير والتصدير.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
