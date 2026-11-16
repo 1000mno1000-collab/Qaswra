@@ -39,6 +39,9 @@ class AudioRecorderEngine {
     private val _liveWaveform = MutableStateFlow<List<Float>>(emptyList())
     val liveWaveform: StateFlow<List<Float>> = _liveWaveform.asStateFlow()
 
+    private val _liveWaveformSamples = MutableStateFlow(FloatArray(0))
+    val liveWaveformSamples: StateFlow<FloatArray> = _liveWaveformSamples.asStateFlow()
+
     private val chunksLock = Any()
     private val recordedChunks = mutableListOf<FloatArray>()
     private var totalFrames = 0
@@ -107,6 +110,7 @@ class AudioRecorderEngine {
                             _durationMs.value = (totalFrames * 1000L) / sampleRate
                         }
                         _inputLevel.value = (_inputLevel.value * 0.4f + localPeak * 0.6f).coerceIn(0f, 1f)
+                        _liveWaveformSamples.value = downsampleWaveformFrame(floatChunk, read, 96)
 
                         peakWindowMax = max(peakWindowMax, localPeak)
                         peakSamples += read
@@ -125,9 +129,21 @@ class AudioRecorderEngine {
                 runCatching { audioRecord.stop() }
                 runCatching { audioRecord.release() }
                 _inputLevel.value = 0f
+                _liveWaveformSamples.value = FloatArray(0)
             }
         }
         return true
+    }
+
+    private fun downsampleWaveformFrame(samples: FloatArray, count: Int, targetPoints: Int): FloatArray {
+        if (count <= 0 || targetPoints <= 0) return FloatArray(0)
+        val out = FloatArray(targetPoints)
+        val step = count.toFloat() / targetPoints.toFloat()
+        for (i in 0 until targetPoints) {
+            val idx = (i * step).toInt().coerceIn(0, count - 1)
+            out[i] = samples[idx].coerceIn(-1f, 1f)
+        }
+        return out
     }
 
     fun pause() {
@@ -136,6 +152,7 @@ class AudioRecorderEngine {
         recordJob?.cancel()
         recordJob = null
         _inputLevel.value = 0f
+        _liveWaveformSamples.value = FloatArray(0)
     }
 
     fun stopAndBuildBuffer(): StereoAudioBuffer? {
@@ -143,6 +160,7 @@ class AudioRecorderEngine {
         recordJob?.cancel()
         recordJob = null
         _inputLevel.value = 0f
+        _liveWaveformSamples.value = FloatArray(0)
 
         val merged = synchronized(chunksLock) {
             if (totalFrames <= 0) return@synchronized null
@@ -173,5 +191,6 @@ class AudioRecorderEngine {
         _inputLevel.value = 0f
         _durationMs.value = 0L
         _liveWaveform.value = emptyList()
+        _liveWaveformSamples.value = FloatArray(0)
     }
 }

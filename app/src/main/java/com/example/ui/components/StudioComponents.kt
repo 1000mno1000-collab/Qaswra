@@ -444,6 +444,115 @@ fun AnimatedAcousticRibbon(
     }
 }
 
+/**
+ * Real-time Canvas audio waveform visualizer driven by live AudioRecord PCM frames during
+ * recording and processed post-DSP PCM frames during playback.
+ */
+@Composable
+fun RealTimeWaveformCanvas(
+    liveSamples: FloatArray,
+    fallbackPeaks: List<Float>,
+    isLive: Boolean,
+    liveEnergy: Float,
+    progress: Float = 0f,
+    accentPrimary: Color = CyanGlow,
+    accentSecondary: Color = VioletGlow,
+    modifier: Modifier = Modifier
+) {
+    if (!isLive || liveSamples.isEmpty()) {
+        AnimatedAcousticRibbon(
+            peaks = fallbackPeaks,
+            isActive = isLive,
+            liveEnergy = liveEnergy,
+            progress = progress,
+            accentPrimary = accentPrimary,
+            accentSecondary = accentSecondary,
+            modifier = modifier
+        )
+        return
+    }
+
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val midY = h / 2f
+        val count = liveSamples.size
+        if (count < 2) return@Canvas
+
+        // Subtle center reference axis
+        drawLine(
+            color = accentSecondary.copy(alpha = 0.22f),
+            start = Offset(0f, midY),
+            end = Offset(w, midY),
+            strokeWidth = 1.dp.toPx()
+        )
+
+        // Mirrored vertical energy bars from real-time PCM samples
+        val barCount = 48.coerceAtMost(count)
+        val stride = (count.toFloat() / barCount.toFloat()).coerceAtLeast(1f)
+        val slotW = w / barCount
+        for (i in 0 until barCount) {
+            val sampleIdx = (i * stride).toInt().coerceIn(0, count - 1)
+            val amp = abs(liveSamples[sampleIdx]).coerceIn(0.02f, 1f)
+            val boosted = (amp * 1.35f).coerceIn(0.03f, 1f)
+            val barH = (boosted * h * 0.78f).coerceAtLeast(3f)
+            val x = w - (i * slotW + slotW * 0.5f)
+            drawLine(
+                color = accentSecondary.copy(alpha = 0.28f + boosted * 0.35f),
+                start = Offset(x, midY - barH / 2f),
+                end = Offset(x, midY + barH / 2f),
+                strokeWidth = (slotW * 0.45f).coerceAtLeast(2f),
+                cap = StrokeCap.Round
+            )
+        }
+
+        // Real-time signed PCM oscilloscope curve + filled glow envelope
+        val wavePath = Path()
+        val fillPath = Path()
+        val xStep = w / (count - 1).coerceAtLeast(1)
+
+        for (i in 0 until count) {
+            val x = w - i * xStep // RTL flow
+            val sample = liveSamples[i].coerceIn(-1f, 1f)
+            val y = midY - sample * (h * 0.44f)
+            if (i == 0) {
+                wavePath.moveTo(x, y)
+                fillPath.moveTo(x, midY)
+                fillPath.lineTo(x, y)
+            } else {
+                val prevX = w - (i - 1) * xStep
+                val prevY = midY - liveSamples[i - 1].coerceIn(-1f, 1f) * (h * 0.44f)
+                val cx = (prevX + x) * 0.5f
+                wavePath.quadraticTo(prevX, prevY, cx, (prevY + y) * 0.5f)
+                fillPath.quadraticTo(prevX, prevY, cx, (prevY + y) * 0.5f)
+                if (i == count - 1) {
+                    wavePath.lineTo(x, y)
+                    fillPath.lineTo(x, y)
+                }
+            }
+        }
+        fillPath.lineTo(0f, midY)
+        fillPath.close()
+
+        drawPath(
+            path = fillPath,
+            brush = Brush.verticalGradient(
+                listOf(
+                    accentPrimary.copy(alpha = 0.28f),
+                    accentSecondary.copy(alpha = 0.08f),
+                    accentPrimary.copy(alpha = 0.28f)
+                )
+            )
+        )
+
+        drawPath(
+            path = wavePath,
+            brush = Brush.horizontalGradient(listOf(accentSecondary, accentPrimary, AmberWarm)),
+            style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round)
+        )
+    }
+}
+
 @Composable
 fun RangeWaveformEditorCanvas(
     peaks: List<Float>,

@@ -476,6 +476,14 @@ fun EffectDetailScreen(
             EffectType.NOISE_REDUCTION -> {
                 val nr = dspConfig.noiseReduction
                 StudioParamSlider(
+                    label = "قوة العزل الطيفي للضوضاء",
+                    value = nr.amount,
+                    valueRange = 0f..1f,
+                    formattedValue = "${(nr.amount * 100).toInt()}%",
+                    onValueChange = { v -> onUpdateConfig { it.copy(noiseReduction = it.noiseReduction.copy(amount = v)) } },
+                    accentColor = EmeraldActive
+                )
+                StudioParamSlider(
                     label = "عتبة العزل (Gate Threshold)",
                     value = nr.thresholdDb,
                     valueRange = -65f..-15f,
@@ -484,12 +492,28 @@ fun EffectDetailScreen(
                     accentColor = CyanGlow
                 )
                 StudioParamSlider(
-                    label = "قوة عزل الضوضاء والهمس",
-                    value = nr.amount,
+                    label = "تصفية الهواء والهمهمة السفلية (HPF)",
+                    value = nr.highPassHz,
+                    valueRange = 30f..180f,
+                    formattedValue = "${nr.highPassHz.toInt()} Hz",
+                    onValueChange = { v -> onUpdateConfig { it.copy(noiseReduction = it.noiseReduction.copy(highPassHz = v)) } },
+                    accentColor = VioletGlow
+                )
+                StudioParamSlider(
+                    label = "صفاء الصوت البشري وحضوره (Clarity)",
+                    value = nr.vocalClarity,
                     valueRange = 0f..1f,
-                    formattedValue = "${(nr.amount * 100).toInt()}%",
-                    onValueChange = { v -> onUpdateConfig { it.copy(noiseReduction = it.noiseReduction.copy(amount = v)) } },
-                    accentColor = EmeraldActive
+                    formattedValue = "${(nr.vocalClarity * 100).toInt()}%",
+                    onValueChange = { v -> onUpdateConfig { it.copy(noiseReduction = it.noiseReduction.copy(vocalClarity = v)) } },
+                    accentColor = CyanGlow
+                )
+                StudioParamSlider(
+                    label = "تنعيم الحروف الحادة والصفير (De-Esser)",
+                    value = nr.deEssAmount,
+                    valueRange = 0f..1f,
+                    formattedValue = "${(nr.deEssAmount * 100).toInt()}%",
+                    onValueChange = { v -> onUpdateConfig { it.copy(noiseReduction = it.noiseReduction.copy(deEssAmount = v)) } },
+                    accentColor = AmberWarm
                 )
             }
 

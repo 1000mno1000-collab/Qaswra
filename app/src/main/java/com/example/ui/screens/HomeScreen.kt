@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForwardIos
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BlurOn
+import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.FolderSpecial
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -45,7 +46,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.example.R
-import com.example.ui.components.AnimatedAcousticRibbon
+import com.example.ui.components.RealTimeWaveformCanvas
 import com.example.ui.components.formatDurationMs
 import com.example.ui.theme.AmberWarm
 import com.example.ui.theme.CoralRecord
@@ -78,10 +79,13 @@ fun HomeScreen(
     isPlaying: Boolean,
     outputLevel: Float,
     playbackProgress: Float,
+    playbackLiveSamples: FloatArray,
     onOpenSection: (WorkspaceDestination) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val activeEffectsCount = uiState.dspConfig.chain.count { it.enabled }
+
+    val purifierEnabled = uiState.dspConfig.isEffectEnabled(com.example.model.EffectType.NOISE_REDUCTION)
 
     val sections = listOf(
         HomeSectionItem(
@@ -92,6 +96,15 @@ fun HomeScreen(
             accent = CoralRecord,
             badgeText = if (uiState.hasAudio) formatDurationMs(uiState.durationMs) else "جاهز",
             tag = "section_recording"
+        ),
+        HomeSectionItem(
+            destination = WorkspaceDestination.VoicePurifier,
+            titleRes = R.string.section_purifier_title,
+            subtitleRes = R.string.section_purifier_subtitle,
+            icon = Icons.Rounded.CleaningServices,
+            accent = EmeraldActive,
+            badgeText = if (purifierEnabled) "نقي ${(uiState.dspConfig.noiseReduction.amount * 100).toInt()}%" else "عزل ذكي",
+            tag = "section_voice_purifier"
         ),
         HomeSectionItem(
             destination = WorkspaceDestination.EchoReverbSpace,
@@ -135,7 +148,7 @@ fun HomeScreen(
             subtitleRes = R.string.section_projects_subtitle,
             icon = Icons.Rounded.FolderSpecial,
             accent = CyanGlow,
-            badgeText = "WAV",
+            badgeText = "MP3 / WAV",
             tag = "section_projects_export"
         ),
         HomeSectionItem(
@@ -223,14 +236,16 @@ fun HomeScreen(
 
                         Spacer(Modifier.height(14.dp))
 
-                        AnimatedAcousticRibbon(
-                            peaks = uiState.waveformPeaks,
-                            isActive = isPlaying,
+                        RealTimeWaveformCanvas(
+                            liveSamples = playbackLiveSamples,
+                            fallbackPeaks = uiState.waveformPeaks,
+                            isLive = isPlaying,
                             liveEnergy = outputLevel,
                             progress = playbackProgress,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(64.dp)
+                                .height(70.dp)
+                                .testTag("home_realtime_waveform")
                         )
 
                         Spacer(Modifier.height(12.dp))

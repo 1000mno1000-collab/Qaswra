@@ -9,6 +9,11 @@ import com.example.ai.LyriaTrackLength
 import com.example.ai.MusicGenState
 import com.example.ai.StudioAiRepository
 import com.example.audio.dsp.DspPipeline
+import com.example.audio.dsp.VoicePurifierEngine
+import com.example.audio.dsp.VoicePurifyPreset
+import com.example.audio.export.Mp3ExportCoordinator
+import com.example.audio.export.Mp3ExportRequest
+import com.example.audio.export.Mp3ExportState
 import com.example.audio.io.AudioEditorOps
 import com.example.audio.io.AudioPlayerEngine
 import com.example.audio.io.AudioRecorderEngine
@@ -20,6 +25,7 @@ import com.example.data.StudioRepository
 import com.example.model.DspConfig
 import com.example.model.EchoReverbParams
 import com.example.model.EffectType
+import com.example.model.NoiseReductionParams
 import com.example.model.StudioPreset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -56,6 +62,7 @@ data class StudioUiState(
     val canUndoEdit: Boolean = false,
     val isBusy: Boolean = false,
     val exportProgress: Float? = null,
+    val purifyProgress: Float? = null,
     val statusBanner: String? = null
 ) {
     val currentDestination: WorkspaceDestination
@@ -91,11 +98,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     val recordingLevel: StateFlow<Float> = recorder.inputLevel
     val recordingDurationMs: StateFlow<Long> = recorder.durationMs
     val recordingWaveform: StateFlow<List<Float>> = recorder.liveWaveform
+    val recordingLiveSamples: StateFlow<FloatArray> = recorder.liveWaveformSamples
 
     val isPlaying: StateFlow<Boolean> = player.isPlaying
     val playbackProgress: StateFlow<Float> = player.progress
     val outputLevel: StateFlow<Float> = player.outputLevel
     val gainReductionDb: StateFlow<Float> = player.gainReductionDb
+    val noiseSuppressionDb: StateFlow<Float> = player.noiseSuppressionDb
+    val playbackLiveSamples: StateFlow<FloatArray> = player.liveOutputSamples
+
+    val mp3ExportState: StateFlow<Mp3ExportState> = Mp3ExportCoordinator.state
 
     val savedProjects: StateFlow<List<StudioProject>> = repository.projects
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -286,6 +298,65 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val item = list.removeAt(idx)
             list.add(targetIdx, item)
             cfg.copy(chain = list)
+        }
+    }
+
+    // --- Voice Purification & Noise Cleaning ---
+
+    fun updateNoiseReduction(transform: (NoiseReductionParams) -> NoiseReductionParams) {
+        updateDspConfig { cfg ->
+            val updatedChain = cfg.chain.map {
+                if (it.type == EffectType.NOISE_REDUCTION) it.copy(enabled = true) else it
+            }
+            cfg.copy(
+                bypassAll = false,
+                chain = updatedChain,
+                noiseReduction = transform(cfg.noiseReduction)
+            )
+        }
+    }
+
+    fun applyVoicePurifyPreset(preset: VoicePurifyPreset) {
+        updateDspConfig { cfg ->
+            val updatedChain = cfg.chain.map {
+                if (it.type == EffectType.NOISE_REDUCTION) it.copy(enabled = true) else it
+            }
+            cfg.copy(
+                bypassAll = false,
+                chain = updatedChain,
+                noiseReduction = preset.params
+            )
+        }
+        postBanner("تم تفعيل وضع التصفية: ${preset.title}")
+    }
+
+    fun runDeepVoicePurificationOffline() {
+        val source = activeBuffer ?: run {
+            postBanner("قم بتسجيل أو استيراد مقطع صوتي أولاً لتصفيته")
+            return
+        }
+        val params = _uiState.value.dspConfig.noiseReduction
+        viewModelScope.launch {
+            _uiState.update { it.copy(purifyProgress = 0.02f) }
+            val purified = withContext(Dispatchers.Default) {
+                VoicePurifierEngine.purifyBufferOffline(source, params) { p ->
+                    _uiState.update { it.copy(purifyProgress = p) }
+                }
+            }
+            // Disable live double-gating if user already baked deep clean into buffer?
+            // Keep live chain state intact OR let user listen immediately without over-gating:
+            // Actually disabling redundant NOISE_REDUCTION slot avoids double-filtering the already-cleaned clip,
+            // while keeping undoStack so user can A/B compare or undo anytime!
+            setActiveBuffer(purified, recordUndo = true)
+            updateDspConfig { cfg ->
+                cfg.copy(
+                    chain = cfg.chain.map { slot ->
+                        if (slot.type == EffectType.NOISE_REDUCTION) slot.copy(enabled = false) else slot
+                    }
+                )
+            }
+            _uiState.update { it.copy(purifyProgress = null) }
+            postBanner("تمت تصفية الصوت وتنظيف الضوضاء وحفظه في المقطع بنجاح")
         }
     }
 
@@ -565,6 +636,49 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val uri = repository.createShareWavUri(state.projectName, rendered)
             _uiState.update { it.copy(exportProgress = null) }
             onUriReady(uri)
+        }
+    }
+
+    fun exportProcessedMp3(destinationUri: Uri) {
+        val source = activeBuffer ?: run {
+            postBanner("لا يوجد صوت لتصديره")
+            return
+        }
+        val state = _uiState.value
+        Mp3ExportCoordinator.submitAndStart(
+            context = getApplication(),
+            request = Mp3ExportRequest(
+                sourceBuffer = source,
+                dspConfig = state.dspConfig,
+                destinationUri = destinationUri,
+                fileName = state.projectName.ifBlank { "VoicePro_Export" },
+                isShare = false
+            )
+        )
+    }
+
+    fun prepareShareMp3() {
+        val source = activeBuffer ?: run {
+            postBanner("لا يوجد صوت لمشاركته")
+            return
+        }
+        val state = _uiState.value
+        Mp3ExportCoordinator.submitAndStart(
+            context = getApplication(),
+            request = Mp3ExportRequest(
+                sourceBuffer = source,
+                dspConfig = state.dspConfig,
+                destinationUri = null,
+                fileName = state.projectName.ifBlank { "VoicePro_Export" },
+                isShare = true
+            )
+        )
+    }
+
+    fun acknowledgeMp3ExportState(bannerMessage: String? = null) {
+        Mp3ExportCoordinator.acknowledgeTerminalState()
+        if (!bannerMessage.isNullOrBlank()) {
+            postBanner(bannerMessage)
         }
     }
 

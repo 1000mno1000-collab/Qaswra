@@ -12,6 +12,8 @@
     <!-- Main Studio Sections -->
     <string name="section_record_title">استوديو التسجيل</string>
     <string name="section_record_subtitle">تسجيل حي، استيراد ملفات، ومراقبة الموجة</string>
+    <string name="section_purifier_title">تصفية الصوت وعزل الضوضاء</string>
+    <string name="section_purifier_subtitle">عزل طيفي ذكي للضجيج، تنقية الصوت، وإزالة الصفير</string>
     <string name="section_echo_title">مساحة الصدى والعمق</string>
     <string name="section_echo_subtitle">لوحة تفاعلية ثلاثية الأبعاد للصدى والتردد</string>
     <string name="section_chain_title">سلسلة المؤثرات</string>
@@ -103,10 +105,16 @@
     <string name="save_project">حفظ المشروع</string>
     <string name="new_project">مشروع جديد</string>
     <string name="export_wav">تصدير ملف صوتي (WAV)</string>
+    <string name="export_mp3">تصدير بصيغة MP3 (في الخلفية)</string>
     <string name="share_audio">مشاركة الصوت المعالج</string>
+    <string name="share_mp3">مشاركة MP3</string>
     <string name="saved_projects">المشاريع المحفوظة</string>
     <string name="exporting_progress">جارٍ تصدير الصوت ومعالجة المؤثرات…</string>
+    <string name="exporting_mp3_bg">جارٍ ترميز MP3 في الخدمة الخلفية…</string>
+    <string name="export_mp3_channel_name">تصدير الصوت MP3</string>
+    <string name="export_mp3_notif_title">Voice Pro — تصدير MP3</string>
     <string name="export_success">تم تصدير الملف الصوتي بنجاح</string>
+    <string name="realtime_waveform_active">الموجة الحية نشطة</string>
     <string name="confirm">تأكيد</string>
     <string name="cancel">إلغاء</string>
     <string name="delete">حذف</string>

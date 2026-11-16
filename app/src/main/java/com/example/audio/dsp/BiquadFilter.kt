@@ -110,6 +110,44 @@ class StereoBiquadFilter {
         setNormalized(nb0, nb1, nb2, na0, na1, na2)
     }
 
+    fun configureHighPass(sampleRate: Int, freqHz: Float, q: Float = 0.707f) {
+        val key = (5L shl 50) xor (freqHz.toBits().toLong() shl 20) xor q.toBits().toLong()
+        if (key == lastKey) return
+        lastKey = key
+
+        val w0 = 2.0 * PI * freqHz.coerceIn(20f, sampleRate * 0.45f) / sampleRate
+        val cosW0 = cos(w0)
+        val alpha = sin(w0) / (2.0 * q.coerceAtLeast(0.1f))
+
+        val nb0 = (1.0 + cosW0) / 2.0
+        val nb1 = -(1.0 + cosW0)
+        val nb2 = (1.0 + cosW0) / 2.0
+        val na0 = 1.0 + alpha
+        val na1 = -2.0 * cosW0
+        val na2 = 1.0 - alpha
+
+        setNormalized(nb0, nb1, nb2, na0, na1, na2)
+    }
+
+    fun configureBandPass(sampleRate: Int, freqHz: Float, q: Float = 1.8f) {
+        val key = (6L shl 50) xor (freqHz.toBits().toLong() shl 20) xor q.toBits().toLong()
+        if (key == lastKey) return
+        lastKey = key
+
+        val w0 = 2.0 * PI * freqHz.coerceIn(40f, sampleRate * 0.45f) / sampleRate
+        val cosW0 = cos(w0)
+        val alpha = sin(w0) / (2.0 * q.coerceAtLeast(0.1f))
+
+        val nb0 = alpha
+        val nb1 = 0.0
+        val nb2 = -alpha
+        val na0 = 1.0 + alpha
+        val na1 = -2.0 * cosW0
+        val na2 = 1.0 - alpha
+
+        setNormalized(nb0, nb1, nb2, na0, na1, na2)
+    }
+
     private fun setNormalized(nb0: Double, nb1: Double, nb2: Double, na0: Double, na1: Double, na2: Double) {
         val invA0 = 1.0 / na0
         b0 = (nb0 * invA0).toFloat()

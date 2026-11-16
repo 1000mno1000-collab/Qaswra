@@ -1,5 +1,6 @@
 package com.example.ui
 
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -26,10 +27,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.audio.export.Mp3ExportState
 import com.example.ui.components.PersistentTransportBar
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.screens.AiMusicGenScreen
@@ -44,7 +47,9 @@ import com.example.ui.screens.EffectsChainScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.PresetsScreen
 import com.example.ui.screens.ProjectsExportScreen
+import com.example.model.EffectType
 import com.example.ui.screens.RecordingStudioScreen
+import com.example.ui.screens.VoicePurifierScreen
 import com.example.ui.theme.CyanGlow
 import com.example.ui.theme.StudioMidnight
 import com.example.ui.theme.StudioObsidian
@@ -60,16 +65,21 @@ fun VoiceProApp(viewModel: StudioViewModel) {
     val recordingLevel by viewModel.recordingLevel.collectAsStateWithLifecycle()
     val recordingDurationMs by viewModel.recordingDurationMs.collectAsStateWithLifecycle()
     val recordingWaveform by viewModel.recordingWaveform.collectAsStateWithLifecycle()
+    val recordingLiveSamples by viewModel.recordingLiveSamples.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val playbackProgress by viewModel.playbackProgress.collectAsStateWithLifecycle()
     val outputLevel by viewModel.outputLevel.collectAsStateWithLifecycle()
     val gainReductionDb by viewModel.gainReductionDb.collectAsStateWithLifecycle()
+    val noiseSuppressionDb by viewModel.noiseSuppressionDb.collectAsStateWithLifecycle()
+    val playbackLiveSamples by viewModel.playbackLiveSamples.collectAsStateWithLifecycle()
+    val mp3ExportState by viewModel.mp3ExportState.collectAsStateWithLifecycle()
     val savedProjects by viewModel.savedProjects.collectAsStateWithLifecycle()
     val presets by viewModel.presets.collectAsStateWithLifecycle()
     val transcriptionState by viewModel.transcriptionState.collectAsStateWithLifecycle()
     val musicGenState by viewModel.musicGenState.collectAsStateWithLifecycle()
     val searchAssistantState by viewModel.searchAssistantState.collectAsStateWithLifecycle()
 
+    val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(uiState.statusBanner) {
@@ -77,6 +87,28 @@ fun VoiceProApp(viewModel: StudioViewModel) {
         if (msg != null) {
             snackbarHostState.showSnackbar(msg)
             viewModel.clearStatusBanner()
+        }
+    }
+
+    LaunchedEffect(mp3ExportState) {
+        when (val export = mp3ExportState) {
+            is Mp3ExportState.Completed -> {
+                if (export.isShare) {
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "audio/mpeg"
+                        putExtra(Intent.EXTRA_STREAM, export.outputUri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "مشاركة ملف MP3"))
+                    viewModel.acknowledgeMp3ExportState()
+                } else {
+                    viewModel.acknowledgeMp3ExportState("تم تصدير ملف MP3 بنجاح")
+                }
+            }
+            is Mp3ExportState.Error -> {
+                viewModel.acknowledgeMp3ExportState(export.message)
+            }
+            else -> Unit
         }
     }
 
@@ -109,6 +141,8 @@ fun VoiceProApp(viewModel: StudioViewModel) {
                     val (title, subtitle) = when (destination) {
                         WorkspaceDestination.RecordingStudio ->
                             stringResource(R.string.section_record_title) to stringResource(R.string.section_record_subtitle)
+                        WorkspaceDestination.VoicePurifier ->
+                            stringResource(R.string.section_purifier_title) to stringResource(R.string.section_purifier_subtitle)
                         WorkspaceDestination.EchoReverbSpace ->
                             stringResource(R.string.section_echo_title) to stringResource(R.string.section_echo_subtitle)
                         WorkspaceDestination.EffectsChain ->
@@ -176,6 +210,7 @@ fun VoiceProApp(viewModel: StudioViewModel) {
                         isPlaying = isPlaying,
                         outputLevel = outputLevel,
                         playbackProgress = playbackProgress,
+                        playbackLiveSamples = playbackLiveSamples,
                         onOpenSection = { viewModel.navigateToSection(it) }
                     )
 
@@ -185,14 +220,26 @@ fun VoiceProApp(viewModel: StudioViewModel) {
                         recordingLevel = recordingLevel,
                         recordingDurationMs = recordingDurationMs,
                         recordingWaveform = recordingWaveform,
+                        recordingLiveSamples = recordingLiveSamples,
                         isPlaying = isPlaying,
                         outputLevel = outputLevel,
                         playbackProgress = playbackProgress,
+                        playbackLiveSamples = playbackLiveSamples,
                         onStartOrResumeRecording = { viewModel.startOrResumeRecording() },
                         onPauseRecording = { viewModel.pauseRecording() },
                         onFinishRecording = { viewModel.finishRecording() },
                         onDiscardRecording = { viewModel.discardRecording() },
                         onImportAudioUri = { viewModel.importAudioUri(it) }
+                    )
+
+                    WorkspaceDestination.VoicePurifier -> VoicePurifierScreen(
+                        uiState = uiState,
+                        noiseSuppressionDb = noiseSuppressionDb,
+                        onTogglePurifier = { viewModel.toggleEffectEnabled(EffectType.NOISE_REDUCTION) },
+                        onApplyPreset = { viewModel.applyVoicePurifyPreset(it) },
+                        onUpdateParams = { viewModel.updateNoiseReduction(it) },
+                        onRunDeepCleanOffline = { viewModel.runDeepVoicePurificationOffline() },
+                        onUndoEdit = { viewModel.undoLastEdit() }
                     )
 
                     WorkspaceDestination.EchoReverbSpace -> EchoReverbScreen(
@@ -260,6 +307,7 @@ fun VoiceProApp(viewModel: StudioViewModel) {
 
                     WorkspaceDestination.ProjectsExport -> ProjectsExportScreen(
                         uiState = uiState,
+                        mp3ExportState = mp3ExportState,
                         savedProjects = savedProjects,
                         onRenameProject = { viewModel.renameCurrentProject(it) },
                         onSaveProject = { viewModel.saveCurrentProject() },
@@ -267,7 +315,9 @@ fun VoiceProApp(viewModel: StudioViewModel) {
                         onLoadProject = { viewModel.loadProject(it) },
                         onDeleteProject = { viewModel.deleteProject(it) },
                         onExportWavUri = { viewModel.exportProcessedWav(it) },
-                        onShareWav = { cb -> viewModel.prepareShareWav(cb) }
+                        onShareWav = { cb -> viewModel.prepareShareWav(cb) },
+                        onExportMp3Uri = { viewModel.exportProcessedMp3(it) },
+                        onShareMp3 = { viewModel.prepareShareMp3() }
                     )
 
                     WorkspaceDestination.AiStudio -> AiStudioScreen(

@@ -7,7 +7,6 @@ import com.example.model.DistortionParams
 import com.example.model.EqualizerParams
 import com.example.model.FlangerParams
 import com.example.model.LimiterParams
-import com.example.model.NoiseReductionParams
 import com.example.model.PhaserParams
 import com.example.model.PitchShiftParams
 import com.example.model.TrebleParams
@@ -17,57 +16,10 @@ import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.log10
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.tan
 import kotlin.math.tanh
-
-class NoiseReductionProcessor(private val sampleRate: Int = 44100) {
-    private var env = 0f
-    private var currentGain = 1f
-    private val attackCoef = exp(-1.0 / (0.004 * sampleRate)).toFloat()
-    private val releaseCoef = exp(-1.0 / (0.085 * sampleRate)).toFloat()
-    private val hissLpf = StereoBiquadFilter()
-
-    fun reset() {
-        env = 0f
-        currentGain = 1f
-        hissLpf.reset()
-    }
-
-    fun processBlock(left: FloatArray, right: FloatArray, numFrames: Int, params: NoiseReductionParams) {
-        val threshold = 10.0.pow(params.thresholdDb / 20.0).toFloat()
-        val floorGain = (1f - params.amount.coerceIn(0f, 1f) * 0.94f).coerceIn(0.04f, 1f)
-
-        // Subtle high-frequency hiss taming when noise reduction is strong
-        if (params.amount > 0.2f) {
-            val cutoff = 16000f - params.amount * 5500f
-            hissLpf.configureLowPass(sampleRate, cutoff, 0.707f)
-        }
-
-        for (i in 0 until numFrames) {
-            val level = max(abs(left[i]), abs(right[i]))
-            val coef = if (level > env) attackCoef else releaseCoef
-            env = coef * env + (1f - coef) * level
-
-            val targetGain = if (env >= threshold) {
-                1f
-            } else {
-                val ratio = (env / threshold.coerceAtLeast(1e-6f)).coerceIn(0f, 1f)
-                floorGain + (1f - floorGain) * (ratio * ratio)
-            }
-            val smoothCoef = if (targetGain > currentGain) 0.992f else 0.996f
-            currentGain = smoothCoef * currentGain + (1f - smoothCoef) * targetGain
-
-            left[i] *= currentGain
-            right[i] *= currentGain
-        }
-        if (params.amount > 0.2f) {
-            hissLpf.processBlock(left, right, numFrames)
-        }
-    }
-}
 
 class EqualizerProcessor(private val sampleRate: Int = 44100) {
     private val band60 = StereoBiquadFilter()

@@ -44,6 +44,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.audio.export.Mp3ExportState
 import com.example.data.StudioProject
 import com.example.ui.components.formatDurationMs
 import com.example.ui.theme.AmberWarm
@@ -62,6 +63,7 @@ import com.example.viewmodel.StudioUiState
 @Composable
 fun ProjectsExportScreen(
     uiState: StudioUiState,
+    mp3ExportState: Mp3ExportState,
     savedProjects: List<StudioProject>,
     onRenameProject: (String) -> Unit,
     onSaveProject: () -> Unit,
@@ -70,6 +72,8 @@ fun ProjectsExportScreen(
     onDeleteProject: (StudioProject) -> Unit,
     onExportWavUri: (Uri) -> Unit,
     onShareWav: ((Uri) -> Unit) -> Unit,
+    onExportMp3Uri: (Uri) -> Unit,
+    onShareMp3: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -81,6 +85,17 @@ fun ProjectsExportScreen(
             onExportWavUri(uri)
         }
     }
+
+    val exportMp3Launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("audio/mpeg")
+    ) { uri ->
+        if (uri != null) {
+            onExportMp3Uri(uri)
+        }
+    }
+
+    val isMp3Busy = mp3ExportState is Mp3ExportState.Exporting
+    val isAnyExportBusy = uiState.exportProgress != null || isMp3Busy
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -190,6 +205,66 @@ fun ProjectsExportScreen(
                         }
                     }
 
+                    if (mp3ExportState is Mp3ExportState.Exporting) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "${mp3ExportState.stageLabel} (${(mp3ExportState.progress * 100).toInt()}%)",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = VioletGlow
+                            )
+                            LinearProgressIndicator(
+                                progress = { mp3ExportState.progress },
+                                color = VioletGlow,
+                                trackColor = StudioSurfaceElevated,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                            )
+                        }
+                    }
+
+                    // MP3 Export & Share (Background Service + Foreground Notification)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val safeName = uiState.projectName.ifBlank { "VoicePro_Export" }
+                                exportMp3Launcher.launch("$safeName.mp3")
+                            },
+                            enabled = uiState.hasAudio && !isAnyExportBusy,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = VioletGlow,
+                                contentColor = StudioObsidian
+                            ),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(54.dp)
+                                .testTag("export_mp3_button")
+                        ) {
+                            Icon(Icons.Rounded.FileDownload, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.export_mp3))
+                        }
+
+                        OutlinedButton(
+                            onClick = onShareMp3,
+                            enabled = uiState.hasAudio && !isAnyExportBusy,
+                            border = BorderStroke(1.dp, VioletGlow.copy(alpha = 0.7f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = VioletGlow),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .height(54.dp)
+                                .testTag("share_mp3_button")
+                        ) {
+                            Icon(Icons.Rounded.Share, contentDescription = stringResource(R.string.share_mp3))
+                        }
+                    }
+
+                    // Master WAV Export & Share
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -199,7 +274,7 @@ fun ProjectsExportScreen(
                                 val safeName = uiState.projectName.ifBlank { "VoicePro_Export" }
                                 exportWavLauncher.launch("$safeName.wav")
                             },
-                            enabled = uiState.hasAudio && uiState.exportProgress == null,
+                            enabled = uiState.hasAudio && !isAnyExportBusy,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = EmeraldActive,
                                 contentColor = StudioObsidian
@@ -228,7 +303,7 @@ fun ProjectsExportScreen(
                                     )
                                 }
                             },
-                            enabled = uiState.hasAudio && uiState.exportProgress == null,
+                            enabled = uiState.hasAudio && !isAnyExportBusy,
                             border = BorderStroke(1.dp, AmberWarm.copy(alpha = 0.6f)),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = AmberWarm),
                             shape = RoundedCornerShape(16.dp),

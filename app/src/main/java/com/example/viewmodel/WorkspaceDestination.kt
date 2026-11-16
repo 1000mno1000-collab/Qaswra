@@ -19,6 +19,7 @@ sealed interface WorkspaceDestination {
 
     // Tier 1: Dedicated Focus Workspaces
     data object RecordingStudio : WorkspaceDestination
+    data object VoicePurifier : WorkspaceDestination
     data object EchoReverbSpace : WorkspaceDestination
     data object EffectsChain : WorkspaceDestination
     data object AudioEditor : WorkspaceDestination

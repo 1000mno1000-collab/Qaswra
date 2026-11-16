@@ -39,6 +39,12 @@ class AudioPlayerEngine {
     private val _gainReductionDb = MutableStateFlow(0f)
     val gainReductionDb: StateFlow<Float> = _gainReductionDb.asStateFlow()
 
+    private val _noiseSuppressionDb = MutableStateFlow(0f)
+    val noiseSuppressionDb: StateFlow<Float> = _noiseSuppressionDb.asStateFlow()
+
+    private val _liveOutputSamples = MutableStateFlow(FloatArray(0))
+    val liveOutputSamples: StateFlow<FloatArray> = _liveOutputSamples.asStateFlow()
+
     @Volatile
     private var activeBuffer: StereoAudioBuffer? = null
 
@@ -124,6 +130,7 @@ class AudioPlayerEngine {
                 .build()
 
             val pipeline = DspPipeline(sampleRate)
+            pipeline.primeNoiseProfile(buf)
             val blockFrames = 1024
             val blockL = FloatArray(blockFrames)
             val blockR = FloatArray(blockFrames)
@@ -147,6 +154,7 @@ class AudioPlayerEngine {
                     pendingSeekFraction?.let { frac ->
                         currentFrameIndex = (frac * total).toInt().coerceIn(0, total - 1)
                         pipeline.reset()
+                        pipeline.primeNoiseProfile(currentBuf)
                         pendingSeekFraction = null
                     }
 
@@ -209,6 +217,11 @@ class AudioPlayerEngine {
 
                     pipeline.processStereoBlock(blockL, blockR, framesFilled, cfg)
                     _gainReductionDb.value = pipeline.compressorGainReductionDb
+                    _noiseSuppressionDb.value = if (cfg.isEffectEnabled(EffectType.NOISE_REDUCTION)) {
+                        pipeline.noiseSuppressionDb
+                    } else {
+                        0f
+                    }
 
                     var peak = 0f
                     var sIdx = 0
@@ -222,17 +235,36 @@ class AudioPlayerEngine {
                     }
                     _outputLevel.value = (_outputLevel.value * 0.35f + peak * 0.65f).coerceIn(0f, 1f)
                     _progress.value = (currentFrameIndex.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                    _liveOutputSamples.value = sampleOscilloscopeFrame(blockL, blockR, framesFilled, 96)
 
                     track.write(pcmShorts, 0, framesFilled * 2)
                 }
             } finally {
                 _outputLevel.value = 0f
                 _gainReductionDb.value = 0f
+                _noiseSuppressionDb.value = 0f
+                _liveOutputSamples.value = FloatArray(0)
                 runCatching { track.pause() }
                 runCatching { track.flush() }
                 runCatching { track.release() }
             }
         }
+    }
+
+    private fun sampleOscilloscopeFrame(
+        left: FloatArray,
+        right: FloatArray,
+        frames: Int,
+        points: Int
+    ): FloatArray {
+        if (frames <= 0 || points <= 0) return FloatArray(0)
+        val out = FloatArray(points)
+        val step = frames.toFloat() / points.toFloat()
+        for (i in 0 until points) {
+            val idx = (i * step).toInt().coerceIn(0, frames - 1)
+            out[i] = ((left[idx] + right[idx]) * 0.5f).coerceIn(-1f, 1f)
+        }
+        return out
     }
 
     private fun fillStretchedBlock(
@@ -273,6 +305,7 @@ class AudioPlayerEngine {
         playJob?.cancel()
         playJob = null
         _outputLevel.value = 0f
+        _liveOutputSamples.value = FloatArray(0)
     }
 
     fun stop() {
@@ -283,5 +316,7 @@ class AudioPlayerEngine {
         _progress.value = 0f
         _outputLevel.value = 0f
         _gainReductionDb.value = 0f
+        _noiseSuppressionDb.value = 0f
+        _liveOutputSamples.value = FloatArray(0)
     }
 }

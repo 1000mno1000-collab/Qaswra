@@ -24,6 +24,13 @@ class DspPipeline(val sampleRate: Int = 44100) {
     val compressorGainReductionDb: Float
         get() = compressor.lastGainReductionDb
 
+    val noiseSuppressionDb: Float
+        get() = noiseReduction.lastNoiseSuppressionDb
+
+    fun primeNoiseProfile(source: StereoAudioBuffer) {
+        noiseReduction.primeNoiseProfile(source)
+    }
+
     fun reset() {
         noiseReduction.reset()
         equalizer.reset()
@@ -97,6 +104,10 @@ class DspPipeline(val sampleRate: Int = 44100) {
             applyTimeStretchOffline(source, speedRate)
         } else {
             source
+        }
+
+        if (config.isEffectEnabled(EffectType.NOISE_REDUCTION) && config.noiseReduction.spectralClean) {
+            offlinePipeline.primeNoiseProfile(stretched)
         }
 
         // Add tail space if Echo/Reverb is active so echoes decay cleanly

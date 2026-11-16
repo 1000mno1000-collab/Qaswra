@@ -58,7 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.R
 import com.example.audio.io.RecordingState
-import com.example.ui.components.AnimatedAcousticRibbon
+import com.example.ui.components.RealTimeWaveformCanvas
 import com.example.ui.components.formatDurationMs
 import com.example.ui.theme.CoralRecord
 import com.example.ui.theme.CyanGlow
@@ -78,9 +78,11 @@ fun RecordingStudioScreen(
     recordingLevel: Float,
     recordingDurationMs: Long,
     recordingWaveform: List<Float>,
+    recordingLiveSamples: FloatArray,
     isPlaying: Boolean,
     outputLevel: Float,
     playbackProgress: Float,
+    playbackLiveSamples: FloatArray,
     onStartOrResumeRecording: () -> Boolean,
     onPauseRecording: () -> Unit,
     onFinishRecording: () -> Unit,
@@ -203,15 +205,22 @@ fun RecordingStudioScreen(
 
                 Spacer(Modifier.height(16.dp))
 
-                AnimatedAcousticRibbon(
-                    peaks = if (recordingState != RecordingState.IDLE) recordingWaveform else uiState.waveformPeaks,
-                    isActive = recordingState == RecordingState.RECORDING || isPlaying,
+                val activeSamples = if (recordingState == RecordingState.RECORDING) {
+                    recordingLiveSamples
+                } else {
+                    playbackLiveSamples
+                }
+                RealTimeWaveformCanvas(
+                    liveSamples = activeSamples,
+                    fallbackPeaks = if (recordingState != RecordingState.IDLE) recordingWaveform else uiState.waveformPeaks,
+                    isLive = recordingState == RecordingState.RECORDING || isPlaying,
                     liveEnergy = if (recordingState == RecordingState.RECORDING) recordingLevel else outputLevel,
                     progress = if (recordingState == RecordingState.IDLE) playbackProgress else 1f,
                     accentPrimary = if (recordingState == RecordingState.RECORDING) CoralRecord else CyanGlow,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(130.dp)
+                        .height(138.dp)
+                        .testTag("realtime_waveform_canvas")
                 )
 
                 Spacer(Modifier.height(14.dp))

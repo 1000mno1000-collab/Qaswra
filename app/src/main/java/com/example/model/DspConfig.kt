@@ -132,8 +132,12 @@ data class LimiterParams(
 
 @JsonClass(generateAdapter = true)
 data class NoiseReductionParams(
-    val thresholdDb: Float = -42f, // -65..-15 dB
-    val amount: Float = 0.70f      // 0..1
+    val thresholdDb: Float = -42f,     // -65..-15 dB (soft hysteresis gate threshold)
+    val amount: Float = 0.70f,         // 0..1 (spectral noise suppression strength)
+    val highPassHz: Float = 85f,       // 30..180 Hz (rumble, wind & AC hum filter)
+    val vocalClarity: Float = 0.45f,   // 0..1 (mud cut + vocal presence & air)
+    val deEssAmount: Float = 0.30f,    // 0..1 (sibilance harshness control)
+    val spectralClean: Boolean = true  // adaptive STFT Wiener spectral denoiser
 )
 
 @JsonClass(generateAdapter = true)
