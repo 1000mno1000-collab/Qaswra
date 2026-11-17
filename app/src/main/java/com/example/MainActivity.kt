@@ -3,7 +3,9 @@ package com.example
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -92,11 +94,23 @@ private class CreateTypedDocumentContract : ActivityResultContract<Pair<String, 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            splashScreen.setOnExitAnimationListener { splashView ->
+                splashView.animate()
+                    .alpha(0f)
+                    .setDuration(240L)
+                    .withEndAction { splashView.remove() }
+                    .start()
+            }
+        }
         enableEdgeToEdge()
         setContent {
             VoiceProTheme {
                 VoiceProRootApp()
             }
+        }
+        window.decorView.post {
+            window.setBackgroundDrawable(ColorDrawable(0xFF070B14.toInt()))
         }
     }
 }

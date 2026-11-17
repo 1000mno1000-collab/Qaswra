@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="288"
+    android:viewportHeight="288">
+
+    <!-- Left AirPod: soft pearl body + crisp dark slate contour -->
+    <path
+        android:fillColor="#F8FAFC"
+        android:pathData="M95,192 L95,140 C95,134 99,132 106,131 C117,129 124,121 124,110 C124,97 113,87 96,87 C79,87 70,98 70,113 C70,124 75,131 80,136 C81.5,138 82,141 82,145 L82,192 C82,197 85,200 88.5,200 C92,200 95,197 95,192 Z"
+        android:strokeColor="#0F172A"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="4" />
+
+    <!-- Left AirPod subtle shading highlight along stem -->
+    <path
+        android:fillColor="#E2E8F0"
+        android:pathData="M84,144 L88,144 L88,191 L84,191 Z" />
+
+    <!-- Left AirPod speaker grille (ear tip) -->
+    <path
+        android:fillColor="#0F172A"
+        android:pathData="M115,103 C117.5,103 118.5,106 118.5,110 C118.5,114 117.5,117 115,117 C112.5,117 111.5,114 111.5,110 C111.5,106 112.5,103 115,103 Z" />
+
+    <!-- Left AirPod acoustic back vent -->
+    <path
+        android:fillColor="#0F172A"
+        android:pathData="M84,102 C86.5,102 88,104 88,106.5 C88,109 86.5,111 84,111 C81.5,111 80,109 80,106.5 C80,104 81.5,102 84,102 Z" />
+
+    <!-- Left AirPod stem metallic mic ring -->
+    <path
+        android:pathData="M83,190 L94,190"
+        android:strokeColor="#0F172A"
+        android:strokeLineCap="round"
+        android:strokeWidth="2.5" />
+
+    <!-- Right AirPod: mirrored cleanly across x = 144 -->
+    <path
+        android:fillColor="#F8FAFC"
+        android:pathData="M193,192 L193,140 C193,134 189,132 182,131 C171,129 164,121 164,110 C164,97 175,87 192,87 C209,87 218,98 218,113 C218,124 213,131 208,136 C206.5,138 206,141 206,145 L206,192 C206,197 203,200 199.5,200 C196,200 193,197 193,192 Z"
+        android:strokeColor="#0F172A"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="4" />
+
+    <!-- Right AirPod subtle shading highlight along stem -->
+    <path
+        android:fillColor="#E2E8F0"
+        android:pathData="M200,144 L204,144 L204,191 L200,191 Z" />
+
+    <!-- Right AirPod speaker grille (ear tip) -->
+    <path
+        android:fillColor="#0F172A"
+        android:pathData="M173,103 C175.5,103 176.5,106 176.5,110 C176.5,114 175.5,117 173,117 C170.5,117 169.5,114 169.5,110 C169.5,106 170.5,103 173,103 Z" />
+
+    <!-- Right AirPod acoustic back vent -->
+    <path
+        android:fillColor="#0F172A"
+        android:pathData="M204,102 C206.5,102 208,104 208,106.5 C208,109 206.5,111 204,111 C201.5,111 200,109 200,106.5 C200,104 201.5,102 204,102 Z" />
+
+    <!-- Right AirPod stem metallic mic ring -->
+    <path
+        android:pathData="M194,190 L205,190"
+        android:strokeColor="#0F172A"
+        android:strokeLineCap="round"
+        android:strokeWidth="2.5" />
+
+    <!-- Center Four-Point Sparkle Star -->
+    <path
+        android:pathData="M144,122 Q144,141 166,144 Q144,147 144,166 Q144,147 122,144 Q144,141 144,122 Z"
+        android:strokeColor="#0F172A"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.5">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="164"
+                android:endY="164"
+                android:startX="124"
+                android:startY="124"
+                android:type="linear">
+                <item
+                    android:color="#06B6D4"
+                    android:offset="0.0" />
+                <item
+                    android:color="#6366F1"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
