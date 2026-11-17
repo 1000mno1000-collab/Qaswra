@@ -64,7 +64,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.imageResource
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -99,6 +98,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
+private const val GOOGLE_WEB_CLIENT_ID =
+    "71794555883-1j2b8ckt6mriegaem2vji34ov5vofpb4.apps.googleusercontent.com"
+
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
@@ -110,7 +112,10 @@ private fun resolveGoogleSignInErrorMessage(throwable: Throwable, lang: AppLangu
     var depth = 0
     while (cursor != null && depth < 6) {
         if (cursor is ApiException && (cursor.statusCode == 10 || cursor.statusCode == 12500)) {
-            return t(lang, "auth_sha1_error_10_12500")
+            val code = cursor.statusCode
+            val msg = cursor.message?.trim().orEmpty()
+            val detail = if (msg.isNotBlank()) " (ApiException $code: $msg)" else " (ApiException $code)"
+            return "${t(lang, "auth_sha1_error_10_12500")}$detail"
         }
         val msg = cursor.message.orEmpty().lowercase()
         if (
@@ -121,13 +126,24 @@ private fun resolveGoogleSignInErrorMessage(throwable: Throwable, lang: AppLangu
             msg.contains("fingerprint") ||
             msg.contains("no credential")
         ) {
-            return t(lang, "auth_sha1_error_10_12500")
+            val raw = cursor.message?.trim().orEmpty()
+            return if (raw.isNotBlank()) {
+                "${t(lang, "auth_sha1_error_10_12500")}\n($raw)"
+            } else {
+                t(lang, "auth_sha1_error_10_12500")
+            }
         }
         cursor = cursor.cause
         depth++
     }
     if (throwable is NoCredentialException || throwable is GetCredentialException) {
-        return t(lang, "auth_sha1_error_10_12500")
+        val raw = (throwable as? GetCredentialException)?.errorMessage?.toString()?.trim()
+            ?: throwable.localizedMessage?.trim().orEmpty()
+        return if (raw.isNotBlank()) {
+            "${t(lang, "auth_sha1_error_10_12500")}\n($raw)"
+        } else {
+            t(lang, "auth_sha1_error_10_12500")
+        }
     }
     val detail = throwable.localizedMessage?.trim().orEmpty()
     return if (detail.isNotBlank()) {
@@ -146,8 +162,6 @@ fun AuthScreen(
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
     val scope = rememberCoroutineScope()
-    val defaultWebClientId = if (isPreview) "" else stringResource(R.string.default_web_client_id).trim()
-
     var isSignUp by remember { mutableStateOf(false) }
     var displayName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
@@ -157,7 +171,7 @@ fun AuthScreen(
     var isGoogleLoading by remember { mutableStateOf(false) }
     var langDialogOpen by remember { mutableStateOf(false) }
 
-    LaunchedEffect(isPreview, defaultWebClientId) {
+    LaunchedEffect(isPreview) {
         if (isPreview) return@LaunchedEffect
         runCatching {
             if (FirebaseApp.getApps(context).isEmpty()) {
@@ -173,15 +187,12 @@ fun AuthScreen(
             )
             return@LaunchedEffect
         }
-        if (defaultWebClientId.isBlank() || defaultWebClientId == "default_client_id") {
-            return@LaunchedEffect
-        }
         val activity = context.findActivity() ?: return@LaunchedEffect
         try {
             val credentialManager = CredentialManager.create(activity)
             val autoSignInOption = GetGoogleIdOption.Builder()
                 .setFilterByAuthorizedAccounts(true)
-                .setServerClientId(defaultWebClientId)
+                .setServerClientId(GOOGLE_WEB_CLIENT_ID)
                 .setAutoSelectEnabled(true)
                 .build()
             val request = GetCredentialRequest.Builder()
@@ -242,14 +253,6 @@ fun AuthScreen(
                     FirebaseApp.initializeApp(context.applicationContext)
                 }
             }
-            if (defaultWebClientId.isBlank() || defaultWebClientId == "default_client_id") {
-                errorMsg = if (lang == AppLanguage.EN) {
-                    "Google Web Client ID is unavailable. Please continue as guest or retry."
-                } else {
-                    "معرّف عميل Google غير متاح حالياً. يمكنك المتابعة كضيف أو المحاولة مجدداً."
-                }
-                return@AuthScreenContent
-            }
             val activity = context.findActivity()
             if (activity == null) {
                 errorMsg = if (lang == AppLanguage.EN) {
@@ -266,7 +269,7 @@ fun AuthScreen(
                 try {
                     val credentialManager = CredentialManager.create(activity)
                     val signInOption = GetSignInWithGoogleOption.Builder(
-                        serverClientId = defaultWebClientId,
+                        serverClientId = GOOGLE_WEB_CLIENT_ID,
                     ).build()
                     val request = GetCredentialRequest.Builder()
                         .addCredentialOption(signInOption)
@@ -581,22 +584,6 @@ private fun AuthScreenContent(
                             .testTag("auth_password_input"),
                     )
 
-                    if (!errorMsg.isNullOrBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = StudioColors.Rose.copy(alpha = 0.14f),
-                            border = BorderStroke(1.dp, StudioColors.Rose.copy(alpha = 0.5f)),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                text = errorMsg,
-                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                color = StudioColors.RoseBright,
-                                modifier = Modifier.padding(12.dp),
-                            )
-                        }
-                    }
-
                     val submitInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = onSubmitEmail,
@@ -683,6 +670,24 @@ private fun AuthScreenContent(
                             text = t(lang, "auth_google_signin"),
                             style = MaterialTheme.typography.labelLarge,
                         )
+                    }
+
+                    if (!errorMsg.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = StudioColors.Rose.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, StudioColors.Rose.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("auth_error_banner"),
+                        ) {
+                            Text(
+                                text = errorMsg,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = StudioColors.RoseBright,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        }
                     }
 
                     val guestInteraction = remember { MutableInteractionSource() }
