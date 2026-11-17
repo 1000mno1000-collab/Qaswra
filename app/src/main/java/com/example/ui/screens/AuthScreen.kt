@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -281,21 +280,9 @@ fun AuthScreen(
                     Log.w("Auth", "Google ApiException status=${e.statusCode}: ${e.message}", e)
                     errorMsg = t(lang, "auth_sha1_hint")
                 } catch (e: GetCredentialException) {
-                    val raw = e.errorMessage?.toString().orEmpty().lowercase()
+                    val raw = e.errorMessage?.toString().orEmpty()
                     Log.w("Auth", "GetCredentialException (${e.type}): $raw", e)
-                    val isShaOrConfig = raw.contains("10") ||
-                        raw.contains("28444") ||
-                        raw.contains("developer") ||
-                        raw.contains("sha") ||
-                        raw.contains("caller") ||
-                        raw.contains("config") ||
-                        raw.contains("not set up") ||
-                        raw.contains("cannot find")
-                    errorMsg = if (isShaOrConfig) {
-                        t(lang, "auth_sha1_hint")
-                    } else {
-                        t(lang, "auth_sha1_hint")
-                    }
+                    errorMsg = t(lang, "auth_sha1_hint")
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -363,59 +350,65 @@ private fun AuthScreenContent(
     onSubmitEmail: () -> Unit,
     onContinueAsGuest: () -> Unit,
 ) {
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .systemBarsPadding()
             .imePadding(),
-        contentAlignment = Alignment.Center,
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .widthIn(max = 520.dp)
-                .verticalScroll(rememberScrollState())
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 20.dp)
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(horizontal = 20.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                LanguageBadgeButton(
-                    currentLanguage = lang,
-                    onClick = onOpenLanguageDialog,
-                )
-            }
+            LanguageBadgeButton(
+                currentLanguage = lang,
+                onClick = onOpenLanguageDialog,
+            )
+        }
 
-            val logoBorderBrush = remember {
-                Brush.linearGradient(
-                    colors = listOf(StudioColors.Cyan, StudioColors.Violet),
-                )
-            }
-            Surface(
-                shape = RoundedCornerShape(26.dp),
-                color = Color(0xFFFFFFFE),
-                border = BorderStroke(
-                    width = 1.8.dp,
-                    brush = logoBorderBrush,
-                ),
-                shadowElevation = 14.dp,
-                modifier = Modifier.size(92.dp),
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Image(
-                    bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
-                    contentDescription = t(lang, "app_name"),
-                    contentScale = ContentScale.Crop,
-                    filterQuality = FilterQuality.High,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(24.dp)),
-                )
-            }
+                val logoBorderBrush = remember {
+                    Brush.linearGradient(
+                        colors = listOf(StudioColors.Cyan, StudioColors.Violet),
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(26.dp),
+                    color = Color(0xFFFFFFFE),
+                    border = BorderStroke(
+                        width = 1.8.dp,
+                        brush = logoBorderBrush,
+                    ),
+                    shadowElevation = 14.dp,
+                    modifier = Modifier.size(88.dp),
+                ) {
+                    Image(
+                        bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
+                        contentDescription = t(lang, "app_name"),
+                        contentScale = ContentScale.Crop,
+                        filterQuality = FilterQuality.High,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(24.dp)),
+                    )
+                }
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -693,7 +686,8 @@ private fun AuthScreenContent(
                 }
             }
 
-            Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+            }
         }
     }
 }
