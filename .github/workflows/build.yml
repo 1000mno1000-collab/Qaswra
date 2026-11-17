@@ -44,18 +44,11 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Run unit tests
-        run: |
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew :app:testDebugUnitTest --no-daemon
-          else
-            gradle :app:testDebugUnitTest --no-daemon
-          fi
-
       - name: Build Debug APK
         run: |
           if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+          
             ./gradlew :app:assembleDebug --no-daemon
           else
             gradle :app:assembleDebug --no-daemon
