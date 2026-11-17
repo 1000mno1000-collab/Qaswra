@@ -85,10 +85,34 @@ object EdgeTtsClient {
         speechRate: Float = 1.0f,
         pitch: Float = 1.0f,
         pitchOffsetHz: Int = 0,
-    ): ByteArray? = withTimeoutOrNull(14_000L) {
+    ): ByteArray? {
+        val cleanInput = text.trim()
+        if (cleanInput.isEmpty()) return null
+
+        val combinedRate = clamp(speechRate, 0.5f, 1.8f)
+        val ratePercent = ((combinedRate - 1.0f) * 100f).roundToInt()
+        val rateStr = if (ratePercent >= 0) "+$ratePercent%" else "$ratePercent%"
+
+        val pitchFromSliderHz = ((pitch - 1.0f) * 36f).roundToInt()
+        val totalPitchHz = (pitchFromSliderHz + pitchOffsetHz).coerceIn(-60, 60)
+        val pitchStr = if (totalPitchHz >= 0) "+${totalPitchHz}Hz" else "${totalPitchHz}Hz"
+
+        val cleanText = formatNaturalSsmlText(cleanInput)
+        val ssml =
+            "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='$localeTag'>" +
+                "<voice name='$voiceName'>" +
+                "<prosody pitch='$pitchStr' rate='$rateStr' volume='+0%'>$cleanText</prosody>" +
+                "</voice></speak>"
+
+        return synthesizeRawSsmlMp3(ssml)
+    }
+
+    suspend fun synthesizeRawSsmlMp3(
+        ssml: String,
+    ): ByteArray? = withTimeoutOrNull(16_000L) {
         withContext(Dispatchers.IO) {
-            val cleanInput = text.trim()
-            if (cleanInput.isEmpty()) return@withContext null
+            val cleanSsml = ssml.trim()
+            if (cleanSsml.isEmpty()) return@withContext null
 
             val connectionId = UUID.randomUUID().toString().replace("-", "")
             val requestId = UUID.randomUUID().toString().replace("-", "")
@@ -105,7 +129,7 @@ object EdgeTtsClient {
             try {
                 val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
                 socket = (factory.createSocket(HOST, PORT) as SSLSocket).apply {
-                    soTimeout = 10_000
+                    soTimeout = 12_000
                     startHandshake()
                 }
                 val input = BufferedInputStream(socket.inputStream, 16384)
@@ -143,27 +167,12 @@ object EdgeTtsClient {
                         """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
                 sendTextFrame(output, configMsg)
 
-                val combinedRate = clamp(speechRate, 0.5f, 1.8f)
-                val ratePercent = ((combinedRate - 1.0f) * 100f).roundToInt()
-                val rateStr = if (ratePercent >= 0) "+$ratePercent%" else "$ratePercent%"
-
-                val pitchFromSliderHz = ((pitch - 1.0f) * 36f).roundToInt()
-                val totalPitchHz = (pitchFromSliderHz + pitchOffsetHz).coerceIn(-60, 60)
-                val pitchStr = if (totalPitchHz >= 0) "+${totalPitchHz}Hz" else "${totalPitchHz}Hz"
-
-                val cleanText = formatNaturalSsmlText(cleanInput)
-                val ssml =
-                    "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='$localeTag'>" +
-                        "<voice name='$voiceName'>" +
-                        "<prosody pitch='$pitchStr' rate='$rateStr' volume='+0%'>$cleanText</prosody>" +
-                        "</voice></speak>"
-
                 val ssmlMsg =
                     "X-RequestId:$requestId\r\n" +
                         "Content-Type:application/ssml+xml\r\n" +
                         "X-Timestamp:${jsUtcString()}\r\n" +
                         "Path:ssml\r\n\r\n" +
-                        ssml
+                        cleanSsml
                 sendTextFrame(output, ssmlMsg)
 
                 var done = false

@@ -1,16 +1,13 @@
 package com.example.audio.tts
 
 import android.content.Context
-import com.example.audio.AudioDecoder
 import com.example.audio.EdgeTtsClient
 import com.example.audio.EdgeTtsSynthResult
-import com.example.audio.NetworkUtils
-import com.example.audio.applyPitchAndSpeedOffline
-import com.example.audio.clamp
-import com.example.audio.fx.AudioSkillsPresets
-import com.example.audio.writeStereoWavFile
+import com.example.audio.OnlineGuard
+import com.example.model.AppLanguage
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
+import com.example.model.TtsEngineMode
 import com.example.model.TtsGender
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,11 +16,9 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.util.UUID
-import kotlin.math.abs
 
 sealed interface VoiceRouteOutcome {
-    data class Success(val result: EdgeTtsSynthResult) : VoiceRouteOutcome
+    data class Success(val result: EdgeTtsSynthResult, val engineUsed: TtsEngineMode) : VoiceRouteOutcome
     data object MissingApiKey : VoiceRouteOutcome
     data object Offline : VoiceRouteOutcome
     data class ProviderError(val message: String) : VoiceRouteOutcome
@@ -32,8 +27,9 @@ sealed interface VoiceRouteOutcome {
 class SmartVoiceRouter {
 
     /**
-     * يوجّه النص لمحرك ElevenLabs السحابي ذو المشاعر الحقيقية (model: eleven_multilingual_v2)
-     * باستخدام مفتاح المستخدم الشخصي المحفوظ محلياً، ولا يعود أبداً إلى الصوت الآلي الروبوتي المحلي.
+     * يوجّه النص إلى محرك الصوت البشري السحابي المختار (100% أونلاين، بدون صوت روبوتي أوفلاين):
+     * - [TtsEngineMode.FREE_EMOTIONAL_NEURAL]: المحرك المجاني بلا حدود عبر Edge-TTS WebSocket + SSML بالمشاعر.
+     * - [TtsEngineMode.ELEVENLABS_PERSONAL]: محرك ElevenLabs (eleven_multilingual_v2) بمفتاح المستخدم الشخصي.
      */
     suspend fun synthesizeStudioVoiceWithStatus(
         context: Context,
@@ -43,35 +39,64 @@ class SmartVoiceRouter {
         style: TtsDeliveryStyle,
         speechRate: Float,
         pitch: Float,
+        engineMode: TtsEngineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL,
+        language: AppLanguage = AppLanguage.AR,
         stability: Float = ElevenLabsClient.getSavedStability(context),
         similarity: Float = ElevenLabsClient.getSavedSimilarity(context),
     ): VoiceRouteOutcome = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return@withContext VoiceRouteOutcome.ProviderError("النص فارغ")
-        if (!NetworkUtils.isInternetAvailable(context)) return@withContext VoiceRouteOutcome.Offline
+        if (!OnlineGuard.isOnline(context)) return@withContext VoiceRouteOutcome.Offline
 
-        val elevenKey = ElevenLabsClient.getSavedApiKey(context)
-        if (elevenKey.isBlank()) {
-            return@withContext VoiceRouteOutcome.MissingApiKey
-        }
-
-        when (
-            val elOutcome = ElevenLabsClient.synthesize(
-                context = context,
-                text = cleanText,
-                dialect = dialect,
-                gender = gender,
-                style = style,
-                speechRate = speechRate,
-                pitch = pitch,
-                stability = stability,
-                similarityBoost = similarity,
-            )
-        ) {
-            is ElevenLabsOutcome.Success -> VoiceRouteOutcome.Success(elOutcome.result)
-            ElevenLabsOutcome.MissingApiKey -> VoiceRouteOutcome.MissingApiKey
-            ElevenLabsOutcome.Offline -> VoiceRouteOutcome.Offline
-            is ElevenLabsOutcome.ApiError -> VoiceRouteOutcome.ProviderError(elOutcome.detail)
+        when (engineMode) {
+            TtsEngineMode.FREE_EMOTIONAL_NEURAL -> {
+                when (
+                    val freeOutcome = FreeEmotionalTtsClient.synthesize(
+                        context = context,
+                        text = cleanText,
+                        dialect = dialect,
+                        gender = gender,
+                        style = style,
+                        speechRate = speechRate,
+                        pitch = pitch,
+                        language = language,
+                    )
+                ) {
+                    is FreeEmotionalTtsOutcome.Success -> VoiceRouteOutcome.Success(
+                        result = freeOutcome.result,
+                        engineUsed = TtsEngineMode.FREE_EMOTIONAL_NEURAL,
+                    )
+                    is FreeEmotionalTtsOutcome.Offline -> VoiceRouteOutcome.Offline
+                    is FreeEmotionalTtsOutcome.Error -> VoiceRouteOutcome.ProviderError(freeOutcome.message)
+                }
+            }
+            TtsEngineMode.ELEVENLABS_PERSONAL -> {
+                val elevenKey = ElevenLabsClient.getSavedApiKey(context)
+                if (elevenKey.isBlank()) {
+                    return@withContext VoiceRouteOutcome.MissingApiKey
+                }
+                when (
+                    val elOutcome = ElevenLabsClient.synthesize(
+                        context = context,
+                        text = cleanText,
+                        dialect = dialect,
+                        gender = gender,
+                        style = style,
+                        speechRate = speechRate,
+                        pitch = pitch,
+                        stability = stability,
+                        similarityBoost = similarity,
+                    )
+                ) {
+                    is ElevenLabsOutcome.Success -> VoiceRouteOutcome.Success(
+                        result = elOutcome.result,
+                        engineUsed = TtsEngineMode.ELEVENLABS_PERSONAL,
+                    )
+                    ElevenLabsOutcome.MissingApiKey -> VoiceRouteOutcome.MissingApiKey
+                    ElevenLabsOutcome.Offline -> VoiceRouteOutcome.Offline
+                    is ElevenLabsOutcome.ApiError -> VoiceRouteOutcome.ProviderError(elOutcome.detail)
+                }
+            }
         }
     }
 

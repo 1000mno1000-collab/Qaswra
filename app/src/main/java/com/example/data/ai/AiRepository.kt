@@ -28,8 +28,8 @@ interface AiRepository {
 
 /**
  * Default client implementation when Firebase AI Logic (ai_logic) has not been provisioned
- * for the Android build environment yet. Smart Auto-Master, Voice Purifier, Echo/Reverb,
- * 13-slot DSP chain, Formant Voice Transformer, and native 10-dialect TTS all run fully on-device.
+ * for the Android build environment yet. Audio DSP tools, Voice Purifier, Echo/Reverb,
+ * and Formant Voice Transformer run on-device, while AI & Neural TTS features are 100% online.
  */
 class FirebaseUnprovisionedAiRepository : AiRepository {
     override suspend fun transcribeAudio(
@@ -38,11 +38,11 @@ class FirebaseUnprovisionedAiRepository : AiRepository {
     ): AiResponse {
         val msg = when (language) {
             AppLanguage.EN ->
-                "Cloud transcription requires Firebase AI Logic (Gemini) provisioning with a valid debug.keystore SHA fingerprint and google-services.json. All local DSP tools, Smart Auto-Master, Formant Transformer, and native TTS work offline."
+                "Cloud AI transcription works 100% online and requires Firebase AI Logic (Gemini) provisioning with a valid debug.keystore SHA-1 fingerprint and google-services.json."
             AppLanguage.FA ->
-                "تبدیل گفتار ابری به متن نیازمند فعال‌سازی Firebase AI Logic (Gemini) با فایل google-services.json و کلید امضا است. مسترینگ هوشمند، حذف نویز، تغییر شخصیت صدا و TTS آفلاین فعال هستند."
+                "تبدیل گفتار ابری به متن به صورت ۱۰۰٪ آنلاین کار می‌کند و نیازمند فعال‌سازی Firebase AI Logic (Gemini) با فایل google-services.json و اثر انگشت SHA-1 است."
             AppLanguage.AR ->
-                "يتطلب التفريغ الصوتي السحابي تفعيل Firebase AI Logic (Gemini) وتزويد التطبيق بملف google-services.json وبصمة SHA. جميع أدوات المعالجة الصوتية، الماسترينغ الذكي، محوّل الشخصيات، وتحويل النص إلى صوت تعمل محلياً بالكامل."
+                "يعمل التفريغ الصوتي بالذكاء الاصطناعي أونلاين 100% فقط ويتطلب تفعيل Firebase AI Logic (Gemini) وإضافة بصمة SHA-1 وتحديث ملف google-services.json."
         }
         return AiResponse.NeedsCloudProvisioning(msg)
     }
@@ -53,11 +53,11 @@ class FirebaseUnprovisionedAiRepository : AiRepository {
     ): AiResponse {
         val msg = when (language) {
             AppLanguage.EN ->
-                "Live web-grounded AI search requires Firebase AI Logic (Gemini) provisioning in Android. Try Smart Auto-Master for instant offline spectral and dynamics recommendations."
+                "Live web-grounded AI search works 100% online and requires Firebase AI Logic (Gemini) provisioning in Android. Try Smart Auto-Master for instant spectral and dynamics optimization."
             AppLanguage.FA ->
-                "جستجوی زنده مبتنی بر وب نیازمند فعال‌سازی Firebase AI Logic (Gemini) است. برای تحلیل فوری صدا از مسترینگ هوشمند آفلاین استفاده کنید."
+                "جستجوی زنده مبتنی بر وب به صورت ۱۰۰٪ آنلاین کار می‌کند و نیازمند فعال‌سازی Firebase AI Logic (Gemini) است."
             AppLanguage.AR ->
-                "يتطلب البحث السحابي المباشر تفعيل Firebase AI Logic (Gemini). يمكنك استخدام مهندس الماسترينغ الذكي حالياً لتحليل الصوت وضبط الإعدادات محلياً فوراً."
+                "يعمل المساعد البحثي السحابي أونلاين 100% فقط ويتطلب تفعيل Firebase AI Logic (Gemini). يمكنك أيضاً استخدام مهندس الماسترينغ الذكي لضبط الصوتيات."
         }
         return AiResponse.NeedsCloudProvisioning(msg)
     }

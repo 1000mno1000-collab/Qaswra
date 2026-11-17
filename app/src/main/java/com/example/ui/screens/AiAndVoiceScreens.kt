@@ -81,12 +81,14 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.audio.OnlineGuard
 import com.example.audio.fx.VoiceEffect
 import com.example.i18n.t
 import com.example.model.AiToolType
 import com.example.model.AppLanguage
 import com.example.model.TTS_DIALECTS
 import com.example.model.TtsDeliveryStyle
+import com.example.model.TtsEngineMode
 import com.example.model.TtsGender
 import com.example.model.VOICE_CHARACTER_PRESETS
 import com.example.model.VoiceCharacterCategory
@@ -575,8 +577,8 @@ fun TextToSpeechStudioScreen(
     var infoOpen by remember { mutableStateOf(false) }
     var apiKeyDraft by remember(uiState.elevenLabsApiKey) { mutableStateOf(uiState.elevenLabsApiKey) }
     var showApiKey by remember { mutableStateOf(false) }
-    val hasInternet = remember(uiState.ttsUiState.isOffline, uiState.ttsUiState.isSynthesizingPreview) {
-        com.example.audio.NetworkUtils.isInternetAvailable(context)
+    val hasInternet = remember(uiState.ttsUiState, uiState.ttsEngineMode, uiState.isExtractingArticle) {
+        OnlineGuard.isOnline(context)
     }
 
     StudioScrollColumn {
@@ -595,13 +597,19 @@ fun TextToSpeechStudioScreen(
             },
         )
 
-        // Personal ElevenLabs API Key & Voice Emotional Settings Card (saved locally via SharedPreferences)
+        // Cloud Neural Engine Selector (Free Unlimited Emotional TTS by default + Optional ElevenLabs Personal Key)
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
             border = BorderStroke(
                 1.dp,
-                if (uiState.elevenLabsApiKey.isNotBlank()) StudioColors.Emerald.copy(alpha = 0.5f) else StudioColors.Amber.copy(alpha = 0.6f),
+                if (!hasInternet) {
+                    StudioColors.Rose.copy(alpha = 0.6f)
+                } else if (uiState.ttsEngineMode == TtsEngineMode.FREE_EMOTIONAL_NEURAL || uiState.elevenLabsApiKey.isNotBlank()) {
+                    StudioColors.Emerald.copy(alpha = 0.55f)
+                } else {
+                    StudioColors.Amber.copy(alpha = 0.6f)
+                },
             ),
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -617,103 +625,216 @@ fun TextToSpeechStudioScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Key,
+                        imageVector = Icons.Rounded.RecordVoiceOver,
                         contentDescription = null,
-                        tint = StudioColors.Amber,
+                        tint = StudioColors.Cyan,
                         modifier = Modifier.size(20.dp),
                     )
                     Text(
-                        text = t(lang, "elevenlabs_key_title"),
+                        text = t(lang, "tts_engine_title"),
                         style = MaterialTheme.typography.titleSmall,
                         color = StudioColors.TextPrimary,
                         modifier = Modifier.weight(1f),
                     )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = StudioColors.Emerald.copy(alpha = 0.16f),
+                    ) {
+                        Text(
+                            text = t(lang, "tts_engine_free_badge"),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = StudioColors.Emerald,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
                 }
 
-                OutlinedTextField(
-                    value = apiKeyDraft,
-                    onValueChange = { apiKeyDraft = it },
-                    placeholder = {
-                        Text(
-                            text = t(lang, "elevenlabs_key_hint"),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
-                    singleLine = true,
-                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showApiKey = !showApiKey }) {
-                            Icon(
-                                imageVector = if (showApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                                contentDescription = null,
-                                tint = StudioColors.TextSecondary,
+                val isFreeEngine = uiState.ttsEngineMode == TtsEngineMode.FREE_EMOTIONAL_NEURAL
+                val freeEngineInteraction = remember { MutableInteractionSource() }
+                Surface(
+                    onClick = { viewModel.setTtsEngineMode(TtsEngineMode.FREE_EMOTIONAL_NEURAL) },
+                    interactionSource = freeEngineInteraction,
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isFreeEngine) StudioColors.ElevatedSurface else StudioColors.BgMid,
+                    border = BorderStroke(1.dp, if (isFreeEngine) StudioColors.Emerald else StudioColors.Border),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 56.dp)
+                        .lit(freeEngineInteraction, MaterialTheme.colorScheme.primary, selected = isFreeEngine, cornerRadius = 14.dp)
+                        .testTag("tts_engine_free_card"),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = t(lang, "tts_engine_free_label"),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (isFreeEngine) StudioColors.Emerald else StudioColors.TextPrimary,
+                            )
+                            Text(
+                                text = t(lang, "tts_engine_free_desc"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioColors.TextSecondary,
                             )
                         }
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = StudioColors.Amber,
-                        unfocusedBorderColor = StudioColors.Border,
-                        focusedTextColor = StudioColors.TextPrimary,
-                        unfocusedTextColor = StudioColors.TextPrimary,
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("elevenlabs_api_key_input"),
-                )
-
-                val saveKeyInteraction = remember { MutableInteractionSource() }
-                Button(
-                    onClick = { viewModel.saveElevenLabsApiKey(apiKeyDraft) },
-                    enabled = apiKeyDraft.trim() != uiState.elevenLabsApiKey || uiState.elevenLabsApiKey.isBlank(),
-                    interactionSource = saveKeyInteraction,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = StudioColors.Amber,
-                        contentColor = StudioColors.BgTop,
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(saveKeyInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
-                        .testTag("elevenlabs_save_key_button"),
-                ) {
-                    Text(t(lang, "elevenlabs_key_save"), style = MaterialTheme.typography.labelLarge)
+                        if (isFreeEngine) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                tint = StudioColors.Emerald,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
                 }
 
-                StudioParamSlider(
-                    label = t(lang, "elevenlabs_stability"),
-                    value = uiState.elevenLabsStability,
-                    min = 0.05f,
-                    max = 0.98f,
-                    formattedValue = "${(uiState.elevenLabsStability * 100f).roundToInt()}%",
-                    accentColor = StudioColors.Cyan,
-                    testTag = "elevenlabs_stability_slider",
-                    onValueChange = { viewModel.updateElevenLabsStability(it) },
-                )
+                val isElevenLabs = uiState.ttsEngineMode == TtsEngineMode.ELEVENLABS_PERSONAL
+                val elevenInteraction = remember { MutableInteractionSource() }
+                Surface(
+                    onClick = { viewModel.setTtsEngineMode(TtsEngineMode.ELEVENLABS_PERSONAL) },
+                    interactionSource = elevenInteraction,
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isElevenLabs) StudioColors.ElevatedSurface else StudioColors.BgMid,
+                    border = BorderStroke(1.dp, if (isElevenLabs) StudioColors.Amber else StudioColors.Border),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 56.dp)
+                        .lit(elevenInteraction, MaterialTheme.colorScheme.primary, selected = isElevenLabs, cornerRadius = 14.dp)
+                        .testTag("tts_engine_elevenlabs_card"),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Key,
+                            contentDescription = null,
+                            tint = if (isElevenLabs) StudioColors.Amber else StudioColors.TextSecondary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = t(lang, "tts_engine_elevenlabs_label"),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (isElevenLabs) StudioColors.Amber else StudioColors.TextPrimary,
+                            )
+                            Text(
+                                text = t(lang, "tts_engine_elevenlabs_desc"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioColors.TextSecondary,
+                            )
+                        }
+                        if (isElevenLabs) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                tint = StudioColors.Amber,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                }
 
-                StudioParamSlider(
-                    label = t(lang, "elevenlabs_similarity"),
-                    value = uiState.elevenLabsSimilarity,
-                    min = 0.05f,
-                    max = 1.0f,
-                    formattedValue = "${(uiState.elevenLabsSimilarity * 100f).roundToInt()}%",
-                    accentColor = StudioColors.Violet,
-                    testTag = "elevenlabs_similarity_slider",
-                    onValueChange = { viewModel.updateElevenLabsSimilarity(it) },
-                )
-
-                if (uiState.elevenLabsApiKey.isBlank() || !hasInternet) {
-                    AiStatusCard(
-                        message = when {
-                            uiState.elevenLabsApiKey.isBlank() && !hasInternet ->
-                                t(lang, "elevenlabs_missing_or_offline_banner")
-                            !hasInternet ->
-                                t(lang, "elevenlabs_offline_banner")
-                            else ->
-                                t(lang, "elevenlabs_missing_key_banner")
+                if (isElevenLabs) {
+                    HorizontalDivider(color = StudioColors.Border)
+                    Text(
+                        text = t(lang, "elevenlabs_key_title"),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = StudioColors.Amber,
+                    )
+                    OutlinedTextField(
+                        value = apiKeyDraft,
+                        onValueChange = { apiKeyDraft = it },
+                        placeholder = {
+                            Text(
+                                text = t(lang, "elevenlabs_key_hint"),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         },
+                        singleLine = true,
+                        visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showApiKey = !showApiKey }) {
+                                Icon(
+                                    imageVector = if (showApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                    contentDescription = null,
+                                    tint = StudioColors.TextSecondary,
+                                )
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = StudioColors.Amber,
+                            unfocusedBorderColor = StudioColors.Border,
+                            focusedTextColor = StudioColors.TextPrimary,
+                            unfocusedTextColor = StudioColors.TextPrimary,
+                        ),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("elevenlabs_api_key_input"),
+                    )
+
+                    val saveKeyInteraction = remember { MutableInteractionSource() }
+                    Button(
+                        onClick = { viewModel.saveElevenLabsApiKey(apiKeyDraft) },
+                        enabled = apiKeyDraft.trim() != uiState.elevenLabsApiKey || uiState.elevenLabsApiKey.isBlank(),
+                        interactionSource = saveKeyInteraction,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.Amber,
+                            contentColor = StudioColors.BgTop,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(saveKeyInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
+                            .testTag("elevenlabs_save_key_button"),
+                    ) {
+                        Text(t(lang, "elevenlabs_key_save"), style = MaterialTheme.typography.labelLarge)
+                    }
+
+                    StudioParamSlider(
+                        label = t(lang, "elevenlabs_stability"),
+                        value = uiState.elevenLabsStability,
+                        min = 0.05f,
+                        max = 0.98f,
+                        formattedValue = "${(uiState.elevenLabsStability * 100f).roundToInt()}%",
+                        accentColor = StudioColors.Cyan,
+                        testTag = "elevenlabs_stability_slider",
+                        onValueChange = { viewModel.updateElevenLabsStability(it) },
+                    )
+
+                    StudioParamSlider(
+                        label = t(lang, "elevenlabs_similarity"),
+                        value = uiState.elevenLabsSimilarity,
+                        min = 0.05f,
+                        max = 1.0f,
+                        formattedValue = "${(uiState.elevenLabsSimilarity * 100f).roundToInt()}%",
+                        accentColor = StudioColors.Violet,
+                        testTag = "elevenlabs_similarity_slider",
+                        onValueChange = { viewModel.updateElevenLabsSimilarity(it) },
+                    )
+                }
+
+                if (!hasInternet) {
+                    AiStatusCard(
+                        message = OnlineGuard.offlineErrorMessage(lang),
+                        isAmber = false,
+                    )
+                } else if (isElevenLabs && uiState.elevenLabsApiKey.isBlank()) {
+                    AiStatusCard(
+                        message = t(lang, "elevenlabs_missing_key_banner"),
                         isAmber = true,
                     )
                 }
@@ -1014,6 +1135,18 @@ fun TextToSpeechStudioScreen(
                             modifier = Modifier.testTag("tts_append_switch"),
                         )
                     }
+                }
+
+                if (uiState.ttsUiState.isGenerating || uiState.ttsUiState.isSynthesizingPreview) {
+                    LinearProgressIndicator(
+                        color = StudioColors.Cyan,
+                        trackColor = StudioColors.BgTop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(CircleShape)
+                            .testTag("tts_synthesis_progress"),
+                    )
                 }
 
                 if (uiState.ttsUiState.usedFallbackEngine) {

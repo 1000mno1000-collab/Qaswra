@@ -48,6 +48,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -125,14 +126,16 @@ fun InAppAudioPickerScreen(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri: Uri? ->
         if (uri != null) {
+            val doneCallback: () -> Unit = {
+                if (showBackButton) onPickedComplete()
+            }
             when (target) {
                 AudioPickerTarget.IMPORT_MAIN,
                 AudioPickerTarget.LIBRARY_BROWSE,
-                -> viewModel.importAudioUri(uri)
-                AudioPickerTarget.APPEND_CLIP -> viewModel.appendAudioUriToCurrent(uri)
-                AudioPickerTarget.MIX_BACKGROUND -> viewModel.loadMixBackgroundUri(uri)
+                -> viewModel.importAudioUri(uri, onComplete = doneCallback)
+                AudioPickerTarget.APPEND_CLIP -> viewModel.appendAudioUriToCurrent(uri, onComplete = doneCallback)
+                AudioPickerTarget.MIX_BACKGROUND -> viewModel.loadMixBackgroundUri(uri, onComplete = doneCallback)
             }
-            onPickedComplete()
         }
     }
 
@@ -321,6 +324,77 @@ fun InAppAudioPickerScreen(
                     Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(t(lang, "picker_import_drive_files"), style = MaterialTheme.typography.labelLarge)
+                }
+            }
+
+            uiState.importProgress?.let { prog ->
+                item(key = "picker_upload_progress", contentType = "upload_progress") {
+                    val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = StudioColors.CardSurface,
+                        border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("picker_import_progress_card"),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = t(lang, "uploading_to_cache_label"),
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = StudioColors.Cyan,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    text = "$pct%",
+                                    style = TelemetryTextStyle,
+                                    color = StudioColors.Emerald,
+                                )
+                            }
+                            if (!uiState.importLabel.isNullOrBlank() || !uiState.importBytesLabel.isNullOrBlank()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = uiState.importLabel.orEmpty(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = StudioColors.TextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    uiState.importBytesLabel?.let { bytesText ->
+                                        Text(
+                                            text = bytesText,
+                                            style = TelemetryTextStyle.copy(fontSize = 11.sp),
+                                            color = StudioColors.TextSecondary,
+                                        )
+                                    }
+                                }
+                            }
+                            LinearProgressIndicator(
+                                progress = { prog.coerceIn(0f, 1f) },
+                                color = StudioColors.Cyan,
+                                trackColor = StudioColors.BgTop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(7.dp)
+                                    .testTag("picker_import_progress_bar"),
+                            )
+                        }
+                    }
                 }
             }
 
@@ -559,14 +633,16 @@ fun InAppAudioPickerScreen(
                                 onTogglePreview = { togglePreview(item) },
                                 onSelect = {
                                     stopPreview()
+                                    val doneCallback: () -> Unit = {
+                                        if (showBackButton) onPickedComplete()
+                                    }
                                     when (target) {
                                         AudioPickerTarget.IMPORT_MAIN,
                                         AudioPickerTarget.LIBRARY_BROWSE,
-                                        -> viewModel.importDeviceAudioItem(item)
-                                        AudioPickerTarget.APPEND_CLIP -> viewModel.appendDeviceAudioItem(item)
-                                        AudioPickerTarget.MIX_BACKGROUND -> viewModel.loadMixBackgroundDeviceItem(item)
+                                        -> viewModel.importDeviceAudioItem(item, onComplete = doneCallback)
+                                        AudioPickerTarget.APPEND_CLIP -> viewModel.appendDeviceAudioItem(item, onComplete = doneCallback)
+                                        AudioPickerTarget.MIX_BACKGROUND -> viewModel.loadMixBackgroundDeviceItem(item, onComplete = doneCallback)
                                     }
-                                    onPickedComplete()
                                 },
                             )
                         }

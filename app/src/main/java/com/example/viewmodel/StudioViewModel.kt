@@ -14,9 +14,10 @@ import androidx.credentials.CredentialManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audio.AudioDecoder
+import com.example.audio.AudioFileUploader
 import com.example.audio.ExportedAudioResult
 import com.example.audio.NativeSpeechState
-import com.example.audio.NetworkUtils
+import com.example.audio.OnlineGuard
 import com.example.audio.ai.OnlineSoundItem
 import com.example.audio.ai.SmartAssistantAndSearch
 import com.example.audio.ai.ToolGuideResult
@@ -29,6 +30,7 @@ import com.example.audio.unity.UnityExporter
 import com.example.audio.video.AudioToVideoCreator
 import com.example.audio.video.CinematicRenderParams
 import com.example.audio.video.CinematicVideoRenderer
+import com.example.audio.web.ArticleExtractionResult
 import com.example.audio.web.WebArticleExtractor
 import com.example.audio.RingtoneSaveResult
 import com.example.audio.SonixMediaPlaybackService
@@ -93,6 +95,7 @@ import com.example.model.StudioPreset
 import com.example.model.StudioProject
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
+import com.example.model.TtsEngineMode
 import com.example.model.TtsGender
 import com.example.model.TtsStudioUiState
 import com.example.model.VoicePurifyPreset
@@ -182,8 +185,10 @@ data class StudioUiState(
     val isBusy: Boolean = false,
     val importProgress: Float? = null,
     val importLabel: String? = null,
+    val importBytesLabel: String? = null,
     val exportProgress: Float? = null,
     val purifyProgress: Float? = null,
+    val ttsEngineMode: TtsEngineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL,
     val elevenLabsApiKey: String = "",
     val elevenLabsStability: Float = 0.45f,
     val elevenLabsSimilarity: Float = 0.78f,
@@ -851,34 +856,73 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun importAudioUri(uri: Uri) {
+    fun importAudioUri(
+        uri: Uri,
+        onComplete: (() -> Unit)? = null,
+    ) {
         viewModelScope.launch {
-            val resolvedName = resolveFileName(uri) ?: "ملف مستورد"
+            val app = getApplication<Application>()
+            val resolvedName = AudioFileUploader.resolveDisplayName(app, uri)
+                ?: resolveFileName(uri)
+                ?: "ملف مستورد"
             _uiState.update {
                 it.copy(
                     isBusy = true,
                     importProgress = 0.02f,
                     importLabel = resolvedName,
+                    importBytesLabel = null,
                 )
             }
+            var cachedFile: File? = null
             try {
                 player.stop()
-                val buf = AudioDecoder.decodeUriWithProgress(getApplication(), uri) { p ->
-                    _uiState.update { it.copy(importProgress = p) }
+                val uploaded = AudioFileUploader.copyAudioUriToCache(app, uri) { info ->
+                    val scaled = (0.02f + info.fraction * 0.53f).coerceIn(0.02f, 0.55f)
+                    val bytesText = if (info.totalBytes > 0L) {
+                        "${AudioFileUploader.formatBytes(info.bytesCopied)} / ${AudioFileUploader.formatBytes(info.totalBytes)}"
+                    } else {
+                        AudioFileUploader.formatBytes(info.bytesCopied)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            importProgress = scaled,
+                            importLabel = info.fileName,
+                            importBytesLabel = bytesText,
+                        )
+                    }
+                }
+                if (uploaded == null) {
+                    postBanner("تعذر نسخ الملف الصوتي إلى ذاكرة التطبيق المؤقتة")
+                    return@launch
+                }
+                cachedFile = uploaded.file
+                val buf = AudioDecoder.decodeFileWithProgress(uploaded.file) { decFrac ->
+                    val scaled = (0.55f + decFrac * 0.43f).coerceIn(0.55f, 0.98f)
+                    _uiState.update { it.copy(importProgress = scaled) }
                 }
                 if (buf == null || buf.frameCount == 0) {
                     postBanner("تعذر فك ترميز الملف الصوتي المحدد — تأكد من سلامة الصيغة أو الصلاحيات")
                     return@launch
                 }
+                _uiState.update { it.copy(importProgress = 1.0f) }
                 setActiveBuffer(buf, recordUndo = false, resetDspOnNewEntry = true)
-                val title = resolvedName.substringBeforeLast('.').ifEmpty { "ملف مستورد" }
+                val title = uploaded.displayName.substringBeforeLast('.').ifEmpty { "ملف مستورد" }
                 if (_uiState.value.activeProjectId == 0L) {
                     _uiState.update { it.copy(activeProjectName = title) }
                 }
                 repository.indexAudioRecording(title, buf, RecordingSourceType.IMPORTED)
                 postBanner("تم استيراد الملف ($title) بالصوت الأصلي النقي (0%) جاهزاً للمعالجة")
+                onComplete?.invoke()
             } finally {
-                _uiState.update { it.copy(isBusy = false, importProgress = null, importLabel = null) }
+                runCatching { cachedFile?.delete() }
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        importProgress = null,
+                        importLabel = null,
+                        importBytesLabel = null,
+                    )
+                }
             }
         }
     }
@@ -1000,29 +1044,74 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         postBanner("تم تطبيق الاختفاء التدريجي (${"%.1f".format(seconds)} ثانية)")
     }
 
-    fun loadMixBackgroundUri(uri: Uri) {
+    fun loadMixBackgroundUri(
+        uri: Uri,
+        onComplete: (() -> Unit)? = null,
+    ) {
         viewModelScope.launch {
-            val name = resolveFileName(uri) ?: "Background Track"
-            _uiState.update { it.copy(isBusy = true, importProgress = 0.02f, importLabel = name) }
+            val app = getApplication<Application>()
+            val name = AudioFileUploader.resolveDisplayName(app, uri)
+                ?: resolveFileName(uri)
+                ?: "Background Track"
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    importProgress = 0.02f,
+                    importLabel = name,
+                    importBytesLabel = null,
+                )
+            }
+            var cachedFile: File? = null
             try {
-                val bg = AudioDecoder.decodeUriWithProgress(getApplication(), uri) { p ->
-                    _uiState.update { it.copy(importProgress = p) }
+                val uploaded = AudioFileUploader.copyAudioUriToCache(app, uri) { info ->
+                    val scaled = (0.02f + info.fraction * 0.53f).coerceIn(0.02f, 0.55f)
+                    val bytesText = if (info.totalBytes > 0L) {
+                        "${AudioFileUploader.formatBytes(info.bytesCopied)} / ${AudioFileUploader.formatBytes(info.totalBytes)}"
+                    } else {
+                        AudioFileUploader.formatBytes(info.bytesCopied)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            importProgress = scaled,
+                            importLabel = info.fileName,
+                            importBytesLabel = bytesText,
+                        )
+                    }
+                }
+                if (uploaded == null) {
+                    postBanner("تعذر نسخ ملف الخلفية إلى الذاكرة المؤقتة")
+                    return@launch
+                }
+                cachedFile = uploaded.file
+                val bg = AudioDecoder.decodeFileWithProgress(uploaded.file) { decFrac ->
+                    val scaled = (0.55f + decFrac * 0.43f).coerceIn(0.55f, 0.98f)
+                    _uiState.update { it.copy(importProgress = scaled) }
                 }
                 if (bg == null || bg.frameCount == 0) {
                     postBanner("تعذر قراءة ملف الخلفية الصوتية")
                     return@launch
                 }
+                _uiState.update { it.copy(importProgress = 1.0f) }
                 mixBgBuffer = bg
                 _uiState.update {
                     it.copy(
-                        mixBgName = name,
+                        mixBgName = uploaded.displayName,
                         mixBgDurationMs = bg.durationMs,
                     )
                 }
                 scheduleSmartDuckingPreviewRender()
                 postBanner("تم تحميل مسار الخلفية بنجاح، يمكنك الآن ضبط المستويات والمعاينة التلقائية")
+                onComplete?.invoke()
             } finally {
-                _uiState.update { it.copy(isBusy = false, importProgress = null, importLabel = null) }
+                runCatching { cachedFile?.delete() }
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        importProgress = null,
+                        importLabel = null,
+                        importBytesLabel = null,
+                    )
+                }
             }
         }
     }
@@ -1229,27 +1318,72 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         postBanner("تم مزج المسارين معاً في مسار استوديو واحد بنجاح")
     }
 
-    fun appendAudioUriToCurrent(uri: Uri) {
+    fun appendAudioUriToCurrent(
+        uri: Uri,
+        onComplete: (() -> Unit)? = null,
+    ) {
         val src = activeBuffer
         if (src == null) {
-            importAudioUri(uri)
+            importAudioUri(uri, onComplete)
             return
         }
         viewModelScope.launch {
-            val name = resolveFileName(uri) ?: "Extra Clip"
-            _uiState.update { it.copy(isBusy = true, importProgress = 0.02f, importLabel = name) }
+            val app = getApplication<Application>()
+            val name = AudioFileUploader.resolveDisplayName(app, uri)
+                ?: resolveFileName(uri)
+                ?: "Extra Clip"
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    importProgress = 0.02f,
+                    importLabel = name,
+                    importBytesLabel = null,
+                )
+            }
+            var cachedFile: File? = null
             try {
-                val extra = AudioDecoder.decodeUriWithProgress(getApplication(), uri) { p ->
-                    _uiState.update { it.copy(importProgress = p) }
+                val uploaded = AudioFileUploader.copyAudioUriToCache(app, uri) { info ->
+                    val scaled = (0.02f + info.fraction * 0.53f).coerceIn(0.02f, 0.55f)
+                    val bytesText = if (info.totalBytes > 0L) {
+                        "${AudioFileUploader.formatBytes(info.bytesCopied)} / ${AudioFileUploader.formatBytes(info.totalBytes)}"
+                    } else {
+                        AudioFileUploader.formatBytes(info.bytesCopied)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            importProgress = scaled,
+                            importLabel = info.fileName,
+                            importBytesLabel = bytesText,
+                        )
+                    }
+                }
+                if (uploaded == null) {
+                    postBanner("تعذر نسخ المقطع الإضافي إلى الذاكرة المؤقتة")
+                    return@launch
+                }
+                cachedFile = uploaded.file
+                val extra = AudioDecoder.decodeFileWithProgress(uploaded.file) { decFrac ->
+                    val scaled = (0.55f + decFrac * 0.43f).coerceIn(0.55f, 0.98f)
+                    _uiState.update { it.copy(importProgress = scaled) }
                 }
                 if (extra == null || extra.frameCount == 0) {
                     postBanner("تعذر فك ترميز المقطع الإضافي للدمج")
                     return@launch
                 }
+                _uiState.update { it.copy(importProgress = 1.0f) }
                 setActiveBuffer(mergeClips(src, extra), recordUndo = true)
                 postBanner("تم دمج المقطع الصوتي في نهاية الصوت بنجاح")
+                onComplete?.invoke()
             } finally {
-                _uiState.update { it.copy(isBusy = false, importProgress = null, importLabel = null) }
+                runCatching { cachedFile?.delete() }
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        importProgress = null,
+                        importLabel = null,
+                        importBytesLabel = null,
+                    )
+                }
             }
         }
     }
@@ -1771,8 +1905,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // AI Studio
+    // AI Studio (100% Online Only — guarded by OnlineGuard)
     fun transcribeActiveAudio() {
+        val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), _uiState.value.language)
+        if (offlineErr != null) {
+            _uiState.update {
+                it.copy(
+                    transcriptionState = AiStreamState(
+                        isLoading = false,
+                        errorMessage = offlineErr,
+                    ),
+                )
+            }
+            postBanner(offlineErr)
+            return
+        }
         val src = activeBuffer
         if (src == null) {
             _uiState.update {
@@ -1852,6 +1999,19 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun askSearchAssistant(query: String) {
         if (query.isBlank()) return
+        val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), _uiState.value.language)
+        if (offlineErr != null) {
+            _uiState.update {
+                it.copy(
+                    searchAssistantState = AiStreamState(
+                        isLoading = false,
+                        errorMessage = offlineErr,
+                    ),
+                )
+            }
+            postBanner(offlineErr)
+            return
+        }
         viewModelScope.launch {
             _uiState.update {
                 it.copy(searchAssistantState = AiStreamState(isLoading = true))
@@ -1892,16 +2052,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun importDeviceAudioItem(item: DeviceAudioItem) {
-        importAudioUri(Uri.parse(item.uriString))
+    fun importDeviceAudioItem(
+        item: DeviceAudioItem,
+        onComplete: (() -> Unit)? = null,
+    ) {
+        importAudioUri(Uri.parse(item.uriString), onComplete)
     }
 
-    fun appendDeviceAudioItem(item: DeviceAudioItem) {
-        appendAudioUriToCurrent(Uri.parse(item.uriString))
+    fun appendDeviceAudioItem(
+        item: DeviceAudioItem,
+        onComplete: (() -> Unit)? = null,
+    ) {
+        appendAudioUriToCurrent(Uri.parse(item.uriString), onComplete)
     }
 
-    fun loadMixBackgroundDeviceItem(item: DeviceAudioItem) {
-        loadMixBackgroundUri(Uri.parse(item.uriString))
+    fun loadMixBackgroundDeviceItem(
+        item: DeviceAudioItem,
+        onComplete: (() -> Unit)? = null,
+    ) {
+        loadMixBackgroundUri(Uri.parse(item.uriString), onComplete)
     }
 
     // Global Pro Presets & 18-Tool Operations (100% Non-Destructive Live Preview)
@@ -2134,7 +2303,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // TTS Studio (ElevenLabs eleven_multilingual_v2 Emotional Voice — zero robotic offline fallback)
+    // TTS Studio (100% Online Cloud-Only: Free Unlimited Emotional Neural TTS + Optional ElevenLabs v2)
+    fun setTtsEngineMode(mode: TtsEngineMode) {
+        _uiState.update { cur ->
+            cur.copy(
+                ttsEngineMode = mode,
+                ttsUiState = cur.ttsUiState.copy(
+                    selectedEngine = mode,
+                    missingApiKey = if (mode == TtsEngineMode.ELEVENLABS_PERSONAL) cur.elevenLabsApiKey.isBlank() else false,
+                    errorMessage = null,
+                ),
+            )
+        }
+    }
+
     fun saveElevenLabsApiKey(rawKey: String) {
         val clean = rawKey.trim()
         ElevenLabsClient.saveApiKey(getApplication(), clean)
@@ -2142,7 +2324,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 elevenLabsApiKey = clean,
                 ttsUiState = it.ttsUiState.copy(
-                    missingApiKey = clean.isBlank(),
+                    missingApiKey = if (it.ttsEngineMode == TtsEngineMode.ELEVENLABS_PERSONAL) clean.isBlank() else false,
                     errorMessage = if (clean.isNotBlank()) null else it.ttsUiState.errorMessage,
                 ),
             )
@@ -2185,27 +2367,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         val lang = _uiState.value.language
-        val savedKey = ElevenLabsClient.getSavedApiKey(getApplication())
-        if (savedKey.isBlank()) {
-            val keyMsg = t(lang, "elevenlabs_missing_key_banner")
+        val engineMode = _uiState.value.ttsEngineMode
+        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
+        if (offlineMsg != null) {
             stopTtsPreview()
             _uiState.update {
                 it.copy(
                     ttsUiState = TtsStudioUiState(
-                        missingApiKey = true,
-                        errorMessage = keyMsg,
-                    ),
-                )
-            }
-            postBanner(keyMsg)
-            return
-        }
-        if (!NetworkUtils.isInternetAvailable(getApplication())) {
-            val offlineMsg = t(lang, "elevenlabs_offline_banner")
-            stopTtsPreview()
-            _uiState.update {
-                it.copy(
-                    ttsUiState = TtsStudioUiState(
+                        selectedEngine = engineMode,
                         isOffline = true,
                         errorMessage = offlineMsg,
                     ),
@@ -2214,11 +2383,27 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             postBanner(offlineMsg)
             return
         }
+        if (engineMode == TtsEngineMode.ELEVENLABS_PERSONAL && ElevenLabsClient.getSavedApiKey(getApplication()).isBlank()) {
+            val keyMsg = t(lang, "elevenlabs_missing_key_banner")
+            stopTtsPreview()
+            _uiState.update {
+                it.copy(
+                    ttsUiState = TtsStudioUiState(
+                        selectedEngine = engineMode,
+                        missingApiKey = true,
+                        errorMessage = keyMsg,
+                    ),
+                )
+            }
+            postBanner(keyMsg)
+            return
+        }
         viewModelScope.launch {
             stopTtsPreview()
             _uiState.update {
                 it.copy(
                     ttsUiState = TtsStudioUiState(
+                        selectedEngine = engineMode,
                         isSynthesizingPreview = true,
                         isPreviewing = false,
                         isGenerating = false,
@@ -2240,6 +2425,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 pitch = pitch,
                 stability = cur.elevenLabsStability,
                 similarity = cur.elevenLabsSimilarity,
+                engineMode = engineMode,
+                language = lang,
             )
             when (outcome) {
                 is VoiceRouteOutcome.Success -> {
@@ -2261,6 +2448,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         _uiState.update {
                             it.copy(
                                 ttsUiState = TtsStudioUiState(
+                                    selectedEngine = engineMode,
+                                    activeEngineUsed = outcome.engineUsed,
                                     isSynthesizingPreview = false,
                                     isPreviewing = true,
                                     errorMessage = null,
@@ -2274,6 +2463,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         _uiState.update {
                             it.copy(
                                 ttsUiState = TtsStudioUiState(
+                                    selectedEngine = engineMode,
                                     errorMessage = t(lang, "tts_cloud_required_error"),
                                 ),
                             )
@@ -2283,20 +2473,37 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 VoiceRouteOutcome.MissingApiKey -> {
                     val keyMsg = t(lang, "elevenlabs_missing_key_banner")
                     _uiState.update {
-                        it.copy(ttsUiState = TtsStudioUiState(missingApiKey = true, errorMessage = keyMsg))
+                        it.copy(
+                            ttsUiState = TtsStudioUiState(
+                                selectedEngine = engineMode,
+                                missingApiKey = true,
+                                errorMessage = keyMsg,
+                            ),
+                        )
                     }
                     postBanner(keyMsg)
                 }
                 VoiceRouteOutcome.Offline -> {
-                    val offlineMsg = t(lang, "elevenlabs_offline_banner")
+                    val err = OnlineGuard.offlineErrorMessage(lang)
                     _uiState.update {
-                        it.copy(ttsUiState = TtsStudioUiState(isOffline = true, errorMessage = offlineMsg))
+                        it.copy(
+                            ttsUiState = TtsStudioUiState(
+                                selectedEngine = engineMode,
+                                isOffline = true,
+                                errorMessage = err,
+                            ),
+                        )
                     }
-                    postBanner(offlineMsg)
+                    postBanner(err)
                 }
                 is VoiceRouteOutcome.ProviderError -> {
                     _uiState.update {
-                        it.copy(ttsUiState = TtsStudioUiState(errorMessage = outcome.message))
+                        it.copy(
+                            ttsUiState = TtsStudioUiState(
+                                selectedEngine = engineMode,
+                                errorMessage = outcome.message,
+                            ),
+                        )
                     }
                 }
             }
@@ -2326,23 +2533,35 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         if (text.isBlank()) return
         val lang = _uiState.value.language
-        val savedKey = ElevenLabsClient.getSavedApiKey(getApplication())
-        if (savedKey.isBlank()) {
+        val engineMode = _uiState.value.ttsEngineMode
+        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
+        if (offlineMsg != null) {
+            stopTtsPreview()
+            _uiState.update {
+                it.copy(
+                    ttsUiState = TtsStudioUiState(
+                        selectedEngine = engineMode,
+                        isOffline = true,
+                        errorMessage = offlineMsg,
+                    ),
+                )
+            }
+            postBanner(offlineMsg)
+            return
+        }
+        if (engineMode == TtsEngineMode.ELEVENLABS_PERSONAL && ElevenLabsClient.getSavedApiKey(getApplication()).isBlank()) {
             val keyMsg = t(lang, "elevenlabs_missing_key_banner")
             stopTtsPreview()
             _uiState.update {
-                it.copy(ttsUiState = TtsStudioUiState(missingApiKey = true, errorMessage = keyMsg))
+                it.copy(
+                    ttsUiState = TtsStudioUiState(
+                        selectedEngine = engineMode,
+                        missingApiKey = true,
+                        errorMessage = keyMsg,
+                    ),
+                )
             }
             postBanner(keyMsg)
-            return
-        }
-        if (!NetworkUtils.isInternetAvailable(getApplication())) {
-            val offlineMsg = t(lang, "elevenlabs_offline_banner")
-            stopTtsPreview()
-            _uiState.update {
-                it.copy(ttsUiState = TtsStudioUiState(isOffline = true, errorMessage = offlineMsg))
-            }
-            postBanner(offlineMsg)
             return
         }
         viewModelScope.launch {
@@ -2350,6 +2569,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     isBusy = true,
                     ttsUiState = TtsStudioUiState(
+                        selectedEngine = engineMode,
                         isGenerating = true,
                         errorMessage = null,
                     ),
@@ -2368,6 +2588,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     pitch = pitch,
                     stability = cur.elevenLabsStability,
                     similarity = cur.elevenLabsSimilarity,
+                    engineMode = engineMode,
+                    language = lang,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -2376,7 +2598,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         val rawBuf = synthRes.buffer
                         if (rawBuf.frameCount == 0) {
                             _uiState.update {
-                                it.copy(ttsUiState = TtsStudioUiState(errorMessage = t(lang, "tts_cloud_required_error")))
+                                it.copy(
+                                    ttsUiState = TtsStudioUiState(
+                                        selectedEngine = engineMode,
+                                        errorMessage = t(lang, "tts_cloud_required_error"),
+                                    ),
+                                )
                             }
                             return@launch
                         }
@@ -2389,29 +2616,57 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         }
                         setActiveBuffer(finalBuf, recordUndo = isAppend, resetDspOnNewEntry = !isAppend)
                         val dialectLabel = t(lang, dialect.titleKey)
-                        repository.indexAudioRecording("ElevenLabs • $dialectLabel", rawBuf, RecordingSourceType.TTS)
-                        _uiState.update {
-                            it.copy(ttsUiState = TtsStudioUiState(errorMessage = null))
+                        val engineTag = if (outcome.engineUsed == TtsEngineMode.ELEVENLABS_PERSONAL) {
+                            "ElevenLabs"
+                        } else {
+                            "Sonix Neural"
                         }
-                        postBanner("تم توليد وإدراج الصوت البشري ذو المشاعر ($dialectLabel) بنجاح")
+                        repository.indexAudioRecording("$engineTag • $dialectLabel", rawBuf, RecordingSourceType.TTS)
+                        _uiState.update {
+                            it.copy(
+                                ttsUiState = TtsStudioUiState(
+                                    selectedEngine = engineMode,
+                                    activeEngineUsed = outcome.engineUsed,
+                                    errorMessage = null,
+                                ),
+                            )
+                        }
+                        postBanner("تم توليد وإدراج الصوت البشري ذو المشاعر ($dialectLabel) إلى الاستوديو")
                     }
                     VoiceRouteOutcome.MissingApiKey -> {
                         val keyMsg = t(lang, "elevenlabs_missing_key_banner")
                         _uiState.update {
-                            it.copy(ttsUiState = TtsStudioUiState(missingApiKey = true, errorMessage = keyMsg))
+                            it.copy(
+                                ttsUiState = TtsStudioUiState(
+                                    selectedEngine = engineMode,
+                                    missingApiKey = true,
+                                    errorMessage = keyMsg,
+                                ),
+                            )
                         }
                         postBanner(keyMsg)
                     }
                     VoiceRouteOutcome.Offline -> {
-                        val offlineMsg = t(lang, "elevenlabs_offline_banner")
+                        val err = OnlineGuard.offlineErrorMessage(lang)
                         _uiState.update {
-                            it.copy(ttsUiState = TtsStudioUiState(isOffline = true, errorMessage = offlineMsg))
+                            it.copy(
+                                ttsUiState = TtsStudioUiState(
+                                    selectedEngine = engineMode,
+                                    isOffline = true,
+                                    errorMessage = err,
+                                ),
+                            )
                         }
-                        postBanner(offlineMsg)
+                        postBanner(err)
                     }
                     is VoiceRouteOutcome.ProviderError -> {
                         _uiState.update {
-                            it.copy(ttsUiState = TtsStudioUiState(errorMessage = outcome.message))
+                            it.copy(
+                                ttsUiState = TtsStudioUiState(
+                                    selectedEngine = engineMode,
+                                    errorMessage = outcome.message,
+                                ),
+                            )
                         }
                     }
                 }
@@ -2551,22 +2806,53 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(isLiveVoiceChangerActive = false) }
     }
 
-    // Web Article Extractor for TTS Podcast (Online only)
+    // Web Article Extractor for TTS Podcast via https://jina.ai (100% Online only)
     fun extractArticleTextForTts(url: String, onExtracted: (String) -> Unit) {
         if (url.isBlank()) return
-        if (!NetworkUtils.isInternetAvailable(getApplication())) {
-            postBanner(t(_uiState.value.language, "tts_offline_required_error"))
+        val lang = _uiState.value.language
+        val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), lang)
+        if (offlineErr != null) {
+            _uiState.update {
+                it.copy(
+                    ttsUiState = it.ttsUiState.copy(
+                        isOffline = true,
+                        errorMessage = offlineErr,
+                    ),
+                )
+            }
+            postBanner(offlineErr)
             return
         }
         viewModelScope.launch {
             _uiState.update { it.copy(isExtractingArticle = true) }
             try {
-                val extracted = WebArticleExtractor.extractCleanTextFromUrl(url)
-                if (extracted.isBlank()) {
-                    postBanner(t(_uiState.value.language, "tts_web_article_empty"))
-                } else {
-                    onExtracted(extracted)
-                    postBanner("تم استخراج نص المقال النظيف بنجاح (${extracted.length} حرف)")
+                when (val res = WebArticleExtractor.extractCleanTextFromUrl(getApplication(), url, lang)) {
+                    is ArticleExtractionResult.Success -> {
+                        onExtracted(res.text)
+                        _uiState.update {
+                            it.copy(
+                                ttsUiState = it.ttsUiState.copy(
+                                    isOffline = false,
+                                    errorMessage = null,
+                                ),
+                            )
+                        }
+                        postBanner("تم استخراج النص الصافي من المقال بنجاح (${res.text.length} حرف)")
+                    }
+                    is ArticleExtractionResult.Offline -> {
+                        _uiState.update {
+                            it.copy(
+                                ttsUiState = it.ttsUiState.copy(
+                                    isOffline = true,
+                                    errorMessage = res.message,
+                                ),
+                            )
+                        }
+                        postBanner(res.message)
+                    }
+                    ArticleExtractionResult.EmptyOrFailed -> {
+                        postBanner(t(lang, "tts_web_article_empty"))
+                    }
                 }
             } finally {
                 _uiState.update { it.copy(isExtractingArticle = false) }
@@ -2599,8 +2885,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val clean = query.trim()
         if (clean.isEmpty()) return
         val lang = _uiState.value.language
-        if (!NetworkUtils.isInternetAvailable(getApplication())) {
-            val offlineMsg = t(lang, "online_ai_offline_notice")
+        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
+        if (offlineMsg != null) {
             _uiState.update {
                 it.copy(
                     isLoadingAiGuide = false,
@@ -2635,8 +2921,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun searchInternetSounds(query: String) {
         val lang = _uiState.value.language
-        if (!NetworkUtils.isInternetAvailable(getApplication())) {
-            val offlineMsg = t(lang, "online_sfx_offline_notice")
+        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
+        if (offlineMsg != null) {
             _uiState.update {
                 it.copy(
                     isSearchingOnlineSounds = false,
@@ -2670,8 +2956,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             stopOnlineSoundPreview()
             return
         }
-        if (!NetworkUtils.isInternetAvailable(getApplication())) {
-            val offlineMsg = t(_uiState.value.language, "online_sfx_offline_notice")
+        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), _uiState.value.language)
+        if (offlineMsg != null) {
             _uiState.update { it.copy(soundSearchOfflineError = offlineMsg) }
             postBanner(offlineMsg)
             return
@@ -2718,8 +3004,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun importOnlineSoundToStudio(item: OnlineSoundItem) {
-        if (!NetworkUtils.isInternetAvailable(getApplication())) {
-            val offlineMsg = t(_uiState.value.language, "online_sfx_offline_notice")
+        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), _uiState.value.language)
+        if (offlineMsg != null) {
             _uiState.update { it.copy(soundSearchOfflineError = offlineMsg) }
             postBanner(offlineMsg)
             return

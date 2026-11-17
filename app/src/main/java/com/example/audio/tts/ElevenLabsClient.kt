@@ -3,7 +3,7 @@ package com.example.audio.tts
 import android.content.Context
 import com.example.audio.AudioDecoder
 import com.example.audio.EdgeTtsSynthResult
-import com.example.audio.NetworkUtils
+import com.example.audio.OnlineGuard
 import com.example.audio.applyPitchAndSpeedOffline
 import com.example.audio.clamp
 import com.example.audio.fx.AudioSkillsPresets
@@ -113,9 +113,9 @@ object ElevenLabsClient {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return@withContext ElevenLabsOutcome.ApiError(400, "Empty text")
 
+        if (!OnlineGuard.isOnline(context)) return@withContext ElevenLabsOutcome.Offline
         val apiKey = getSavedApiKey(context)
         if (apiKey.isBlank()) return@withContext ElevenLabsOutcome.MissingApiKey
-        if (!NetworkUtils.isInternetAvailable(context)) return@withContext ElevenLabsOutcome.Offline
 
         val voiceId = selectVoiceId(dialect, gender, style)
         val endpoint = "https://api.elevenlabs.io/v1/text-to-speech/$voiceId?output_format=mp3_44100_128"

@@ -119,6 +119,7 @@ fun AudioEditorScreen(
     var showTtsCard by remember { mutableStateOf(false) }
     var ttsText by remember { mutableStateOf("") }
     var selectedDialectId by remember { mutableStateOf(TTS_DIALECTS.first().id) }
+    var selectedTtsStyle by remember { mutableStateOf(TtsDeliveryStyle.NATURAL_WARM) }
 
     var exportDialogOpen by remember { mutableStateOf(false) }
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
@@ -168,6 +169,53 @@ fun AudioEditorScreen(
                 }
             },
         )
+
+        uiState.importProgress?.let { prog ->
+            val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = StudioColors.CardSurface,
+                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.6f)),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "${t(lang, "uploading_to_cache_label")} $pct%",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = StudioColors.Cyan,
+                            modifier = Modifier.weight(1f),
+                        )
+                        uiState.importBytesLabel?.let { bytes ->
+                            Text(
+                                text = bytes,
+                                style = TelemetryTextStyle.copy(fontSize = 11.sp),
+                                color = StudioColors.TextSecondary,
+                            )
+                        }
+                    }
+                    LinearProgressIndicator(
+                        progress = { prog.coerceIn(0f, 1f) },
+                        color = StudioColors.Cyan,
+                        trackColor = StudioColors.BgTop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(7.dp)
+                            .clip(CircleShape)
+                            .testTag("editor_import_progress_bar"),
+                    )
+                }
+            }
+        }
 
         // Interactive Waveform Trim & Selection Canvas
         Card(
@@ -843,6 +891,28 @@ fun AudioEditorScreen(
                         }
                     }
 
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        TtsDeliveryStyle.entries.forEach { st ->
+                            val styleChipInteraction = remember { MutableInteractionSource() }
+                            val isStyleSel = st == selectedTtsStyle
+                            FilterChip(
+                                selected = isStyleSel,
+                                onClick = { selectedTtsStyle = st },
+                                interactionSource = styleChipInteraction,
+                                label = { Text(t(lang, st.titleKey)) },
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 44.dp)
+                                    .lit(styleChipInteraction, MaterialTheme.colorScheme.primary, selected = isStyleSel, cornerRadius = 10.dp),
+                            )
+                        }
+                    }
+
                     OutlinedTextField(
                         value = ttsText,
                         onValueChange = { ttsText = it },
@@ -867,7 +937,7 @@ fun AudioEditorScreen(
                                 text = ttsText.ifBlank { dialect.sampleText },
                                 dialect = dialect,
                                 gender = TtsGender.MALE,
-                                style = TtsDeliveryStyle.NATURAL_WARM,
+                                style = selectedTtsStyle,
                                 speechRate = dialect.defaultRate,
                                 pitch = dialect.defaultPitch,
                                 appendToExisting = uiState.hasAudio,
@@ -883,7 +953,7 @@ fun AudioEditorScreen(
                             .lit(ttsInsertInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("editor_tts_insert_button"),
                     ) {
-                        Text(t(lang, "tts_insert_button"))
+                        Text(t(lang, "approve_and_start_processing"))
                     }
                 }
             }

@@ -1,15 +1,11 @@
 package com.example.audio
 
 import android.content.Context
-import android.content.Intent
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
 import android.os.Build
-import android.os.ParcelFileDescriptor
-import android.provider.OpenableColumns
-import android.webkit.MimeTypeMap
 import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -18,7 +14,6 @@ import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.UUID
 import kotlin.coroutines.coroutineContext
 import kotlin.math.min
 
@@ -29,9 +24,9 @@ object AudioDecoder {
     }
 
     /**
-     * Copies any `content://` or `file://` URI reliably into `context.cacheDir` on [Dispatchers.IO]
-     * while emitting real byte-level & decode-level progress (`0.0f` .. `1.0f`), then decodes
-     * cleanly via WAV fast-path or FileDescriptor-backed [MediaExtractor].
+     * Copies any `content://` or `file://` URI reliably into `context.cacheDir` via [AudioFileUploader]
+     * on [Dispatchers.IO] while emitting real byte-level & decode-level progress (`0.0f` .. `1.0f`),
+     * then decodes cleanly via WAV fast-path or FileDescriptor-backed [MediaExtractor].
      * Works reliably for both tiny KB files and large MB files without UI freezes or SAF permission loss.
      */
     suspend fun decodeUriWithProgress(
@@ -41,42 +36,13 @@ object AudioDecoder {
     ): StereoAudioBuffer? = withContext(Dispatchers.IO) {
         onProgress(0.02f)
 
-        // Best-effort persistable permission for OpenDocument URIs
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
-        }
-
-        // Direct filesystem path optimization if scheme == "file"
-        if (uri.scheme.equals("file", ignoreCase = true)) {
-            val directFile = uri.path?.let { File(it) }
-            if (directFile != null && directFile.exists() && directFile.canRead()) {
-                onProgress(0.35f)
-                val decoded = decodeFileWithProgress(directFile) { decP ->
-                    onProgress(0.35f + decP * 0.65f)
-                }
-                if (decoded != null) onProgress(1.0f)
-                return@withContext decoded
-            }
-        }
-
-        val ext = resolveExtension(context, uri)
-        val importDir = File(context.cacheDir, "import_cache").apply { mkdirs() }
-        val tempFile = File(importDir, "import_${UUID.randomUUID()}.$ext")
+        val uploaded = AudioFileUploader.copyAudioUriToCache(context, uri) { info ->
+            onProgress((0.02f + info.fraction * 0.48f).coerceIn(0.02f, 0.50f))
+        } ?: return@withContext null
 
         try {
-            val totalBytes = queryContentSize(context, uri)
-            val copied = copyUriToTempFile(context, uri, tempFile, totalBytes) { copyFrac ->
-                onProgress((0.02f + copyFrac * 0.48f).coerceIn(0.02f, 0.50f))
-            }
-            if (!copied || !tempFile.exists() || tempFile.length() <= 0L) {
-                return@withContext null
-            }
-
             onProgress(0.52f)
-            val decoded = decodeFileWithProgress(tempFile) { decFrac ->
+            val decoded = decodeFileWithProgress(uploaded.file) { decFrac ->
                 onProgress((0.52f + decFrac * 0.46f).coerceIn(0.52f, 0.98f))
             }
             if (decoded != null) {
@@ -86,7 +52,7 @@ object AudioDecoder {
         } catch (_: Throwable) {
             null
         } finally {
-            runCatching { tempFile.delete() }
+            runCatching { uploaded.file.delete() }
         }
     }
 
@@ -147,92 +113,6 @@ object AudioDecoder {
         } finally {
             runCatching { extractor.release() }
         }
-    }
-
-    private suspend fun copyUriToTempFile(
-        context: Context,
-        uri: Uri,
-        dest: File,
-        totalBytes: Long,
-        onCopyFraction: (Float) -> Unit,
-    ): Boolean {
-        val resolver = context.contentResolver
-        var pfd: ParcelFileDescriptor? = null
-        val inputStream = resolver.openInputStream(uri) ?: run {
-            pfd = runCatching { resolver.openFileDescriptor(uri, "r") }.getOrNull()
-            pfd?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
-        } ?: return false
-
-        return try {
-            inputStream.use { input ->
-                dest.outputStream().buffered(32_768).use { out ->
-                    val buf = ByteArray(32_768)
-                    var copied = 0L
-                    var lastEmittedMs = 0L
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val read = input.read(buf)
-                        if (read <= 0) break
-                        out.write(buf, 0, read)
-                        copied += read
-
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmittedMs >= 40L || (totalBytes > 0L && copied >= totalBytes)) {
-                            lastEmittedMs = now
-                            val frac = if (totalBytes > 0L) {
-                                (copied.toDouble() / totalBytes.toDouble()).toFloat().coerceIn(0.05f, 1f)
-                            } else {
-                                // Smooth asymptotic progress when provider hides file size
-                                (1f - 1f / (1f + copied / 524_288f)).coerceIn(0.05f, 0.96f)
-                            }
-                            onCopyFraction(frac)
-                        }
-                    }
-                    out.flush()
-                    if (copied > 0L) {
-                        onCopyFraction(1f)
-                        true
-                    } else {
-                        false
-                    }
-                }
-            }
-        } finally {
-            runCatching { pfd?.close() }
-        }
-    }
-
-    private fun queryContentSize(context: Context, uri: Uri): Long {
-        val colSize = runCatching {
-            context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
-                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else -1L
-            } ?: -1L
-        }.getOrDefault(-1L)
-        if (colSize > 0L) return colSize
-
-        return runCatching {
-            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
-                afd.length
-            } ?: -1L
-        }.getOrDefault(-1L)
-    }
-
-    private fun resolveExtension(context: Context, uri: Uri): String {
-        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
-        val extFromMime = if (!mime.isNullOrBlank()) {
-            MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
-        } else {
-            null
-        }
-        val fromName = runCatching {
-            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-                if (c.moveToFirst()) c.getString(0)?.substringAfterLast('.', "") else null
-            }
-        }.getOrNull()
-        return (extFromMime?.takeIf { it.isNotBlank() }
-            ?: fromName?.takeIf { it.length in 2..5 }
-            ?: uri.lastPathSegment?.substringAfterLast('.', "")?.takeIf { it.length in 2..5 }
-            ?: "bin").lowercase()
     }
 
     private suspend fun decodeWithExtractor(

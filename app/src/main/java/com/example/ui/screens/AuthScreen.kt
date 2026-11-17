@@ -105,6 +105,38 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
+private fun resolveGoogleSignInErrorMessage(throwable: Throwable, lang: AppLanguage): String {
+    var cursor: Throwable? = throwable
+    var depth = 0
+    while (cursor != null && depth < 6) {
+        if (cursor is ApiException && (cursor.statusCode == 10 || cursor.statusCode == 12500)) {
+            return t(lang, "auth_sha1_error_10_12500")
+        }
+        val msg = cursor.message.orEmpty().lowercase()
+        if (
+            msg.contains("10") ||
+            msg.contains("12500") ||
+            msg.contains("developer_error") ||
+            msg.contains("sha") ||
+            msg.contains("fingerprint") ||
+            msg.contains("no credential")
+        ) {
+            return t(lang, "auth_sha1_error_10_12500")
+        }
+        cursor = cursor.cause
+        depth++
+    }
+    if (throwable is NoCredentialException || throwable is GetCredentialException) {
+        return t(lang, "auth_sha1_error_10_12500")
+    }
+    val detail = throwable.localizedMessage?.trim().orEmpty()
+    return if (detail.isNotBlank()) {
+        "$detail\n\n${t(lang, "auth_sha1_hint")}"
+    } else {
+        t(lang, "auth_sha1_error_10_12500")
+    }
+}
+
 @Composable
 fun AuthScreen(
     uiState: StudioUiState,
@@ -275,24 +307,19 @@ fun AuthScreen(
                     Log.w("Auth", "Google Sign-In cancelled or dismissed: ${e.message}", e)
                 } catch (e: NoCredentialException) {
                     Log.w("Auth", "No Google credentials found on device: ${e.message}", e)
-                    errorMsg = t(lang, "auth_sha1_hint")
+                    errorMsg = resolveGoogleSignInErrorMessage(e, lang)
                 } catch (e: ApiException) {
                     Log.w("Auth", "Google ApiException status=${e.statusCode}: ${e.message}", e)
-                    errorMsg = t(lang, "auth_sha1_hint")
+                    errorMsg = resolveGoogleSignInErrorMessage(e, lang)
                 } catch (e: GetCredentialException) {
                     val raw = e.errorMessage?.toString().orEmpty()
                     Log.w("Auth", "GetCredentialException (${e.type}): $raw", e)
-                    errorMsg = t(lang, "auth_sha1_hint")
+                    errorMsg = resolveGoogleSignInErrorMessage(e, lang)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e("Auth", "Google Sign-In failed", e)
-                    val msg = e.localizedMessage.orEmpty().lowercase()
-                    errorMsg = if (msg.contains("10") || msg.contains("sha") || msg.contains("developer")) {
-                        t(lang, "auth_sha1_hint")
-                    } else {
-                        e.localizedMessage ?: t(lang, "auth_sha1_hint")
-                    }
+                    errorMsg = resolveGoogleSignInErrorMessage(e, lang)
                 } finally {
                     isGoogleLoading = false
                 }

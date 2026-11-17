@@ -1,12 +1,40 @@
 package com.example.audio.web
 
+import android.content.Context
+import com.example.audio.OnlineGuard
+import com.example.model.AppLanguage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
+
+sealed interface ArticleExtractionResult {
+    data class Success(val text: String) : ArticleExtractionResult
+    data class Offline(val message: String) : ArticleExtractionResult
+    data object EmptyOrFailed : ArticleExtractionResult
+}
 
 object WebArticleExtractor {
+
+    /**
+     * Online-only web article extractor guarded by [OnlineGuard].
+     * Uses Jina AI Reader (`https://r.jina.ai/{url}`) and strips markdown/noise cleanly for TTS.
+     */
+    suspend fun extractCleanTextFromUrl(
+        context: Context,
+        pageUrl: String,
+        language: AppLanguage = AppLanguage.AR,
+    ): ArticleExtractionResult = withContext(Dispatchers.IO) {
+        if (!OnlineGuard.isOnline(context)) {
+            return@withContext ArticleExtractionResult.Offline(OnlineGuard.offlineErrorMessage(language))
+        }
+        val text = extractCleanTextFromUrl(pageUrl)
+        if (text.isBlank()) {
+            ArticleExtractionResult.EmptyOrFailed
+        } else {
+            ArticleExtractionResult.Success(text)
+        }
+    }
 
     /**
      * Fetches a web page and extracts clean readable article text suitable for
@@ -26,31 +54,30 @@ object WebArticleExtractor {
         }
 
         // 1. Primary: Jina AI clean reader (handles JS-heavy sites, news, Wikipedia, blogs)
-        val jinaDirect = fetchViaJinaReader("https://r.jina.ai/$normalizedUrl")
+        val jinaDirect = fetchViaJinaReader("https://r.jina.ai/$normalizedUrl", requestPlainText = true)
         if (jinaDirect.length >= 40) {
-            return@withContext jinaDirect.take(4000)
+            return@withContext jinaDirect.take(6000)
         }
 
-        val encodedUrl = runCatching { URLEncoder.encode(normalizedUrl, "UTF-8") }.getOrNull()
-        if (!encodedUrl.isNullOrBlank()) {
-            val jinaEncoded = fetchViaJinaReader("https://r.jina.ai/$encodedUrl")
-            if (jinaEncoded.length >= 40) {
-                return@withContext jinaEncoded.take(4000)
-            }
+        val jinaMarkdown = fetchViaJinaReader("https://r.jina.ai/$normalizedUrl", requestPlainText = false)
+        if (jinaMarkdown.length >= 40) {
+            return@withContext jinaMarkdown.take(6000)
         }
 
         // 2. Fallback: Direct HTML fetch + HTML tag/script stripping
         return@withContext fetchAndStripDirectHtml(normalizedUrl)
     }
 
-    private fun fetchViaJinaReader(jinaUrl: String): String {
+    private fun fetchViaJinaReader(jinaUrl: String, requestPlainText: Boolean): String {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(jinaUrl).openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) SonixStudio/1.0")
                 setRequestProperty("Accept", "text/plain, text/markdown;q=0.9, */*;q=0.5")
-                setRequestProperty("X-Return-Format", "text")
+                if (requestPlainText) {
+                    setRequestProperty("X-Return-Format", "text")
+                }
                 setRequestProperty("X-No-Cache", "true")
                 connectTimeout = 9000
                 readTimeout = 14000
@@ -73,6 +100,7 @@ object WebArticleExtractor {
             if (t.startsWith("URL Source:", ignoreCase = true) ||
                 t.startsWith("Published Time:", ignoreCase = true) ||
                 t.startsWith("Markdown Content:", ignoreCase = true) ||
+                t.startsWith("Warning:", ignoreCase = true) ||
                 t.startsWith("Title:", ignoreCase = true)
             ) {
                 val afterColon = t.substringAfter(':', "").trim()
@@ -81,13 +109,15 @@ object WebArticleExtractor {
                 }
                 continue
             }
-            // Strip markdown images, links, headings, and horizontal rules
+            // Strip markdown images, links, reference links, headings, tables, and horizontal rules
             val cleanedLine = t
                 .replace(Regex("!\\[[^\\]]*]\\([^)]*\\)"), " ")
                 .replace(Regex("\\[([^\\]]+)]\\([^)]*\\)"), "$1")
+                .replace(Regex("\\[([^\\]]+)]\\[[^\\]]*]"), "$1")
+                .replace(Regex("^\\|[-:\\s|]+\\|$"), "")
                 .replace(Regex("^#{1,6}\\s+"), "")
                 .replace(Regex("^[-*_]{3,}$"), "")
-                .replace(Regex("[`*_~>]"), " ")
+                .replace(Regex("[`*_~>|]"), " ")
                 .replace(Regex("\\s{2,}"), " ")
                 .trim()
             if (cleanedLine.isNotEmpty()) {

@@ -606,15 +606,20 @@ private fun SonixRootApp(
                                                 text = "${t(lang, "importing_file_progress")} $pct%",
                                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                                 color = StudioColors.Cyan,
+                                                modifier = Modifier.weight(1f),
                                             )
-                                            uiState.importLabel?.let { label ->
+                                            val detailText = listOfNotNull(
+                                                uiState.importBytesLabel?.takeIf { it.isNotBlank() },
+                                                uiState.importLabel?.takeIf { it.isNotBlank() },
+                                            ).joinToString(" • ")
+                                            if (detailText.isNotBlank()) {
                                                 Text(
-                                                    text = label,
+                                                    text = detailText,
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = StudioColors.TextSecondary,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.widthIn(max = 180.dp),
+                                                    modifier = Modifier.widthIn(max = 200.dp),
                                                 )
                                             }
                                         }
