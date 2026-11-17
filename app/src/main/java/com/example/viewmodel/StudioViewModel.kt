@@ -4,7 +4,11 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.core.content.FileProvider
+import androidx.credentials.ClearCredentialStateRequest
+import androidx.credentials.CredentialManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audio.AndroidTtsEngine
@@ -53,8 +57,11 @@ import com.example.model.StudioProject
 import com.example.model.TtsDialect
 import com.example.model.TtsStudioUiState
 import com.example.model.VoicePurifyPreset
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -115,6 +122,8 @@ data class StudioUiState(
     val isBusy: Boolean = false,
     val exportProgress: Float? = null,
     val purifyProgress: Float? = null,
+    val homeScrollIndex: Int = 0,
+    val homeScrollOffset: Int = 0,
 ) {
     val allPresets: List<StudioPreset> get() = customPresets + BUILT_IN_PRESETS
 }
@@ -129,6 +138,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _sideEffects = MutableSharedFlow<StudioSideEffect>(extraBufferCapacity = 8)
     val sideEffects = _sideEffects.asSharedFlow()
+
+    val homeListState: LazyListState = LazyListState()
+
+    fun updateHomeScrollPosition(index: Int, offset: Int) {
+        val cur = _uiState.value
+        if (cur.homeScrollIndex != index || cur.homeScrollOffset != offset) {
+            _uiState.update { it.copy(homeScrollIndex = index, homeScrollOffset = offset) }
+        }
+    }
 
     private var activeBuffer: StereoAudioBuffer? = null
     private var mixBgBuffer: StereoAudioBuffer? = null
@@ -232,9 +250,34 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    suspend fun completeGoogleSignIn(uid: String, displayName: String, email: String) {
+        val cleanName = displayName.trim().ifEmpty {
+            email.substringBefore('@').ifEmpty { "Google User" }
+        }
+        repository.saveAuthSession(
+            AuthSession.SignedIn(
+                uid = uid,
+                displayName = cleanName,
+                email = email.trim(),
+            ),
+        )
+    }
+
     fun signOut() {
         viewModelScope.launch {
-            repository.saveAuthSession(AuthSession.SignedOut)
+            withContext(NonCancellable) {
+                runCatching {
+                    CredentialManager.create(getApplication()).clearCredentialState(ClearCredentialStateRequest())
+                }.onFailure { err ->
+                    Log.w("Auth", "Failed to clear credential state: ${err.message}")
+                }
+                runCatching {
+                    Firebase.auth.signOut()
+                }.onFailure { err ->
+                    Log.w("Auth", "Firebase signOut warning: ${err.message}")
+                }
+                repository.saveAuthSession(AuthSession.SignedOut)
+            }
         }
     }
 

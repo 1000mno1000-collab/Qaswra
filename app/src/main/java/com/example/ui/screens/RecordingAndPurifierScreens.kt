@@ -4,19 +4,26 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -54,6 +61,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -66,7 +80,6 @@ import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.EffectType
 import com.example.model.VOICE_PURIFY_PRESETS
-import com.example.ui.components.RealTimeWaveformCanvas
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioScrollColumn
@@ -74,7 +87,10 @@ import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import kotlin.math.PI
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 @Composable
 fun RecordingStudioScreen(
@@ -200,13 +216,25 @@ fun RecordingStudioScreen(
                     color = if (uiState.recorder.isRecording) StudioColors.RoseBright else StudioColors.TextPrimary,
                 )
 
-                RealTimeWaveformCanvas(
-                    bars = if (uiState.recorder.isRecording) uiState.recorder.waveformBars else uiState.playback.waveformBars,
-                    isActive = uiState.recorder.isRecording || uiState.playback.isPlaying,
-                    accentColor = if (uiState.recorder.isRecording) StudioColors.Rose else StudioColors.Cyan,
+                val liveAmplitude = when {
+                    uiState.recorder.isRecording && !uiState.recorder.isPaused -> uiState.recorder.micLevel
+                    uiState.playback.isPlaying -> uiState.playback.outputLevel
+                    else -> 0f
+                }
+                val liveBars = if (uiState.recorder.isRecording) {
+                    uiState.recorder.waveformBars
+                } else {
+                    uiState.playback.waveformBars
+                }
+
+                LiquidAudioWavePreview(
+                    amplitude = liveAmplitude,
+                    waveformBars = liveBars,
+                    isActive = (uiState.recorder.isRecording && !uiState.recorder.isPaused) || uiState.playback.isPlaying,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(84.dp),
+                        .height(132.dp)
+                        .testTag("recording_liquid_wave_preview"),
                 )
 
                 // Mic Input Meter
@@ -762,3 +790,255 @@ fun VoicePurifierScreen(
         }
     }
 }
+
+@Composable
+private fun LiquidAudioWavePreview(
+    amplitude: Float,
+    waveformBars: List<Float>,
+    isActive: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    // Perceptual boost so normal speech creates rich fluid motion while peaks hit smoothly at 1.0f
+    val boostedTarget = if (isActive) {
+        amplitude.coerceIn(0f, 1f).pow(0.65f).coerceIn(0.08f, 1f)
+    } else {
+        0f
+    }
+
+    val smoothAmp by animateFloatAsState(
+        targetValue = boostedTarget,
+        animationSpec = spring(
+            dampingRatio = 0.65f,
+            stiffness = 260f,
+        ),
+        label = "liquidAmplitude",
+    )
+
+    val transition = rememberInfiniteTransition(label = "liquidPhase")
+    val phasePrimary by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2.0 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "phasePrimary",
+    )
+    val phaseSecondary by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2.0 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 5100, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "phaseSecondary",
+    )
+    val breathPulse by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "breathPulse",
+    )
+
+    val boxBg = Color(0xFF0B1120)
+    val crestTeal = Color(0xFF2DD4BF)
+    val crestSky = Color(0xFF38BDF8)
+    val indigoDeep = Color(0xFF6366F1)
+    val indigoSoft = Color(0xFF818CF8)
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(boxBg)
+            .border(
+                width = 1.dp,
+                color = if (isActive) {
+                    crestSky.copy(alpha = 0.35f + 0.35f * smoothAmp)
+                } else {
+                    StudioColors.BorderBright.copy(alpha = 0.45f)
+                },
+                shape = RoundedCornerShape(20.dp),
+            ),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            if (w <= 0f || h <= 0f) return@Canvas
+
+            val barCount = waveformBars.size
+            val sampleStepPx = (w / 72f).coerceAtLeast(3f)
+
+            // Subtle ambient underwater glow reacting to voice level
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        crestSky.copy(alpha = 0.14f + 0.24f * smoothAmp),
+                        indigoDeep.copy(alpha = 0.08f + 0.14f * smoothAmp),
+                        Color.Transparent,
+                    ),
+                    center = Offset(w * 0.5f, h * (0.68f - 0.18f * smoothAmp)),
+                    radius = w * 0.62f,
+                ),
+                center = Offset(w * 0.5f, h * (0.68f - 0.18f * smoothAmp)),
+                radius = w * 0.62f,
+            )
+
+            fun sampleBarEnvelope(normX: Float): Float {
+                if (!isActive || barCount == 0) return 0f
+                val scaled = normX.coerceIn(0f, 1f) * (barCount - 1)
+                val i0 = scaled.toInt().coerceIn(0, barCount - 1)
+                val i1 = (i0 + 1).coerceIn(0, barCount - 1)
+                val frac = scaled - i0
+                val raw = waveformBars[i0] * (1f - frac) + waveformBars[i1] * frac
+                return (raw - 0.05f).coerceIn(0f, 1f)
+            }
+
+            fun drawLiquidLayer(
+                baseFraction: Float,
+                riseFraction: Float,
+                cyclesA: Float,
+                cyclesB: Float,
+                speedOffsetA: Float,
+                speedOffsetB: Float,
+                waveAmpRatio: Float,
+                barWeight: Float,
+                fillBrush: Brush,
+                rimColor: Color,
+                glowColor: Color?,
+                rimWidthPx: Float,
+            ) {
+                val fillPath = Path()
+                val crestPath = Path()
+
+                val baseY = h * (baseFraction - riseFraction * smoothAmp - 0.022f * breathPulse)
+                val ampPx = h * (0.042f + waveAmpRatio * smoothAmp + 0.012f * breathPulse)
+
+                var x = 0f
+                var first = true
+                while (x <= w + sampleStepPx) {
+                    val clampedX = x.coerceAtMost(w)
+                    val nx = clampedX / w
+                    val angleA = nx * cyclesA * (2.0 * PI).toFloat() + speedOffsetA
+                    val angleB = nx * cyclesB * (2.0 * PI).toFloat() + speedOffsetB
+                    val env = sampleBarEnvelope(nx) * barWeight
+                    val ripple = sin(angleA) * 0.65f + sin(angleB) * 0.35f
+                    val y = (baseY - ripple * ampPx * (1f + env * 1.15f) - env * h * 0.10f)
+                        .coerceIn(h * 0.10f, h * 0.94f)
+
+                    if (first) {
+                        fillPath.moveTo(clampedX, y)
+                        crestPath.moveTo(clampedX, y)
+                        first = false
+                    } else {
+                        fillPath.lineTo(clampedX, y)
+                        crestPath.lineTo(clampedX, y)
+                    }
+                    if (clampedX >= w) break
+                    x += sampleStepPx
+                }
+
+                fillPath.lineTo(w, h)
+                fillPath.lineTo(0f, h)
+                fillPath.close()
+
+                drawPath(path = fillPath, brush = fillBrush)
+
+                if (glowColor != null) {
+                    drawPath(
+                        path = crestPath,
+                        color = glowColor,
+                        style = Stroke(
+                            width = rimWidthPx * 3.0f,
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                        ),
+                    )
+                }
+
+                drawPath(
+                    path = crestPath,
+                    color = rimColor,
+                    style = Stroke(
+                        width = rimWidthPx,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    ),
+                )
+            }
+
+            // Layer 1 (Back): Deep translucent indigo-sky swell
+            drawLiquidLayer(
+                baseFraction = 0.62f,
+                riseFraction = 0.22f,
+                cyclesA = 1.45f,
+                cyclesB = 2.6f,
+                speedOffsetA = -phaseSecondary,
+                speedOffsetB = phasePrimary * 0.75f,
+                waveAmpRatio = 0.13f,
+                barWeight = 0.35f,
+                fillBrush = Brush.verticalGradient(
+                    colors = listOf(
+                        crestSky.copy(alpha = 0.36f + 0.18f * smoothAmp),
+                        indigoSoft.copy(alpha = 0.35f),
+                    ),
+                    startY = h * 0.25f,
+                    endY = h,
+                ),
+                rimColor = indigoSoft.copy(alpha = 0.45f + 0.25f * smoothAmp),
+                glowColor = null,
+                rimWidthPx = 1.4.dp.toPx(),
+            )
+
+            // Layer 2 (Middle): Electric cyan-to-indigo flowing wave
+            drawLiquidLayer(
+                baseFraction = 0.69f,
+                riseFraction = 0.20f,
+                cyclesA = 2.1f,
+                cyclesB = 3.4f,
+                speedOffsetA = phaseSecondary * 1.25f,
+                speedOffsetB = -phasePrimary * 1.15f,
+                waveAmpRatio = 0.15f,
+                barWeight = 0.6f,
+                fillBrush = Brush.verticalGradient(
+                    colors = listOf(
+                        crestSky.copy(alpha = 0.62f),
+                        indigoDeep.copy(alpha = 0.56f),
+                    ),
+                    startY = h * 0.30f,
+                    endY = h,
+                ),
+                rimColor = crestSky.copy(alpha = 0.72f + 0.22f * smoothAmp),
+                glowColor = crestSky.copy(alpha = 0.18f + 0.18f * smoothAmp),
+                rimWidthPx = 1.8.dp.toPx(),
+            )
+
+            // Layer 3 (Front): Luminous teal-cyan crest blending into electric indigo
+            drawLiquidLayer(
+                baseFraction = 0.76f,
+                riseFraction = 0.18f,
+                cyclesA = 1.8f,
+                cyclesB = 3.1f,
+                speedOffsetA = phasePrimary * 1.5f,
+                speedOffsetB = -phaseSecondary * 1.4f,
+                waveAmpRatio = 0.17f,
+                barWeight = 0.9f,
+                fillBrush = Brush.verticalGradient(
+                    colors = listOf(
+                        crestTeal.copy(alpha = 0.75f),
+                        crestSky.copy(alpha = 0.62f),
+                        indigoDeep.copy(alpha = 0.72f),
+                    ),
+                    startY = h * 0.36f,
+                    endY = h,
+                ),
+                rimColor = crestTeal.copy(alpha = 0.92f),
+                glowColor = crestTeal.copy(alpha = 0.28f + 0.22f * smoothAmp),
+                rimWidthPx = 2.2.dp.toPx(),
+            )
+        }
+    }
+}
+

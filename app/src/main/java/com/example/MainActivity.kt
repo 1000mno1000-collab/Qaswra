@@ -243,7 +243,12 @@ private fun VoiceProRootApp(
                                 HomeScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onNavigate = { route -> navController.navigate(route) },
+                                    onNavigate = { route ->
+                                        navController.navigate(route) {
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    },
                                 )
                             }
                             composable<StudioRoute.Record> {
