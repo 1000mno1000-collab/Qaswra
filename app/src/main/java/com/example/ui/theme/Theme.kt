@@ -7,7 +7,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 
-private val VoiceProColorScheme = darkColorScheme(
+private val SonixColorScheme = darkColorScheme(
     primary = StudioColors.Cyan,
     onPrimary = StudioColors.BgTop,
     primaryContainer = StudioColors.ElevatedSurface,
@@ -38,9 +38,9 @@ private val StudioShapes = Shapes(
 )
 
 @Composable
-fun VoiceProTheme(content: @Composable () -> Unit) {
+fun SonixTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = VoiceProColorScheme,
+        colorScheme = SonixColorScheme,
         typography = StudioTypography,
         shapes = StudioShapes,
         content = content,

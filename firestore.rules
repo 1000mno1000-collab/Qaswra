@@ -1,0 +1,117 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && !id.matches('.*[/\\\\.].*');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidDspMap(cfg) {
+      return cfg is map &&
+        cfg.keys().hasAll(['bypassAll', 'masterGainDb', 'chain']) &&
+        cfg.bypassAll is bool &&
+        cfg.masterGainDb is number &&
+        cfg.masterGainDb >= -24 &&
+        cfg.masterGainDb <= 24 &&
+        cfg.chain is list &&
+        cfg.chain.size() <= 24;
+    }
+
+    function isValidCustomPreset(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'localId', 'name', 'description', 'dspConfig', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'localId', 'name', 'description', 'dspConfig', 'createdAt', 'updatedAt'
+        ]) &&
+        data.userId == userId &&
+        data.localId is int &&
+        isValidString(data.name, 1, 80) &&
+        isValidString(data.description, 0, 240) &&
+        isValidDspMap(data.dspConfig) &&
+        data.createdAt is timestamp &&
+        data.createdAt <= request.time &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
+    function isValidDraft(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'name', 'selectedPresetName', 'durationMs', 'sampleRate', 'dspConfig', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'name', 'selectedPresetName', 'durationMs', 'sampleRate', 'dspConfig', 'createdAt', 'updatedAt'
+        ]) &&
+        data.userId == userId &&
+        isValidString(data.name, 1, 100) &&
+        isValidString(data.selectedPresetName, 0, 100) &&
+        data.durationMs is int &&
+        data.durationMs >= 0 &&
+        data.sampleRate is int &&
+        data.sampleRate > 0 &&
+        data.sampleRate <= 192000 &&
+        isValidDspMap(data.dspConfig) &&
+        data.createdAt is timestamp &&
+        data.createdAt <= request.time &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
+    match /users/{userId}/custom_presets/{presetId} {
+      allow get: if isOwner(userId) && isValidId(presetId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        isValidId(presetId) &&
+        isValidCustomPreset(incoming(), userId);
+      allow update: if isOwner(userId) &&
+        isValidId(presetId) &&
+        isValidCustomPreset(incoming(), userId) &&
+        incoming().createdAt == existing().createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'localId', 'name', 'description', 'dspConfig', 'updatedAt'
+        ]);
+      allow delete: if isOwner(userId) && isValidId(presetId);
+    }
+
+    match /users/{userId}/drafts/{draftId} {
+      allow get: if isOwner(userId) && isValidId(draftId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        isValidId(draftId) &&
+        isValidDraft(incoming(), userId);
+      allow update: if isOwner(userId) &&
+        isValidId(draftId) &&
+        isValidDraft(incoming(), userId) &&
+        incoming().createdAt == existing().createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'name', 'selectedPresetName', 'durationMs', 'sampleRate', 'dspConfig', 'updatedAt'
+        ]);
+      allow delete: if isOwner(userId) && isValidId(draftId);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

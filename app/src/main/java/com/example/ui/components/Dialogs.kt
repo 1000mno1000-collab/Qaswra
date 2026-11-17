@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,9 +15,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.MovieCreation
+import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -38,6 +45,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,7 +55,9 @@ import androidx.compose.ui.window.Dialog
 import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.ExportAudioFormat
+import com.example.model.SleepTimerOption
 import com.example.ui.theme.StudioColors
+import com.example.ui.theme.TelemetryTextStyle
 
 @Composable
 fun LanguageBadgeButton(
@@ -185,6 +196,14 @@ fun LanguageSelectorDialog(
     }
 }
 
+private data class QuickShareAppTarget(
+    val id: String,
+    val labelKey: String,
+    val packageName: String?,
+    val icon: ImageVector,
+    val accent: Color,
+)
+
 @Composable
 fun ExportFormatDialog(
     open: Boolean,
@@ -193,16 +212,37 @@ fun ExportFormatDialog(
     onDismiss: () -> Unit,
     onSaveToDevice: (ExportAudioFormat, String) -> Unit,
     onShareAudio: (ExportAudioFormat, String) -> Unit,
+    onShareToPackage: ((ExportAudioFormat, String, String?) -> Unit)? = null,
 ) {
     if (!open) return
 
-    var selectedFormat by remember { mutableStateOf(ExportAudioFormat.M4A) }
+    var selectedFormat by remember { mutableStateOf(ExportAudioFormat.MP3) }
     var fileName by remember(initialFileName, open) { mutableStateOf(initialFileName) }
 
     LaunchedEffect(initialFileName, open) {
         if (open) {
             fileName = initialFileName
         }
+    }
+
+    val orderedFormats = remember {
+        listOf(
+            ExportAudioFormat.MP3,
+            ExportAudioFormat.WAV,
+            ExportAudioFormat.M4A,
+            ExportAudioFormat.FLAC,
+            ExportAudioFormat.OGG,
+        )
+    }
+
+    val shareTargets = remember {
+        listOf(
+            QuickShareAppTarget("whatsapp", "share_whatsapp", "com.whatsapp", Icons.Rounded.Send, StudioColors.Emerald),
+            QuickShareAppTarget("telegram", "share_telegram", "org.telegram.messenger", Icons.Rounded.Send, StudioColors.Cyan),
+            QuickShareAppTarget("instagram", "share_instagram", "com.instagram.android", Icons.Rounded.PhotoCamera, StudioColors.RoseBright),
+            QuickShareAppTarget("capcut", "share_capcut", "com.lemon.lvoverseas", Icons.Rounded.MovieCreation, StudioColors.Amber),
+            QuickShareAppTarget("more", "share_more_apps", null, Icons.Rounded.Share, StudioColors.Violet),
+        )
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -219,18 +259,31 @@ fun ExportFormatDialog(
                     .padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text(
-                    text = t(language, "choose_export_format_title"),
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = StudioColors.TextPrimary,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = t(language, "save_export_final"),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = StudioColors.TextPrimary,
+                    )
+                    Text(
+                        text = t(language, "quick_share_card_subtitle"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.TextSecondary,
+                    )
+                }
 
                 OutlinedTextField(
                     value = fileName,
                     onValueChange = { fileName = it },
                     singleLine = true,
                     label = {
-                        Text(if (language == AppLanguage.EN) "File Name" else "اسم الملف")
+                        Text(
+                            when (language) {
+                                AppLanguage.EN -> "File Name"
+                                AppLanguage.FA -> "نام فایل"
+                                AppLanguage.AR -> "اسم الملف"
+                            },
+                        )
                     },
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = StudioColors.Cyan,
@@ -246,8 +299,20 @@ fun ExportFormatDialog(
                         .testTag("export_filename_input"),
                 )
 
-                ExportAudioFormat.entries.forEach { fmt ->
+                orderedFormats.forEach { fmt ->
                     val selected = fmt == selectedFormat
+                    val badgeText = when (fmt) {
+                        ExportAudioFormat.MP3 -> t(language, "format_mp3_badge")
+                        ExportAudioFormat.WAV -> t(language, "format_wav_badge")
+                        ExportAudioFormat.M4A -> t(language, "format_m4a_badge")
+                        else -> null
+                    }
+                    val badgeColor = when (fmt) {
+                        ExportAudioFormat.MP3 -> StudioColors.Emerald
+                        ExportAudioFormat.WAV -> StudioColors.Violet
+                        ExportAudioFormat.M4A -> StudioColors.Cyan
+                        else -> StudioColors.TextSecondary
+                    }
                     Card(
                         onClick = { selectedFormat = fmt },
                         shape = RoundedCornerShape(14.dp),
@@ -272,13 +337,32 @@ fun ExportFormatDialog(
                         ) {
                             Column(
                                 modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
                             ) {
-                                Text(
-                                    text = "${fmt.displayName} (.${fmt.extension})",
-                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = if (selected) StudioColors.Cyan else StudioColors.TextPrimary,
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        text = "${fmt.displayName} (.${fmt.extension})",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = if (selected) StudioColors.Cyan else StudioColors.TextPrimary,
+                                    )
+                                    if (badgeText != null) {
+                                        Surface(
+                                            shape = RoundedCornerShape(999.dp),
+                                            color = badgeColor.copy(alpha = 0.16f),
+                                            border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.4f)),
+                                        ) {
+                                            Text(
+                                                text = badgeText,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = badgeColor,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                            )
+                                        }
+                                    }
+                                }
                                 Text(
                                     text = fmt.subtitle,
                                     style = MaterialTheme.typography.bodySmall,
@@ -294,6 +378,60 @@ fun ExportFormatDialog(
                                     tint = StudioColors.Cyan,
                                     modifier = Modifier.size(20.dp),
                                 )
+                            }
+                        }
+                    }
+                }
+
+                // 1-Tap Quick Share Directly To Creator Apps
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = t(language, "share_direct_apps"),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = StudioColors.TextPrimary,
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        shareTargets.forEach { target ->
+                            val cleanOutName = fileName.ifBlank { initialFileName }
+                            Surface(
+                                onClick = {
+                                    onDismiss()
+                                    if (onShareToPackage != null) {
+                                        onShareToPackage(selectedFormat, cleanOutName, target.packageName)
+                                    } else {
+                                        onShareAudio(selectedFormat, cleanOutName)
+                                    }
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                color = target.accent.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, target.accent.copy(alpha = 0.45f)),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("quick_share_${target.id}"),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = target.icon,
+                                        contentDescription = t(language, target.labelKey),
+                                        tint = target.accent,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Text(
+                                        text = t(language, target.labelKey),
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                        color = StudioColors.TextPrimary,
+                                        maxLines = 1,
+                                    )
+                                }
                             }
                         }
                     }
@@ -350,6 +488,332 @@ fun ExportFormatDialog(
                         ) {
                             Text(t(language, "cancel"), color = StudioColors.TextSecondary)
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SleepTimerDialog(
+    open: Boolean,
+    language: AppLanguage,
+    selectedOption: SleepTimerOption,
+    remainingSec: Int,
+    onSelect: (SleepTimerOption) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (!open) return
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = StudioColors.CardSurface,
+            border = BorderStroke(1.dp, StudioColors.BorderBright),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Bedtime,
+                        contentDescription = t(language, "sleep_timer_title"),
+                        tint = StudioColors.Violet,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Text(
+                        text = t(language, "sleep_timer_title"),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = StudioColors.TextPrimary,
+                    )
+                }
+
+                Text(
+                    text = t(language, "sleep_timer_subtitle"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = StudioColors.TextSecondary,
+                )
+
+                if (remainingSec > 0) {
+                    val mm = remainingSec / 60
+                    val ss = remainingSec % 60
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = StudioColors.Violet.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.5f)),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = String.format("%02d:%02d", mm, ss),
+                            style = TelemetryTextStyle,
+                            color = StudioColors.Violet,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+
+                SleepTimerOption.entries.forEach { option ->
+                    val selected = option == selectedOption && (option != SleepTimerOption.OFF || remainingSec == 0)
+                    Card(
+                        onClick = {
+                            onSelect(option)
+                            onDismiss()
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (selected) StudioColors.ElevatedSurface else StudioColors.BgMid,
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            if (selected) StudioColors.Violet else StudioColors.Border,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 50.dp)
+                            .testTag("sleep_timer_option_${option.name.lowercase()}"),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = t(language, option.labelKey),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = if (selected) StudioColors.Violet else StudioColors.TextPrimary,
+                            )
+                            if (selected) {
+                                Icon(
+                                    imageVector = Icons.Rounded.CheckCircle,
+                                    contentDescription = t(language, option.labelKey),
+                                    tint = StudioColors.Violet,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                    ) {
+                        Text(t(language, "cancel"), color = StudioColors.TextSecondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ToolInfoDialog(
+    open: Boolean,
+    title: String,
+    description: String,
+    language: AppLanguage,
+    onDismiss: () -> Unit,
+) {
+    if (!open) return
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = StudioColors.CardSurface,
+            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Info,
+                        contentDescription = title,
+                        tint = StudioColors.Cyan,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = StudioColors.TextPrimary,
+                    )
+                }
+
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = StudioColors.TextSecondary,
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.Cyan,
+                            contentColor = StudioColors.BgTop,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("tool_info_close_button"),
+                    ) {
+                        Text(t(language, "tool_info_close"), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SaveDraftDialog(
+    open: Boolean,
+    language: AppLanguage,
+    initialName: String,
+    activePresetLabel: String,
+    isCloudSignedIn: Boolean,
+    onDismiss: () -> Unit,
+    onSaveDraft: (String) -> Unit,
+) {
+    if (!open) return
+
+    var draftName by remember(initialName, open) { mutableStateOf(initialName) }
+    LaunchedEffect(initialName, open) {
+        if (open) {
+            draftName = initialName
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = StudioColors.CardSurface,
+            border = BorderStroke(1.dp, StudioColors.BorderBright),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CloudUpload,
+                        contentDescription = null,
+                        tint = StudioColors.Cyan,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Text(
+                        text = t(language, "save_to_drafts"),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = StudioColors.TextPrimary,
+                    )
+                }
+
+                if (activePresetLabel.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = StudioColors.ElevatedSurface,
+                        border = BorderStroke(1.dp, StudioColors.Border),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = "${t(language, "preset_label")}: $activePresetLabel",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = StudioColors.Cyan,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+
+                if (!isCloudSignedIn) {
+                    Text(
+                        text = t(language, "cloud_drafts_signin_hint"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.Amber,
+                    )
+                }
+
+                OutlinedTextField(
+                    value = draftName,
+                    onValueChange = { draftName = it },
+                    singleLine = true,
+                    label = { Text(t(language, "draft_name_hint")) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = StudioColors.Cyan,
+                        unfocusedBorderColor = StudioColors.Border,
+                        focusedTextColor = StudioColors.TextPrimary,
+                        unfocusedTextColor = StudioColors.TextPrimary,
+                        focusedLabelColor = StudioColors.Cyan,
+                        unfocusedLabelColor = StudioColors.TextSecondary,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("save_draft_name_input"),
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("save_draft_cancel_button"),
+                    ) {
+                        Text(t(language, "cancel"), color = StudioColors.TextSecondary)
+                    }
+
+                    Spacer(Modifier.weight(1f))
+
+                    Button(
+                        onClick = {
+                            onDismiss()
+                            onSaveDraft(draftName.trim().ifBlank { initialName })
+                        },
+                        enabled = draftName.isNotBlank() && isCloudSignedIn,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.Cyan,
+                            contentColor = StudioColors.BgTop,
+                        ),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("save_draft_confirm_button"),
+                    ) {
+                        Text(t(language, "confirm"), style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }

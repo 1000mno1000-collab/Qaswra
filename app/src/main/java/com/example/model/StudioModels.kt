@@ -42,19 +42,19 @@ enum class EffectType(val titleKey: String, val category: EffectCategory, val is
 
 @Serializable
 data class EchoReverbParams(
-    val echoStrength: Float = 0.4f,
-    val echoDepth: Float = 0.45f,
-    val delayTimeMs: Float = 280f,
-    val feedback: Float = 0.35f,
-    val reverbSize: Float = 0.52f,
-    val reverbDecay: Float = 0.48f,
-    val preDelayMs: Float = 22f,
-    val wetDryMix: Float = 0.38f,
-    val stereoWidth: Float = 0.65f,
-    val earlyReflections: Float = 0.42f,
-    val lateReflections: Float = 0.55f,
-    val damping: Float = 0.38f,
-    val diffusion: Float = 0.72f,
+    val echoStrength: Float = 0f,
+    val echoDepth: Float = 0f,
+    val delayTimeMs: Float = 240f,
+    val feedback: Float = 0f,
+    val reverbSize: Float = 0f,
+    val reverbDecay: Float = 0f,
+    val preDelayMs: Float = 0f,
+    val wetDryMix: Float = 0f,
+    val stereoWidth: Float = 0f,
+    val earlyReflections: Float = 0f,
+    val lateReflections: Float = 0f,
+    val damping: Float = 0f,
+    val diffusion: Float = 0f,
 )
 
 @Serializable
@@ -93,23 +93,23 @@ data class TimeStretchParams(
 data class ChorusParams(
     val rateHz: Float = 1.2f,
     val depthMs: Float = 6.5f,
-    val mix: Float = 0.35f,
+    val mix: Float = 0f,
 )
 
 @Serializable
 data class FlangerParams(
     val rateHz: Float = 0.45f,
     val depthMs: Float = 3f,
-    val feedback: Float = 0.4f,
-    val mix: Float = 0.35f,
+    val feedback: Float = 0f,
+    val mix: Float = 0f,
 )
 
 @Serializable
 data class PhaserParams(
     val rateHz: Float = 0.6f,
-    val depth: Float = 0.7f,
-    val feedback: Float = 0.35f,
-    val mix: Float = 0.4f,
+    val depth: Float = 0f,
+    val feedback: Float = 0f,
+    val mix: Float = 0f,
 )
 
 @Serializable
@@ -121,36 +121,36 @@ enum class DistortionMode {
 
 @Serializable
 data class DistortionParams(
-    val drive: Float = 2.5f,
+    val drive: Float = 1f,
     val toneHz: Float = 4200f,
-    val mix: Float = 0.4f,
+    val mix: Float = 0f,
     val mode: DistortionMode = DistortionMode.OVERDRIVE,
 )
 
 @Serializable
 data class CompressorParams(
-    val thresholdDb: Float = -18f,
-    val ratio: Float = 3.5f,
+    val thresholdDb: Float = 0f,
+    val ratio: Float = 1f,
     val attackMs: Float = 12f,
     val releaseMs: Float = 140f,
-    val makeupGainDb: Float = 2.5f,
+    val makeupGainDb: Float = 0f,
 )
 
 @Serializable
 data class LimiterParams(
-    val ceilingDb: Float = -0.8f,
+    val ceilingDb: Float = 0f,
     val releaseMs: Float = 80f,
 )
 
 @Serializable
 data class NoiseReductionParams(
-    val thresholdDb: Float = -45f,
-    val reductionDb: Float = 18f,
-    val highPassHz: Float = 85f,
-    val spectralStrength: Float = 0.68f,
-    val deEssAmount: Float = 0.35f,
-    val clarityBoostDb: Float = 2.5f,
-    val spectralCleanerEnabled: Boolean = true,
+    val thresholdDb: Float = -70f,
+    val reductionDb: Float = 0f,
+    val highPassHz: Float = 20f,
+    val spectralStrength: Float = 0f,
+    val deEssAmount: Float = 0f,
+    val clarityBoostDb: Float = 0f,
+    val spectralCleanerEnabled: Boolean = false,
 )
 
 @Serializable
@@ -160,7 +160,7 @@ data class EffectSlot(
 )
 
 val DEFAULT_CHAIN: List<EffectSlot> = listOf(
-    EffectSlot(EffectType.NOISE_REDUCTION, true),
+    EffectSlot(EffectType.NOISE_REDUCTION, false),
     EffectSlot(EffectType.EQUALIZER, false),
     EffectSlot(EffectType.BASS_BOOST, false),
     EffectSlot(EffectType.TREBLE, false),
@@ -172,13 +172,16 @@ val DEFAULT_CHAIN: List<EffectSlot> = listOf(
     EffectSlot(EffectType.DISTORTION, false),
     EffectSlot(EffectType.COMPRESSOR, false),
     EffectSlot(EffectType.ECHO_REVERB, false),
-    EffectSlot(EffectType.LIMITER, true),
+    EffectSlot(EffectType.LIMITER, false),
 )
 
 @Serializable
 data class DspConfig(
     val bypassAll: Boolean = false,
     val masterGainDb: Float = 0f,
+    val spatialPanHz: Float = 0f,
+    val vibratoHz: Float = 0f,
+    val vibratoDepth: Float = 0f,
     val chain: List<EffectSlot> = DEFAULT_CHAIN,
     val echoReverb: EchoReverbParams = EchoReverbParams(),
     val equalizer: EqualizerParams = EqualizerParams(),
@@ -206,7 +209,25 @@ data class DspConfig(
 
     fun withSlotEnabled(type: EffectType, enabled: Boolean): DspConfig =
         copy(chain = chain.map { if (it.type == type) it.copy(enabled = enabled) else it })
+
+    fun hasAnyActiveProcessing(): Boolean =
+        !bypassAll && (
+            chain.any { it.enabled } ||
+                kotlin.math.abs(masterGainDb) > 0.05f ||
+                spatialPanHz > 0.01f ||
+                (vibratoHz > 0.1f && vibratoDepth > 0.01f)
+            )
 }
+
+@Serializable
+data class StoredCustomPreset(
+    val id: Long,
+    val name: String,
+    val description: String,
+    val config: DspConfig,
+    val createdAt: Long = System.currentTimeMillis(),
+    val cloudDocId: String? = null,
+)
 
 data class StudioPreset(
     val id: Long,
@@ -214,6 +235,33 @@ data class StudioPreset(
     val description: String,
     val isBuiltIn: Boolean,
     val config: DspConfig,
+    val cloudDocId: String? = null,
+)
+
+data class CloudDraft(
+    val docId: String,
+    val name: String,
+    val selectedPresetName: String,
+    val durationMs: Long,
+    val sampleRate: Int,
+    val config: DspConfig,
+    val updatedAtMs: Long,
+)
+
+enum class GlobalProPresetId {
+    BROADCAST_RADIO,
+    AUTOTUNE_SYNTH,
+    EPIC_CINEMATIC,
+    SURROUND_8D_CINEMA,
+    CRYSTAL_VOCAL,
+}
+
+data class GlobalProPreset(
+    val id: GlobalProPresetId,
+    val titleKey: String,
+    val descKey: String,
+    val ffmpegFilter: String,
+    val dspConfig: DspConfig,
 )
 
 class StereoAudioBuffer(
@@ -224,6 +272,18 @@ class StereoAudioBuffer(
     val frameCount: Int get() = minOf(left.size, right.size)
     val durationMs: Long get() = if (sampleRate > 0) (frameCount * 1000L) / sampleRate else 0L
 }
+
+data class DeviceAudioItem(
+    val id: Long,
+    val uriString: String,
+    val displayName: String,
+    val durationMs: Long,
+    val sizeBytes: Long,
+    val extension: String,
+    val mimeType: String,
+    val folderName: String,
+    val dateAddedSec: Long,
+)
 
 enum class EchoPadAxisMode {
     SPACE,
@@ -376,27 +436,157 @@ val VOICE_CHARACTER_PRESETS: List<VoiceCharacterPreset> = listOf(
     VoiceCharacterPreset("child", "voice_char_child", "voice_char_child_desc", 6.2f, 1.27f, -1.0f, 2.8f),
 )
 
+enum class TtsGender {
+    MALE,
+    FEMALE,
+}
+
+enum class TtsDeliveryStyle(
+    val titleKey: String,
+    val rateFactor: Float,
+    val pitchOffsetHz: Int,
+    val warmthDb: Float,
+) {
+    NATURAL_WARM("tts_style_natural", 1.0f, 0, 2.5f),
+    RADIO_ANCHOR("tts_style_radio", 0.96f, -6, 4.0f),
+    STORYTELLING("tts_style_story", 0.92f, -2, 3.0f),
+    ENERGETIC("tts_style_energetic", 1.08f, 6, 1.5f),
+}
+
 data class TtsDialect(
     val id: String,
     val titleKey: String,
     val localeTag: String,
     val fallbackLocaleTag: String,
+    val maleVoiceName: String,
+    val femaleVoiceName: String,
     val sampleText: String,
     val defaultPitch: Float,
     val defaultRate: Float,
 )
 
 val TTS_DIALECTS: List<TtsDialect> = listOf(
-    TtsDialect("iraqi", "tts_dialect_iraqi", "ar-IQ", "ar-SA", "هلا بيكم باستوديو فويس برو، شلونكم اليوم؟ خلينا نسجّل صوت نقي ومرتّب.", 0.98f, 0.95f),
-    TtsDialect("saudi", "tts_dialect_saudi", "ar-SA", "ar", "حياكم الله في استوديو فويس برو، تجربة صوتية احترافية بجودة عالية جداً.", 1.0f, 0.96f),
-    TtsDialect("jordanian", "tts_dialect_jordanian", "ar-JO", "ar-SA", "أهلاً وسهلاً فيكم، يسعد أوقاتكم بكل خير من استوديو المعالجة الصوتية.", 1.0f, 0.97f),
-    TtsDialect("syrian", "tts_dialect_syrian", "ar-SY", "ar-LB", "يا مية أهلاً وسهلاً فيكم، نورتوا الاستوديو وصوتكم طالع بيشهي وواضح.", 1.02f, 0.96f),
-    TtsDialect("moroccan", "tts_dialect_moroccan", "ar-MA", "ar-SA", "مرحبا بكم كاملين فهاد الاستوديو الزوين، كلشي واجد باش تخرجو صوت نقي بزاف.", 0.99f, 0.95f),
-    TtsDialect("algerian", "tts_dialect_algerian", "ar-DZ", "ar-SA", "صحا وعافية ليكم كامل، رانا واجدين باش نسجلو أحسن مقطع صوتي بصوت صافي.", 0.98f, 0.96f),
-    TtsDialect("tunisian", "tts_dialect_tunisian", "ar-TN", "ar-SA", "عسلامة ومرحبا بيكم الناس الكل، اليوم باش نخدمو على صوت مزيان برشا.", 1.01f, 0.96f),
-    TtsDialect("en_us", "tts_dialect_english_us", "en-US", "en", "Welcome to Voice Pro Studio. Crystal clear acoustics ready for your next mix.", 1.0f, 1.0f),
-    TtsDialect("persian", "tts_dialect_persian", "fa-IR", "fa", "سلام و خوش آمدید به استودیوی ویس پرو؛ صدای شما اکنون با شفافیت کامل آماده است.", 1.0f, 0.95f),
-    TtsDialect("turkish", "tts_dialect_turkish", "tr-TR", "tr", "Voice Pro Stüdyo'ya hoş geldiniz. Sesiniz şimdi kristal netliğinde işlenmeye hazır.", 1.0f, 0.98f),
+    TtsDialect(
+        id = "iraqi",
+        titleKey = "tts_dialect_iraqi",
+        localeTag = "ar-IQ",
+        fallbackLocaleTag = "ar-SA",
+        maleVoiceName = "ar-IQ-BasselNeural",
+        femaleVoiceName = "ar-IQ-RanaNeural",
+        sampleText = "هلا بيكم باستوديو Sonix ✦، شلونكم اليوم؟ خلينا نسجّل صوت نقي ومرتّب.",
+        defaultPitch = 0.98f,
+        defaultRate = 0.96f,
+    ),
+    TtsDialect(
+        id = "saudi",
+        titleKey = "tts_dialect_saudi",
+        localeTag = "ar-SA",
+        fallbackLocaleTag = "ar",
+        maleVoiceName = "ar-SA-HamedNeural",
+        femaleVoiceName = "ar-SA-ZariyahNeural",
+        sampleText = "حياكم الله في استوديو Sonix ✦، تجربة صوتية احترافية بجودة عالية جداً.",
+        defaultPitch = 1.0f,
+        defaultRate = 0.96f,
+    ),
+    TtsDialect(
+        id = "egyptian",
+        titleKey = "tts_dialect_egyptian",
+        localeTag = "ar-EG",
+        fallbackLocaleTag = "ar-SA",
+        maleVoiceName = "ar-EG-ShakirNeural",
+        femaleVoiceName = "ar-EG-SalmaNeural",
+        sampleText = "أهلاً بيكم في استوديو Sonix ✦، صوتكم هنا بيطلع صافي واحترافي جداً.",
+        defaultPitch = 1.0f,
+        defaultRate = 0.97f,
+    ),
+    TtsDialect(
+        id = "syrian",
+        titleKey = "tts_dialect_syrian",
+        localeTag = "ar-SY",
+        fallbackLocaleTag = "ar-LB",
+        maleVoiceName = "ar-SY-LaithNeural",
+        femaleVoiceName = "ar-SY-AmanyNeural",
+        sampleText = "يا مية أهلاً وسهلاً فيكم في Sonix ✦، نورتوا الاستوديو وصوتكم طالع بيشهي وواضح.",
+        defaultPitch = 1.02f,
+        defaultRate = 0.96f,
+    ),
+    TtsDialect(
+        id = "jordanian",
+        titleKey = "tts_dialect_jordanian",
+        localeTag = "ar-JO",
+        fallbackLocaleTag = "ar-SA",
+        maleVoiceName = "ar-JO-TaimNeural",
+        femaleVoiceName = "ar-JO-SanaNeural",
+        sampleText = "أهلاً وسهلاً فيكم في استوديو Sonix ✦، يسعد أوقاتكم بكل خير وإبداع صوتي.",
+        defaultPitch = 1.0f,
+        defaultRate = 0.97f,
+    ),
+    TtsDialect(
+        id = "moroccan",
+        titleKey = "tts_dialect_moroccan",
+        localeTag = "ar-MA",
+        fallbackLocaleTag = "ar-SA",
+        maleVoiceName = "ar-MA-JamalNeural",
+        femaleVoiceName = "ar-MA-MounaNeural",
+        sampleText = "مرحبا بكم كاملين فـ Sonix ✦، كلشي واجد باش تخرجو صوت نقي بزاف.",
+        defaultPitch = 0.99f,
+        defaultRate = 0.95f,
+    ),
+    TtsDialect(
+        id = "emirati",
+        titleKey = "tts_dialect_emirati",
+        localeTag = "ar-AE",
+        fallbackLocaleTag = "ar-SA",
+        maleVoiceName = "ar-AE-HamdanNeural",
+        femaleVoiceName = "ar-AE-FatimaNeural",
+        sampleText = "مرحباً بكم في استوديو Sonix ✦ الخليجي، هندسة صوتية راقية بلمسة احترافية.",
+        defaultPitch = 1.0f,
+        defaultRate = 0.96f,
+    ),
+    TtsDialect(
+        id = "tunisian",
+        titleKey = "tts_dialect_tunisian",
+        localeTag = "ar-TN",
+        fallbackLocaleTag = "ar-SA",
+        maleVoiceName = "ar-TN-HediNeural",
+        femaleVoiceName = "ar-TN-ReemNeural",
+        sampleText = "عسلامة ومرحبا بيكم في Sonix ✦، اليوم باش نخدمو على صوت مزيان برشا.",
+        defaultPitch = 1.01f,
+        defaultRate = 0.96f,
+    ),
+    TtsDialect(
+        id = "en_us",
+        titleKey = "tts_dialect_english_us",
+        localeTag = "en-US",
+        fallbackLocaleTag = "en",
+        maleVoiceName = "en-US-AndrewNeural",
+        femaleVoiceName = "en-US-AvaNeural",
+        sampleText = "Welcome to Sonix ✦ Studio. Crystal clear acoustics ready for your next mix.",
+        defaultPitch = 1.0f,
+        defaultRate = 1.0f,
+    ),
+    TtsDialect(
+        id = "persian",
+        titleKey = "tts_dialect_persian",
+        localeTag = "fa-IR",
+        fallbackLocaleTag = "fa",
+        maleVoiceName = "fa-IR-FaridNeural",
+        femaleVoiceName = "fa-IR-DilaraNeural",
+        sampleText = "سلام و خوش آمدید به استودیوی Sonix ✦؛ صدای شما اکنون با شفافیت کامل آماده است.",
+        defaultPitch = 1.0f,
+        defaultRate = 0.95f,
+    ),
+    TtsDialect(
+        id = "turkish",
+        titleKey = "tts_dialect_turkish",
+        localeTag = "tr-TR",
+        fallbackLocaleTag = "tr",
+        maleVoiceName = "tr-TR-AhmetNeural",
+        femaleVoiceName = "tr-TR-EmelNeural",
+        sampleText = "Sonix ✦ Stüdyo'ya hoş geldiniz. Sesiniz şimdi kristal netliğinde işlenmeye hazır.",
+        defaultPitch = 1.0f,
+        defaultRate = 0.98f,
+    ),
 )
 
 data class SmartMasterAnalysis(
@@ -427,8 +617,10 @@ data class AiStreamState(
 )
 
 data class TtsStudioUiState(
+    val isSynthesizingPreview: Boolean = false,
     val isPreviewing: Boolean = false,
     val isGenerating: Boolean = false,
+    val usedFallbackEngine: Boolean = false,
     val errorMessage: String? = null,
 )
 
@@ -465,3 +657,10 @@ data class RecorderTelemetry(
     val micLevel: Float = 0f,
     val waveformBars: List<Float> = List(48) { 0.05f },
 )
+
+enum class SleepTimerOption(val minutes: Int?, val labelKey: String) {
+    OFF(null, "sleep_timer_off"),
+    MIN_15(15, "sleep_timer_15"),
+    MIN_30(30, "sleep_timer_30"),
+    MIN_60(60, "sleep_timer_60"),
+}

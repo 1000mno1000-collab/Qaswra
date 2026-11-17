@@ -1,7 +1,5 @@
 package com.example.ui.screens
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -29,6 +27,7 @@ import androidx.compose.material.icons.automirrored.rounded.Redo
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.Crop
 import androidx.compose.material.icons.rounded.ExpandLess
@@ -75,9 +74,13 @@ import androidx.compose.ui.unit.sp
 import com.example.audio.formatDurationMs
 import com.example.i18n.t
 import com.example.model.AppLanguage
+import com.example.model.AudioPickerTarget
 import com.example.model.TTS_DIALECTS
+import com.example.model.TtsDeliveryStyle
+import com.example.model.TtsGender
 import com.example.model.VOICE_CHARACTER_PRESETS
 import com.example.ui.components.ExportFormatDialog
+import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioScrollColumn
@@ -92,6 +95,7 @@ import kotlin.math.roundToInt
 fun AudioEditorScreen(
     uiState: StudioUiState,
     viewModel: StudioViewModel,
+    onOpenPicker: (AudioPickerTarget) -> Unit,
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
@@ -106,27 +110,16 @@ fun AudioEditorScreen(
     var bgMixGain by remember { mutableFloatStateOf(0.45f) }
 
     var showVoiceCard by remember { mutableStateOf(false) }
-    var selectedCharId by remember { mutableStateOf(VOICE_CHARACTER_PRESETS.first().id) }
-    var charPitch by remember { mutableFloatStateOf(VOICE_CHARACTER_PRESETS.first().pitchSemitones) }
-    var charFormant by remember { mutableFloatStateOf(VOICE_CHARACTER_PRESETS.first().formantShift) }
+    var selectedCharId by remember { mutableStateOf<String?>(null) }
+    var charPitch by remember { mutableFloatStateOf(0f) }
+    var charFormant by remember { mutableFloatStateOf(1.0f) }
 
     var showTtsCard by remember { mutableStateOf(false) }
     var ttsText by remember { mutableStateOf("") }
     var selectedDialectId by remember { mutableStateOf(TTS_DIALECTS.first().id) }
 
     var exportDialogOpen by remember { mutableStateOf(false) }
-
-    val appendPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        if (uri != null) viewModel.appendAudioUriToCurrent(uri)
-    }
-
-    val bgMixPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        if (uri != null) viewModel.loadMixBackgroundUri(uri)
-    }
+    var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -550,7 +543,7 @@ fun AudioEditorScreen(
                 }
 
                 OutlinedButton(
-                    onClick = { bgMixPicker.launch(arrayOf("audio/*")) },
+                    onClick = { onOpenPicker(AudioPickerTarget.MIX_BACKGROUND) },
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -685,16 +678,17 @@ fun AudioEditorScreen(
                         onValueChange = { charFormant = it },
                     )
 
-                    val chosen = VOICE_CHARACTER_PRESETS.first { it.id == selectedCharId }
+                    val chosen = VOICE_CHARACTER_PRESETS.firstOrNull { it.id == selectedCharId }
                     Button(
                         onClick = {
                             viewModel.transformVoiceOffline(
                                 pitchSemitones = charPitch,
                                 formantShift = charFormant,
-                                warmthDb = chosen.warmthDb,
-                                presenceDb = chosen.presenceDb,
+                                warmthDb = chosen?.warmthDb ?: 0f,
+                                presenceDb = chosen?.presenceDb ?: 0f,
                                 mix = 1f,
-                                characterLabel = t(lang, chosen.titleKey),
+                                characterLabel = chosen?.let { t(lang, it.titleKey) }
+                                    ?: t(lang, "section_voice_transformer_title"),
                             )
                         },
                         enabled = uiState.hasAudio && !uiState.isBusy,
@@ -795,6 +789,8 @@ fun AudioEditorScreen(
                             viewModel.generateTtsToStudio(
                                 text = ttsText.ifBlank { dialect.sampleText },
                                 dialect = dialect,
+                                gender = TtsGender.MALE,
+                                style = TtsDeliveryStyle.NATURAL_WARM,
                                 speechRate = dialect.defaultRate,
                                 pitch = dialect.defaultPitch,
                                 appendToExisting = uiState.hasAudio,
@@ -828,7 +824,7 @@ fun AudioEditorScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedButton(
-                    onClick = { appendPicker.launch(arrayOf("audio/*")) },
+                    onClick = { onOpenPicker(AudioPickerTarget.APPEND_CLIP) },
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -877,6 +873,22 @@ fun AudioEditorScreen(
                     )
                 }
 
+                OutlinedButton(
+                    onClick = { saveDraftDialogOpen = true },
+                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("editor_save_draft_button"),
+                ) {
+                    Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(t(lang, "save_to_drafts"), style = MaterialTheme.typography.labelLarge)
+                }
+
                 Button(
                     onClick = { exportDialogOpen = true },
                     enabled = uiState.hasAudio && !uiState.isBusy,
@@ -892,18 +904,29 @@ fun AudioEditorScreen(
                 ) {
                     Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(t(lang, "save_export_audio"), style = MaterialTheme.typography.labelLarge)
+                    Text(t(lang, "save_export_final"), style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
     }
 
+    SaveDraftDialog(
+        open = saveDraftDialogOpen,
+        language = lang,
+        initialName = uiState.activeProjectName.ifBlank { t(lang, "untitled_project") },
+        activePresetLabel = uiState.selectedPresetLabel,
+        isCloudSignedIn = uiState.isCloudSynced,
+        onDismiss = { saveDraftDialogOpen = false },
+        onSaveDraft = { draftName -> viewModel.saveCloudDraft(draftName) },
+    )
+
     ExportFormatDialog(
         open = exportDialogOpen,
         language = lang,
-        initialFileName = uiState.activeProjectName.ifBlank { "VoicePro_Master" },
+        initialFileName = uiState.activeProjectName.ifBlank { "Sonix_Master" },
         onDismiss = { exportDialogOpen = false },
         onSaveToDevice = { fmt, name -> viewModel.exportRenderedAudio(fmt, name, shareAfter = false) },
         onShareAudio = { fmt, name -> viewModel.exportRenderedAudio(fmt, name, shareAfter = true) },
+        onShareToPackage = { fmt, name, pkg -> viewModel.exportRenderedAudio(fmt, name, shareAfter = true, targetPackage = pkg) },
     )
 }

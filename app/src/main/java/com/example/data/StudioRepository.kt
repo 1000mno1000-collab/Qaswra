@@ -14,11 +14,13 @@ import com.example.model.AuthSession
 import com.example.model.DspConfig
 import com.example.model.RecordingSourceType
 import com.example.model.StereoAudioBuffer
+import com.example.model.StoredCustomPreset
 import com.example.model.StudioPreset
 import com.example.model.StudioProject
 import com.example.model.AudioRecordingItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -73,8 +75,21 @@ class StudioRepository(private val context: Context) {
         }
     }
 
-    val customPresetsFlow: Flow<List<StudioPreset>> = dao.observeCustomPresets().map { list ->
-        list.map { entity ->
+    val customPresetsFlow: Flow<List<StudioPreset>> = kotlinx.coroutines.flow.combine(
+        prefs.customPresetsJsonFlow,
+        dao.observeCustomPresets(),
+    ) { jsonList, dbList ->
+        val fromPrefs = jsonList.map { item ->
+            StudioPreset(
+                id = item.id,
+                name = item.name,
+                description = item.description,
+                isBuiltIn = false,
+                config = item.config.normalized(),
+            )
+        }
+        val prefIds = fromPrefs.map { it.id }.toSet()
+        val fromDb = dbList.filter { it.id !in prefIds }.map { entity ->
             val cfg = runCatching {
                 json.decodeFromString<DspConfig>(entity.configJson).normalized()
             }.getOrDefault(DspConfig())
@@ -86,6 +101,7 @@ class StudioRepository(private val context: Context) {
                 config = cfg,
             )
         }
+        fromPrefs + fromDb
     }
 
     suspend fun saveLanguage(lang: AppLanguage) = prefs.saveLanguage(lang)
@@ -120,7 +136,7 @@ class StudioRepository(private val context: Context) {
         password: String,
     ): AuthResult {
         val cleanEmail = email.trim().lowercase()
-        val cleanName = displayName.trim().ifEmpty { cleanEmail.substringBefore('@') }.ifEmpty { "مستخدم Voice Pro" }
+        val cleanName = displayName.trim().ifEmpty { cleanEmail.substringBefore('@') }.ifEmpty { "مستخدم Sonix ✦" }
         if (!Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$").matches(cleanEmail)) {
             return AuthResult.Error("يرجى إدخال بريد إلكتروني صحيح.")
         }
@@ -255,19 +271,37 @@ class StudioRepository(private val context: Context) {
         val cleanName = name.trim()
         if (cleanName.isEmpty()) return
         val cleanDesc = description.trim().ifEmpty { "قالب صوتي مخصص" }
-        val cfgJson = json.encodeToString(DspConfig.serializer(), config.normalized())
-        dao.insertCustomPreset(
+        val normalizedConfig = config.normalized()
+        val cfgJson = json.encodeToString(DspConfig.serializer(), normalizedConfig)
+        val now = System.currentTimeMillis()
+        val insertedId = dao.insertCustomPreset(
             CustomPresetEntity(
                 name = cleanName,
                 description = cleanDesc,
                 configJson = cfgJson,
-                createdAt = System.currentTimeMillis(),
+                createdAt = now,
             ),
         )
+        val existingList = prefs.customPresetsJsonFlow.first()
+        val updated = listOf(
+            StoredCustomPreset(
+                id = insertedId,
+                name = cleanName,
+                description = cleanDesc,
+                config = normalizedConfig,
+                createdAt = now,
+            ),
+        ) + existingList.filterNot { it.id == insertedId }
+        prefs.saveCustomPresetsJson(updated)
     }
 
     suspend fun deleteCustomPreset(id: Long) {
         dao.deleteCustomPresetById(id)
+        val existingList = prefs.customPresetsJsonFlow.first()
+        val updated = existingList.filterNot { it.id == id }
+        if (updated.size != existingList.size) {
+            prefs.saveCustomPresetsJson(updated)
+        }
     }
 
     private fun sha256(input: String): String {

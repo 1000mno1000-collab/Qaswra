@@ -57,6 +57,9 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,8 +83,10 @@ import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.EffectType
 import com.example.model.VOICE_PURIFY_PRESETS
+import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
+import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
@@ -96,6 +101,7 @@ import kotlin.math.sin
 fun RecordingStudioScreen(
     uiState: StudioUiState,
     viewModel: StudioViewModel,
+    onOpenAudioPicker: () -> Unit,
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
@@ -108,14 +114,6 @@ fun RecordingStudioScreen(
             viewModel.startRecording()
         } else {
             viewModel.setMicPermissionDeniedError()
-        }
-    }
-
-    val audioPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        if (uri != null) {
-            viewModel.importAudioUri(uri)
         }
     }
 
@@ -367,7 +365,7 @@ fun RecordingStudioScreen(
                 }
 
                 OutlinedButton(
-                    onClick = { audioPickerLauncher.launch(arrayOf("audio/*")) },
+                    onClick = onOpenAudioPicker,
                     border = BorderStroke(1.dp, StudioColors.Cyan),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
                     shape = RoundedCornerShape(14.dp),
@@ -479,6 +477,7 @@ fun VoicePurifierScreen(
     val nr = uiState.dspConfig.noiseReduction
     val enabled = uiState.dspConfig.isEnabled(EffectType.NOISE_REDUCTION)
     val suppNorm = (uiState.playback.noiseSuppressionDb / 32f).coerceIn(0f, 1f)
+    var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -497,6 +496,16 @@ fun VoicePurifierScreen(
                     modifier = Modifier.testTag("purifier_enable_switch"),
                 )
             },
+        )
+
+        StudioPreviewControlsBar(
+            uiState = uiState,
+            onHoldBypassChange = { viewModel.setHoldBypass(it) },
+            onToggleBypass = { viewModel.toggleBypass() },
+            onUndo = { viewModel.undoLastEdit() },
+            onRedo = { viewModel.redoLastEdit() },
+            onResetZero = { viewModel.resetAllEffects() },
+            onOpenSaveDraft = { saveDraftDialogOpen = true },
         )
 
         // Live Noise Suppression Telemetry Meter
@@ -789,10 +798,20 @@ fun VoicePurifierScreen(
             }
         }
     }
+
+    SaveDraftDialog(
+        open = saveDraftDialogOpen,
+        language = lang,
+        initialName = uiState.activeProjectName.ifBlank { t(lang, "untitled_project") },
+        activePresetLabel = uiState.selectedPresetLabel,
+        isCloudSignedIn = uiState.isCloudSynced,
+        onDismiss = { saveDraftDialogOpen = false },
+        onSaveDraft = { draftName -> viewModel.saveCloudDraft(draftName) },
+    )
 }
 
 @Composable
-private fun LiquidAudioWavePreview(
+fun LiquidAudioWavePreview(
     amplitude: Float,
     waveformBars: List<Float>,
     isActive: Boolean,

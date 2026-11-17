@@ -76,8 +76,8 @@ import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.ui.components.LanguageBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
+import com.example.ui.theme.SonixTheme
 import com.example.ui.theme.StudioColors
-import com.example.ui.theme.VoiceProTheme
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
@@ -104,18 +104,7 @@ fun AuthScreen(
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
     val scope = rememberCoroutineScope()
-    val defaultWebClientId = remember(context, isPreview) {
-        if (isPreview) {
-            ""
-        } else {
-            val resId = context.resources.getIdentifier(
-                "default_web_client_id",
-                "string",
-                context.packageName,
-            )
-            if (resId != 0) context.getString(resId).trim() else ""
-        }
-    }
+    val defaultWebClientId = if (isPreview) "" else stringResource(R.string.default_web_client_id).trim()
 
     var isSignUp by remember { mutableStateOf(false) }
     var displayName by remember { mutableStateOf("") }
@@ -294,7 +283,8 @@ private fun AuthScreenContent(
                 .widthIn(max = 520.dp)
                 .verticalScroll(rememberScrollState())
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 18.dp),
+                .padding(horizontal = 20.dp, vertical = 20.dp)
+                .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -586,7 +576,7 @@ private fun AuthScreenContent(
 @Preview(showBackground = true, backgroundColor = 0xFF070B14)
 @Composable
 private fun AuthScreenPreview() {
-    VoiceProTheme {
+    SonixTheme {
         AuthScreenContent(
             lang = AppLanguage.AR,
             isSignUp = false,

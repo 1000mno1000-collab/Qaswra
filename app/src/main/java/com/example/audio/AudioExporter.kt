@@ -176,6 +176,7 @@ private fun encodeFlacBytes(
 private fun encodeM4aFile(
     buffer: StereoAudioBuffer,
     outputFile: File,
+    bitrateKbps: Int = 192,
     onProgress: ((Float) -> Unit)?,
 ): Boolean {
     val mime = MediaFormat.MIMETYPE_AUDIO_AAC
@@ -188,9 +189,10 @@ private fun encodeM4aFile(
     var muxerStarted = false
 
     return try {
+        val safeBitrate = bitrateKbps.coerceIn(32, 320) * 1000
         val format = MediaFormat.createAudioFormat(mime, sampleRate, 2).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, 192_000)
+            setInteger(MediaFormat.KEY_BIT_RATE, safeBitrate)
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
         }
 
@@ -285,9 +287,10 @@ suspend fun exportRenderedAudioToFile(
     buffer: StereoAudioBuffer,
     format: ExportAudioFormat,
     baseFileName: String,
+    bitrateKbps: Int = 192,
     onProgress: ((Float) -> Unit)? = null,
 ): ExportedAudioResult = withContext(Dispatchers.IO) {
-    val cleanBase = baseFileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "VoicePro_Export" }
+    val cleanBase = baseFileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "Sonix_Export" }
     val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
 
     when (format) {
@@ -307,7 +310,7 @@ suspend fun exportRenderedAudioToFile(
         ExportAudioFormat.OGG -> {
             // Try hardware AAC / M4A first; fall back cleanly to WAV if device codec fails
             val m4aFile = File(exportDir, "$cleanBase.m4a")
-            if (encodeM4aFile(buffer, m4aFile, onProgress)) {
+            if (encodeM4aFile(buffer, m4aFile, bitrateKbps, onProgress)) {
                 ExportedAudioResult(m4aFile, "m4a", "audio/mp4")
             } else {
                 val wavFallback = File(exportDir, "$cleanBase.wav")

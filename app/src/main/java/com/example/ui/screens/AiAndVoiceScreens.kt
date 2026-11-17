@@ -66,10 +66,15 @@ import com.example.i18n.t
 import com.example.model.AiToolType
 import com.example.model.AppLanguage
 import com.example.model.TTS_DIALECTS
+import com.example.model.TtsDeliveryStyle
+import com.example.model.TtsGender
 import com.example.model.VOICE_CHARACTER_PRESETS
+import com.example.model.VoiceCharacterPreset
 import com.example.ui.components.LanguageSelectorDialog
+import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
+import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
 import com.example.ui.components.StudioSectionCard
 import com.example.ui.theme.StudioColors
@@ -517,6 +522,8 @@ fun TextToSpeechStudioScreen(
 ) {
     val lang = uiState.language
     var selectedDialect by remember { mutableStateOf(TTS_DIALECTS.first()) }
+    var selectedGender by remember { mutableStateOf(TtsGender.MALE) }
+    var selectedStyle by remember { mutableStateOf(TtsDeliveryStyle.NATURAL_WARM) }
     var textInput by remember { mutableStateOf(TTS_DIALECTS.first().sampleText) }
     var speechRate by remember { mutableFloatStateOf(TTS_DIALECTS.first().defaultRate) }
     var speechPitch by remember { mutableFloatStateOf(TTS_DIALECTS.first().defaultPitch) }
@@ -528,6 +535,20 @@ fun TextToSpeechStudioScreen(
             subtitle = t(lang, "section_tts_subtitle"),
             language = lang,
             onBack = onBack,
+        )
+
+        LiquidAudioWavePreview(
+            amplitude = if (uiState.ttsUiState.isPreviewing || uiState.playback.isPlaying) {
+                0.72f.coerceAtLeast(uiState.playback.outputLevel)
+            } else {
+                0.15f
+            },
+            waveformBars = uiState.playback.waveformBars,
+            isActive = uiState.ttsUiState.isPreviewing || uiState.ttsUiState.isSynthesizingPreview || uiState.playback.isPlaying,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(106.dp)
+                .testTag("tts_liquid_wave"),
         )
 
         Card(
@@ -574,6 +595,71 @@ fun TextToSpeechStudioScreen(
                         .fillMaxWidth()
                         .testTag("tts_text_input"),
                 )
+
+                Text(t(lang, "tts_gender_label"), style = MaterialTheme.typography.titleSmall)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(
+                        TtsGender.MALE to t(lang, "tts_gender_male"),
+                        TtsGender.FEMALE to t(lang, "tts_gender_female"),
+                    ).forEach { (genderOption, label) ->
+                        val isSel = selectedGender == genderOption
+                        Surface(
+                            onClick = { selectedGender = genderOption },
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (isSel) StudioColors.ElevatedSurface else StudioColors.BgMid,
+                            border = BorderStroke(1.dp, if (isSel) StudioColors.Cyan else StudioColors.Border),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("tts_gender_${genderOption.name}"),
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp)) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (isSel) StudioColors.Cyan else StudioColors.TextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Text(t(lang, "tts_style_label"), style = MaterialTheme.typography.titleSmall)
+                TtsDeliveryStyle.entries.chunked(2).forEach { rowStyles ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        rowStyles.forEach { st ->
+                            val isSel = selectedStyle == st
+                            Surface(
+                                onClick = { selectedStyle = st },
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (isSel) StudioColors.ElevatedSurface else StudioColors.BgMid,
+                                border = BorderStroke(1.dp, if (isSel) StudioColors.Violet else StudioColors.Border),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .defaultMinSize(minHeight = 46.dp)
+                                    .testTag("tts_style_${st.name}"),
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
+                                    Text(
+                                        text = t(lang, st.titleKey),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (isSel) StudioColors.Violet else StudioColors.TextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Text(t(lang, "tts_dialect_section"), style = MaterialTheme.typography.titleSmall)
 
@@ -655,6 +741,10 @@ fun TextToSpeechStudioScreen(
                     }
                 }
 
+                if (uiState.ttsUiState.usedFallbackEngine) {
+                    AiStatusCard(message = t(lang, "tts_fallback_notice"), isAmber = true)
+                }
+
                 uiState.ttsUiState.errorMessage?.let { err ->
                     AiStatusCard(message = err, isAmber = false)
                 }
@@ -667,10 +757,18 @@ fun TextToSpeechStudioScreen(
                         onClick = {
                             if (uiState.ttsUiState.isPreviewing) {
                                 viewModel.stopTtsPreview()
-                            } else {
-                                viewModel.previewTtsSpeech(textInput, selectedDialect, speechRate, speechPitch)
+                            } else if (!uiState.ttsUiState.isSynthesizingPreview) {
+                                viewModel.previewTtsSpeech(
+                                    text = textInput,
+                                    dialect = selectedDialect,
+                                    gender = selectedGender,
+                                    style = selectedStyle,
+                                    speechRate = speechRate,
+                                    pitch = speechPitch,
+                                )
                             }
                         },
+                        enabled = !uiState.ttsUiState.isSynthesizingPreview && textInput.isNotBlank(),
                         border = BorderStroke(1.dp, StudioColors.Cyan),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
                         shape = RoundedCornerShape(14.dp),
@@ -679,17 +777,31 @@ fun TextToSpeechStudioScreen(
                             .defaultMinSize(minHeight = 48.dp)
                             .testTag("tts_preview_button"),
                     ) {
-                        Icon(
-                            imageVector = if (uiState.ttsUiState.isPreviewing) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = if (uiState.ttsUiState.isPreviewing) t(lang, "tts_stop_preview") else t(lang, "tts_preview_button"),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        if (uiState.ttsUiState.isSynthesizingPreview) {
+                            CircularProgressIndicator(
+                                color = StudioColors.Cyan,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = t(lang, "tts_synthesizing"),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (uiState.ttsUiState.isPreviewing) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = if (uiState.ttsUiState.isPreviewing) t(lang, "tts_stop_preview") else t(lang, "tts_preview_button"),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
 
                     Button(
@@ -697,6 +809,8 @@ fun TextToSpeechStudioScreen(
                             viewModel.generateTtsToStudio(
                                 text = textInput,
                                 dialect = selectedDialect,
+                                gender = selectedGender,
+                                style = selectedStyle,
                                 speechRate = speechRate,
                                 pitch = speechPitch,
                                 appendToExisting = appendToExisting,
@@ -730,12 +844,13 @@ fun VoiceTransformerScreen(
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
-    var selectedPreset by remember { mutableStateOf(VOICE_CHARACTER_PRESETS.first()) }
-    var pitchSemitones by remember { mutableFloatStateOf(selectedPreset.pitchSemitones) }
-    var formantShift by remember { mutableFloatStateOf(selectedPreset.formantShift) }
-    var warmthDb by remember { mutableFloatStateOf(selectedPreset.warmthDb) }
-    var presenceDb by remember { mutableFloatStateOf(selectedPreset.presenceDb) }
-    var mix by remember { mutableFloatStateOf(1f) }
+    var selectedPreset by remember { mutableStateOf<VoiceCharacterPreset?>(null) }
+    var pitchSemitones by remember { mutableFloatStateOf(0f) }
+    var formantShift by remember { mutableFloatStateOf(1.0f) }
+    var warmthDb by remember { mutableFloatStateOf(0f) }
+    var presenceDb by remember { mutableFloatStateOf(0f) }
+    var mix by remember { mutableFloatStateOf(0f) }
+    var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -743,6 +858,24 @@ fun VoiceTransformerScreen(
             subtitle = t(lang, "section_voice_transformer_subtitle"),
             language = lang,
             onBack = onBack,
+        )
+
+        StudioPreviewControlsBar(
+            uiState = uiState,
+            onHoldBypassChange = { viewModel.setHoldBypass(it) },
+            onToggleBypass = { viewModel.toggleBypass() },
+            onUndo = { viewModel.undoLastEdit() },
+            onRedo = { viewModel.redoLastEdit() },
+            onResetZero = {
+                selectedPreset = null
+                pitchSemitones = 0f
+                formantShift = 1.0f
+                warmthDb = 0f
+                presenceDb = 0f
+                mix = 0f
+                viewModel.resetAllEffects()
+            },
+            onOpenSaveDraft = { saveDraftDialogOpen = true },
         )
 
         Card(
@@ -758,7 +891,7 @@ fun VoiceTransformerScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 VOICE_CHARACTER_PRESETS.forEach { preset ->
-                    val selected = preset.id == selectedPreset.id
+                    val selected = preset.id == selectedPreset?.id
                     Surface(
                         onClick = {
                             selectedPreset = preset
@@ -766,6 +899,7 @@ fun VoiceTransformerScreen(
                             formantShift = preset.formantShift
                             warmthDb = preset.warmthDb
                             presenceDb = preset.presenceDb
+                            mix = 1f
                         },
                         shape = RoundedCornerShape(14.dp),
                         color = if (selected) StudioColors.ElevatedSurface else StudioColors.BgMid,
@@ -816,7 +950,10 @@ fun VoiceTransformerScreen(
                     formattedValue = "${if (pitchSemitones >= 0f) "+" else ""}${"%.1f".format(pitchSemitones)} st",
                     accentColor = StudioColors.Violet,
                     testTag = "voice_pitch_slider",
-                    onValueChange = { pitchSemitones = it },
+                    onValueChange = {
+                        pitchSemitones = it
+                        if (mix == 0f) mix = 1f
+                    },
                 )
                 StudioParamSlider(
                     label = t(lang, "voice_formant_shift"),
@@ -826,7 +963,10 @@ fun VoiceTransformerScreen(
                     formattedValue = "${"%.2f".format(formantShift)}x",
                     accentColor = StudioColors.Cyan,
                     testTag = "voice_formant_slider",
-                    onValueChange = { formantShift = it },
+                    onValueChange = {
+                        formantShift = it
+                        if (mix == 0f) mix = 1f
+                    },
                 )
                 StudioParamSlider(
                     label = t(lang, "voice_warmth"),
@@ -836,7 +976,10 @@ fun VoiceTransformerScreen(
                     formattedValue = "${"%.1f".format(warmthDb)} dB",
                     accentColor = StudioColors.Amber,
                     testTag = "voice_warmth_slider",
-                    onValueChange = { warmthDb = it },
+                    onValueChange = {
+                        warmthDb = it
+                        if (mix == 0f) mix = 1f
+                    },
                 )
                 StudioParamSlider(
                     label = t(lang, "voice_presence"),
@@ -846,7 +989,10 @@ fun VoiceTransformerScreen(
                     formattedValue = "${"%.1f".format(presenceDb)} dB",
                     accentColor = StudioColors.Emerald,
                     testTag = "voice_presence_slider",
-                    onValueChange = { presenceDb = it },
+                    onValueChange = {
+                        presenceDb = it
+                        if (mix == 0f) mix = 1f
+                    },
                 )
                 StudioParamSlider(
                     label = t(lang, "voice_mix"),
@@ -879,7 +1025,8 @@ fun VoiceTransformerScreen(
                             warmthDb = warmthDb,
                             presenceDb = presenceDb,
                             mix = mix,
-                            characterLabel = t(lang, selectedPreset.titleKey),
+                            characterLabel = selectedPreset?.let { t(lang, it.titleKey) }
+                                ?: t(lang, "section_voice_transformer_title"),
                         )
                     },
                     enabled = !uiState.isBusy,
@@ -900,6 +1047,16 @@ fun VoiceTransformerScreen(
             }
         }
     }
+
+    SaveDraftDialog(
+        open = saveDraftDialogOpen,
+        language = lang,
+        initialName = uiState.activeProjectName.ifBlank { t(lang, "untitled_project") },
+        activePresetLabel = uiState.selectedPresetLabel,
+        isCloudSignedIn = uiState.isCloudSynced,
+        onDismiss = { saveDraftDialogOpen = false },
+        onSaveDraft = { draftName -> viewModel.saveCloudDraft(draftName) },
+    )
 }
 
 @Composable

@@ -13,3 +13,5 @@
 *.ap_
 *.dex
 .env
+*-debug.log
+

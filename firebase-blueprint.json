@@ -1,0 +1,115 @@
+{
+  "entities": {
+    "CloudCustomPreset": {
+      "title": "CloudCustomPreset",
+      "description": "User-saved Sonix studio DSP preset synced to Google account",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID owning the preset"
+        },
+        "localId": {
+          "type": "integer",
+          "description": "Deterministic positive local display identifier"
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom preset title (1-80 chars)"
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional preset summary (0-240 chars)"
+        },
+        "dspConfig": {
+          "type": "object",
+          "description": "Typed map of DSP effect sliders and routing chain"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when preset was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update"
+        }
+      },
+      "required": [
+        "userId",
+        "localId",
+        "name",
+        "description",
+        "dspConfig",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CloudDraft": {
+      "title": "CloudDraft",
+      "description": "Persistent project draft storing project name, active preset, and DSP parameters",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID owning the draft"
+        },
+        "name": {
+          "type": "string",
+          "description": "Draft project title (1-100 chars)"
+        },
+        "selectedPresetName": {
+          "type": "string",
+          "description": "Selected preset label or Custom"
+        },
+        "durationMs": {
+          "type": "integer",
+          "description": "Audio duration telemetry in milliseconds"
+        },
+        "sampleRate": {
+          "type": "integer",
+          "description": "Audio sample rate in Hz"
+        },
+        "dspConfig": {
+          "type": "object",
+          "description": "Typed map of DSP parameters and effect slot chain"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when draft was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest draft save"
+        }
+      },
+      "required": [
+        "userId",
+        "name",
+        "selectedPresetName",
+        "durationMs",
+        "sampleRate",
+        "dspConfig",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/custom_presets/{presetId}": {
+      "schema": {
+        "$ref": "#/entities/CloudCustomPreset"
+      },
+      "description": "Private per-user custom audio presets owned exclusively by userId"
+    },
+    "/users/{userId}/drafts/{draftId}": {
+      "schema": {
+        "$ref": "#/entities/CloudDraft"
+      },
+      "description": "Private per-user audio engineering drafts owned exclusively by userId"
+    }
+  }
+}

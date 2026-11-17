@@ -52,7 +52,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,8 +77,10 @@ import com.example.model.DistortionMode
 import com.example.model.EchoDetailGroup
 import com.example.model.EchoPadAxisMode
 import com.example.model.EffectType
+import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
+import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
 import com.example.ui.components.StudioSectionCard
 import com.example.ui.theme.StudioColors
@@ -99,6 +103,7 @@ fun EchoReverbScreen(
     val echo = uiState.dspConfig.echoReverb
     val enabled = uiState.dspConfig.isEnabled(EffectType.ECHO_REVERB)
     val (padX, padY) = viewModel.getEchoPadAxes()
+    var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
     val trailPoints = remember { mutableStateListOf<Offset>() }
     val rippleTransition = rememberInfiniteTransition(label = "echoRipple")
@@ -129,6 +134,16 @@ fun EchoReverbScreen(
                     modifier = Modifier.testTag("echo_enable_switch"),
                 )
             },
+        )
+
+        StudioPreviewControlsBar(
+            uiState = uiState,
+            onHoldBypassChange = { viewModel.setHoldBypass(it) },
+            onToggleBypass = { viewModel.toggleBypass() },
+            onUndo = { viewModel.undoLastEdit() },
+            onRedo = { viewModel.redoLastEdit() },
+            onResetZero = { viewModel.resetAllEffects() },
+            onOpenSaveDraft = { saveDraftDialogOpen = true },
         )
 
         // Simple / Pro Toggle
@@ -434,6 +449,16 @@ fun EchoReverbScreen(
             )
         }
     }
+
+    SaveDraftDialog(
+        open = saveDraftDialogOpen,
+        language = lang,
+        initialName = uiState.activeProjectName.ifBlank { t(lang, "untitled_project") },
+        activePresetLabel = uiState.selectedPresetLabel,
+        isCloudSignedIn = uiState.isCloudSynced,
+        onDismiss = { saveDraftDialogOpen = false },
+        onSaveDraft = { draftName -> viewModel.saveCloudDraft(draftName) },
+    )
 }
 
 @Composable
@@ -824,6 +849,7 @@ fun EffectDetailScreen(
     val lang = uiState.language
     val cfg = uiState.dspConfig
     val enabled = cfg.isEnabled(effect)
+    var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -846,6 +872,16 @@ fun EffectDetailScreen(
                     modifier = Modifier.testTag("effect_detail_enable_switch"),
                 )
             },
+        )
+
+        StudioPreviewControlsBar(
+            uiState = uiState,
+            onHoldBypassChange = { viewModel.setHoldBypass(it) },
+            onToggleBypass = { viewModel.toggleBypass() },
+            onUndo = { viewModel.undoLastEdit() },
+            onRedo = { viewModel.redoLastEdit() },
+            onResetZero = { viewModel.resetAllEffects() },
+            onOpenSaveDraft = { saveDraftDialogOpen = true },
         )
 
         Card(
@@ -1182,4 +1218,14 @@ fun EffectDetailScreen(
             }
         }
     }
+
+    SaveDraftDialog(
+        open = saveDraftDialogOpen,
+        language = lang,
+        initialName = uiState.activeProjectName.ifBlank { t(lang, "untitled_project") },
+        activePresetLabel = uiState.selectedPresetLabel,
+        isCloudSignedIn = uiState.isCloudSynced,
+        onDismiss = { saveDraftDialogOpen = false },
+        onSaveDraft = { draftName -> viewModel.saveCloudDraft(draftName) },
+    )
 }

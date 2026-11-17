@@ -1,9 +1,6 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.VoicePro" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#FFFFFF</item>
-        <item name="android:windowSplashScreenBackground" tools:targetApi="s">#FFFFFF</item>
-        <item name="android:windowSplashScreenAnimatedIcon" tools:targetApi="s">@drawable/ic_splash_vector</item>
-        <item name="android:windowSplashScreenIconBackgroundColor" tools:targetApi="s">#FFFFFF</item>
+<resources>
+    <style name="Theme.Sonix" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>

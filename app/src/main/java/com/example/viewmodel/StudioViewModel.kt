@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import android.app.Application
 import android.content.Intent
+import android.media.MediaPlayer
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
@@ -13,52 +14,79 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audio.AndroidTtsEngine
 import com.example.audio.AudioDecoder
+import com.example.audio.EdgeTtsClient
 import com.example.audio.ExportedAudioResult
+import com.example.audio.NativeSpeechState
+import com.example.audio.RingtoneSaveResult
+import com.example.audio.SonixMediaPlaybackService
 import com.example.audio.StudioAudioPlayer
 import com.example.audio.StudioAudioRecorder
+import com.example.audio.StudioPlaybackBridge
+import com.example.audio.StudioSpeechTranscriber
 import com.example.audio.analyzeAndOptimizeAudio
 import com.example.audio.applyFadeIn
 import com.example.audio.applyFadeOut
 import com.example.audio.applyGainDb
+import com.example.audio.applyPitchAndSpeedOffline
 import com.example.audio.clamp
 import com.example.audio.computeWaveformPeaks
+import com.example.audio.convertToSurroundStereo
 import com.example.audio.cutSelection
 import com.example.audio.exportRenderedAudioToFile
+import com.example.audio.formatDurationMs
+import com.example.audio.generateSilence
 import com.example.audio.mergeClips
 import com.example.audio.mixTracks
+import com.example.audio.mixWithSidechainAutoDucking
 import com.example.audio.normalizeAudio
 import com.example.audio.purifyBufferOffline
 import com.example.audio.renderOfflineDsp
+import com.example.audio.replaceOrMixVideoAudio
+import com.example.audio.reverseAudio
+import com.example.audio.saveAndSetRingtone
+import com.example.audio.splitAudioByTime
+import com.example.audio.splitStereoChannels
 import com.example.audio.transformVoiceOffline as runTransformVoiceOffline
 import com.example.audio.trimToSelection
+import com.example.audio.writeStereoWavFile
 import com.example.data.AuthResult
+import com.example.data.MediaStoreAudioRepository
 import com.example.data.StudioRepository
 import com.example.data.ai.AiRepository
 import com.example.data.ai.AiResponse
 import com.example.data.ai.FirebaseUnprovisionedAiRepository
+import com.example.data.remote.FirestoreStudioRepository
 import com.example.i18n.t
 import com.example.model.AiStreamState
 import com.example.model.AppLanguage
 import com.example.model.AudioRecordingItem
 import com.example.model.AuthSession
 import com.example.model.BUILT_IN_PRESETS
+import com.example.model.CloudDraft
+import com.example.model.DeviceAudioItem
 import com.example.model.DspConfig
 import com.example.model.EchoPadAxisMode
 import com.example.model.EchoReverbParams
 import com.example.model.EffectType
 import com.example.model.ExportAudioFormat
+import com.example.model.GlobalProPreset
 import com.example.model.PlaybackTelemetry
 import com.example.model.RecorderTelemetry
 import com.example.model.RecordingSourceType
+import com.example.model.SleepTimerOption
 import com.example.model.SmartMasterAnalysis
 import com.example.model.StereoAudioBuffer
 import com.example.model.StudioPreset
 import com.example.model.StudioProject
+import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
+import com.example.model.TtsGender
 import com.example.model.TtsStudioUiState
 import com.example.model.VoicePurifyPreset
 import com.google.firebase.Firebase
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -82,7 +110,12 @@ import kotlin.math.abs
 
 sealed interface StudioSideEffect {
     data class PromptSaveDocument(val result: ExportedAudioResult, val suggestedName: String) : StudioSideEffect
-    data class LaunchShareIntent(val uri: Uri, val mimeType: String, val title: String) : StudioSideEffect
+    data class LaunchShareIntent(
+        val uri: Uri,
+        val mimeType: String,
+        val title: String,
+        val targetPackage: String? = null,
+    ) : StudioSideEffect
 }
 
 data class StudioUiState(
@@ -93,6 +126,7 @@ data class StudioUiState(
     val waveformPeaks: List<Float> = emptyList(),
     val dspConfig: DspConfig = DspConfig(),
     val activePresetId: Long? = null,
+    val selectedPresetLabel: String = "",
     val isSimpleEchoMode: Boolean = true,
     val echoPadAxisMode: EchoPadAxisMode = EchoPadAxisMode.SPACE,
     val isHoldBypassing: Boolean = false,
@@ -108,6 +142,10 @@ data class StudioUiState(
     val canRedoEdit: Boolean = false,
     val hasUnsavedChanges: Boolean = false,
     val projects: List<StudioProject> = emptyList(),
+    val cloudDrafts: List<CloudDraft> = emptyList(),
+    val activeCloudDraftId: String? = null,
+    val isCloudSynced: Boolean = false,
+    val previewWavPath: String? = null,
     val recordings: List<AudioRecordingItem> = emptyList(),
     val customPresets: List<StudioPreset> = emptyList(),
     val activeProjectId: Long = 0L,
@@ -118,20 +156,32 @@ data class StudioUiState(
     val smartMasterState: SmartMasterAnalysis? = null,
     val searchAssistantState: AiStreamState = AiStreamState(),
     val ttsUiState: TtsStudioUiState = TtsStudioUiState(),
+    val deviceAudios: List<DeviceAudioItem> = emptyList(),
+    val isScanningDeviceAudio: Boolean = false,
     val statusBanner: String? = null,
     val isBusy: Boolean = false,
     val exportProgress: Float? = null,
     val purifyProgress: Float? = null,
     val homeScrollIndex: Int = 0,
     val homeScrollOffset: Int = 0,
+    val speechState: NativeSpeechState = NativeSpeechState(),
+    val sleepTimerOption: SleepTimerOption = SleepTimerOption.OFF,
+    val sleepTimerRemainingSec: Int = 0,
+    val smartMixBgVolume: Float = 0.25f,
+    val isSmartMixPreviewActive: Boolean = false,
 ) {
     val allPresets: List<StudioPreset> get() = customPresets + BUILT_IN_PRESETS
 }
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = StudioRepository(application)
+    private val firestoreRepo = FirestoreStudioRepository(application)
     private val aiRepository: AiRepository = FirebaseUnprovisionedAiRepository()
     private val ttsEngine = AndroidTtsEngine(application)
+    private var ttsPreviewPlayer: MediaPlayer? = null
+    private var ttsPreviewTempFile: File? = null
+    private var mixPreviewPlayer: MediaPlayer? = null
+    private val speechTranscriber = StudioSpeechTranscriber(application)
 
     private val _uiState = MutableStateFlow(StudioUiState())
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
@@ -148,16 +198,58 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private data class EditorSnapshot(
+        val buffer: StereoAudioBuffer?,
+        val dspConfig: DspConfig,
+        val activePresetId: Long?,
+        val selectedPresetLabel: String,
+    )
+
     private var activeBuffer: StereoAudioBuffer? = null
     private var mixBgBuffer: StereoAudioBuffer? = null
-    private val undoStack = ArrayDeque<StereoAudioBuffer>()
-    private val redoStack = ArrayDeque<StereoAudioBuffer>()
+    private val undoStack = ArrayDeque<EditorSnapshot>()
+    private val redoStack = ArrayDeque<EditorSnapshot>()
+    private var lastDspSnapshotTimeMs: Long = 0L
 
     private var bannerJob: Job? = null
+    private var tempPreviewJob: Job? = null
+    private var smartMixPreviewJob: Job? = null
+    private var sleepTimerJob: Job? = null
+    private var cloudPresetsJob: Job? = null
+    private var cloudDraftsJob: Job? = null
     private var pendingExportResult: ExportedAudioResult? = null
+    @Volatile private var lastNotifSyncMs: Long = 0L
+    @Volatile private var lastNotifPlaying: Boolean = false
+
+    private val cloudPresetsFlow = MutableStateFlow<List<StudioPreset>>(emptyList())
+    private val cloudDraftsFlow = MutableStateFlow<List<CloudDraft>>(emptyList())
+    private val isCloudSyncedFlow = MutableStateFlow(false)
+
+    private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
+        val uid = auth.currentUser?.uid
+        attachCloudListeners(uid)
+    }
 
     private val player = StudioAudioPlayer(_uiState.value.dspConfig) { telemetry ->
         _uiState.update { it.copy(playback = telemetry) }
+        val now = System.currentTimeMillis()
+        val stateFlipped = telemetry.isPlaying != lastNotifPlaying
+        if (stateFlipped || (telemetry.isPlaying && now - lastNotifSyncMs >= 1500L)) {
+            lastNotifPlaying = telemetry.isPlaying
+            lastNotifSyncMs = now
+            val cur = _uiState.value
+            val title = cur.activeProjectName.ifBlank { "Sonix ✦" }
+            val sub = "${formatDurationMs(telemetry.positionMs)} / ${formatDurationMs(telemetry.durationMs)}"
+            SonixMediaPlaybackService.syncPlaybackState(
+                context = getApplication(),
+                isPlaying = telemetry.isPlaying,
+                title = title,
+                subtitle = sub,
+            )
+        }
+        if (!telemetry.isPlaying && speechTranscriber.state.value.isRoutingClip) {
+            speechTranscriber.stop()
+        }
     }
 
     private val recorder = StudioAudioRecorder(application) { telemetry ->
@@ -165,8 +257,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
+        StudioPlaybackBridge.onTogglePlayPause = { togglePlayPause() }
+        StudioPlaybackBridge.onStopPlayback = { stopPlayback() }
+
         viewModelScope.launch {
-            combine(
+            speechTranscriber.state.collect { st ->
+                _uiState.update { it.copy(speechState = st) }
+            }
+        }
+
+        val firebaseAuth = runCatching { Firebase.auth }.getOrNull()
+        firebaseAuth?.addAuthStateListener(authStateListener)
+        attachCloudListeners(firebaseAuth?.currentUser?.uid)
+
+        viewModelScope.launch {
+            val baseFlow = combine(
                 repository.languageFlow,
                 repository.authSessionFlow,
                 repository.autoLoopFlow,
@@ -175,13 +280,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 repository.customPresetsFlow,
             ) { values ->
                 @Suppress("UNCHECKED_CAST")
-                PrefAndDbSnapshot(
+                LocalDbSnapshot(
                     language = values[0] as AppLanguage,
                     authSession = values[1] as AuthSession,
                     autoLoop = values[2] as Boolean,
                     projects = values[3] as List<StudioProject>,
                     recordings = values[4] as List<AudioRecordingItem>,
-                    customPresets = values[5] as List<StudioPreset>,
+                    localCustomPresets = values[5] as List<StudioPreset>,
+                )
+            }
+            combine(
+                baseFlow,
+                cloudPresetsFlow,
+                cloudDraftsFlow,
+                isCloudSyncedFlow,
+            ) { local, cloudPresets, cloudDrafts, isSynced ->
+                PrefAndDbSnapshot(
+                    language = local.language,
+                    authSession = local.authSession,
+                    autoLoop = local.autoLoop,
+                    projects = local.projects,
+                    recordings = local.recordings,
+                    customPresets = if (isSynced) cloudPresets else local.localCustomPresets,
+                    cloudDrafts = cloudDrafts,
+                    isCloudSynced = isSynced,
                 )
             }.stateIn(viewModelScope, SharingStarted.Eagerly, null).collect { snap ->
                 snap ?: return@collect
@@ -199,6 +321,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         projects = snap.projects,
                         recordings = snap.recordings,
                         customPresets = snap.customPresets,
+                        cloudDrafts = snap.cloudDrafts,
+                        isCloudSynced = snap.isCloudSynced,
                         activeProjectName = updatedProjectName,
                     )
                 }
@@ -208,6 +332,41 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun attachCloudListeners(uid: String?) {
+        cloudPresetsJob?.cancel()
+        cloudPresetsJob = null
+        cloudDraftsJob?.cancel()
+        cloudDraftsJob = null
+
+        if (uid.isNullOrBlank()) {
+            isCloudSyncedFlow.value = false
+            cloudPresetsFlow.value = emptyList()
+            cloudDraftsFlow.value = emptyList()
+            return
+        }
+
+        isCloudSyncedFlow.value = true
+        cloudPresetsJob = viewModelScope.launch {
+            firestoreRepo.observeCustomPresets(uid).collect { list ->
+                cloudPresetsFlow.value = list
+            }
+        }
+        cloudDraftsJob = viewModelScope.launch {
+            firestoreRepo.observeDrafts(uid).collect { list ->
+                cloudDraftsFlow.value = list
+            }
+        }
+    }
+
+    private data class LocalDbSnapshot(
+        val language: AppLanguage,
+        val authSession: AuthSession,
+        val autoLoop: Boolean,
+        val projects: List<StudioProject>,
+        val recordings: List<AudioRecordingItem>,
+        val localCustomPresets: List<StudioPreset>,
+    )
+
     private data class PrefAndDbSnapshot(
         val language: AppLanguage,
         val authSession: AuthSession,
@@ -215,6 +374,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val projects: List<StudioProject>,
         val recordings: List<AudioRecordingItem>,
         val customPresets: List<StudioPreset>,
+        val cloudDrafts: List<CloudDraft>,
+        val isCloudSynced: Boolean,
     )
 
     private fun postBanner(msg: String) {
@@ -229,6 +390,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun clearBanner() {
         bannerJob?.cancel()
         _uiState.update { it.copy(statusBanner = null) }
+    }
+
+    fun showStatusBanner(msg: String) {
+        postBanner(msg)
     }
 
     // Auth & Language
@@ -266,6 +431,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun signOut() {
         viewModelScope.launch {
             withContext(NonCancellable) {
+                // Stop active Firestore snapshot collectors BEFORE Firebase.auth.signOut()
+                // to avoid spurious PERMISSION_DENIED race conditions.
+                attachCloudListeners(null)
                 runCatching {
                     CredentialManager.create(getApplication()).clearCredentialState(ClearCredentialStateRequest())
                 }.onFailure { err ->
@@ -295,24 +463,90 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Audio Buffer & Undo/Redo Management
-    private fun setActiveBuffer(buf: StereoAudioBuffer, recordUndo: Boolean) {
+    private fun currentSnapshot(): EditorSnapshot {
+        val st = _uiState.value
+        return EditorSnapshot(
+            buffer = activeBuffer,
+            dspConfig = st.dspConfig,
+            activePresetId = st.activePresetId,
+            selectedPresetLabel = st.selectedPresetLabel,
+        )
+    }
+
+    private fun pushUndoSnapshot(debounced: Boolean) {
+        val now = System.currentTimeMillis()
+        if (debounced && now - lastDspSnapshotTimeMs < 550L) {
+            return
+        }
+        lastDspSnapshotTimeMs = if (debounced) now else 0L
+        if (undoStack.size >= 20) undoStack.removeFirst()
+        undoStack.addLast(currentSnapshot())
+        redoStack.clear()
+    }
+
+    private fun previewTempFile(): File = File(getApplication<Application>().cacheDir, "temp_preview.wav")
+
+    private fun deleteTempPreviewFile() {
+        tempPreviewJob?.cancel()
+        tempPreviewJob = null
+        runCatching { previewTempFile().delete() }
+        runCatching { File(getApplication<Application>().cacheDir, "temp_preview.wav.tmp").delete() }
+        _uiState.update { it.copy(previewWavPath = null) }
+    }
+
+    private fun scheduleTempPreviewRender() {
+        val src = activeBuffer
+        if (src == null) {
+            deleteTempPreviewFile()
+            return
+        }
+        val cfg = _uiState.value.dspConfig
+        tempPreviewJob?.cancel()
+        tempPreviewJob = viewModelScope.launch(Dispatchers.Default) {
+            delay(220L)
+            val rendered = renderOfflineDsp(src, cfg)
+            val tmpFile = File(getApplication<Application>().cacheDir, "temp_preview.wav.tmp")
+            val finalFile = previewTempFile()
+            writeStereoWavFile(tmpFile, rendered)
+            if (!tmpFile.renameTo(finalFile)) {
+                writeStereoWavFile(finalFile, rendered)
+                tmpFile.delete()
+            }
+            _uiState.update { it.copy(previewWavPath = finalFile.absolutePath) }
+        }
+    }
+
+    // Audio Buffer & Unified Undo/Redo Management
+    private fun setActiveBuffer(
+        buf: StereoAudioBuffer,
+        recordUndo: Boolean,
+        resetDspOnNewEntry: Boolean = false,
+    ) {
         if (recordUndo && activeBuffer != null) {
-            if (undoStack.size >= 12) undoStack.removeFirst()
-            undoStack.addLast(activeBuffer!!)
-            redoStack.clear()
+            pushUndoSnapshot(debounced = false)
         } else if (!recordUndo) {
             undoStack.clear()
             redoStack.clear()
+            lastDspSnapshotTimeMs = 0L
         }
         activeBuffer = buf
         player.setBuffer(buf, resetPosition = true)
         val peaks = computeWaveformPeaks(buf, 120)
-        _uiState.update {
-            it.copy(
+        val cleanCfg = DspConfig()
+        if (resetDspOnNewEntry) {
+            syncPlayerConfig(cleanCfg, holdBypass = false)
+        }
+        _uiState.update { cur ->
+            val updatedCfg = if (resetDspOnNewEntry) cleanCfg else cur.dspConfig
+            cur.copy(
                 hasAudio = true,
                 durationMs = buf.durationMs,
                 waveformPeaks = peaks,
+                dspConfig = updatedCfg,
+                activePresetId = if (resetDspOnNewEntry) null else cur.activePresetId,
+                selectedPresetLabel = if (resetDspOnNewEntry) "" else cur.selectedPresetLabel,
+                activeCloudDraftId = if (resetDspOnNewEntry) null else cur.activeCloudDraftId,
+                isHoldBypassing = if (resetDspOnNewEntry) false else cur.isHoldBypassing,
                 trimStart = 0f,
                 trimEnd = 1f,
                 canUndoEdit = undoStack.isNotEmpty(),
@@ -320,6 +554,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 hasUnsavedChanges = recordUndo,
             )
         }
+        scheduleTempPreviewRender()
     }
 
     private fun syncPlayerConfig(cfg: DspConfig, holdBypass: Boolean = _uiState.value.isHoldBypassing) {
@@ -347,19 +582,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         syncPlayerConfig(next)
     }
 
-    fun updateDspConfig(updater: (DspConfig) -> DspConfig) {
+    fun updateDspConfig(debouncedUndo: Boolean = true, updater: (DspConfig) -> DspConfig) {
+        pushUndoSnapshot(debounced = debouncedUndo)
         val next = updater(_uiState.value.dspConfig).normalized()
         _uiState.update {
             it.copy(
                 dspConfig = next,
                 activePresetId = null,
+                selectedPresetLabel = "",
+                canUndoEdit = undoStack.isNotEmpty(),
+                canRedoEdit = redoStack.isNotEmpty(),
                 hasUnsavedChanges = true,
             )
         }
         syncPlayerConfig(next)
+        scheduleTempPreviewRender()
     }
 
     fun resetAllEffects() {
+        pushUndoSnapshot(debounced = false)
         val def = DspConfig().let { d ->
             d.copy(chain = d.chain.map { it.copy(enabled = false) })
         }
@@ -367,15 +608,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 dspConfig = def,
                 activePresetId = null,
+                selectedPresetLabel = "",
+                isHoldBypassing = false,
+                canUndoEdit = undoStack.isNotEmpty(),
+                canRedoEdit = redoStack.isNotEmpty(),
                 hasUnsavedChanges = true,
             )
         }
-        syncPlayerConfig(def)
-        postBanner("تم إيقاف كافة المؤثرات وإرجاعها للإعداد الافتراضي")
+        syncPlayerConfig(def, holdBypass = false)
+        scheduleTempPreviewRender()
+        postBanner("تم إيقاف كافة المؤثرات وإرجاعها إلى 0%")
     }
 
     fun toggleEffectEnabled(type: EffectType, enabled: Boolean) {
-        updateDspConfig { prev ->
+        updateDspConfig(debouncedUndo = false) { prev ->
             prev.copy(bypassAll = false).withSlotEnabled(type, enabled)
         }
     }
@@ -386,7 +632,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val mutable = cur.toMutableList()
         val moved = mutable.removeAt(fromIdx)
         mutable.add(toIdx, moved)
-        updateDspConfig { prev -> prev.copy(chain = mutable) }
+        updateDspConfig(debouncedUndo = false) { prev -> prev.copy(chain = mutable) }
     }
 
     fun updateEchoReverbParams(updater: (EchoReverbParams) -> EchoReverbParams) {
@@ -458,6 +704,34 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stopPlayback() {
         player.stop()
+        stopMixPreviewPlayer()
+        SonixMediaPlaybackService.stopService(getApplication())
+    }
+
+    fun setSleepTimer(option: SleepTimerOption) {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        val mins = option.minutes
+        if (mins == null || mins <= 0) {
+            _uiState.update { it.copy(sleepTimerOption = SleepTimerOption.OFF, sleepTimerRemainingSec = 0) }
+            return
+        }
+        val totalSec = mins * 60
+        _uiState.update { it.copy(sleepTimerOption = option, sleepTimerRemainingSec = totalSec) }
+        sleepTimerJob = viewModelScope.launch {
+            var remaining = totalSec
+            while (remaining > 0) {
+                delay(1000L)
+                remaining -= 1
+                _uiState.update { it.copy(sleepTimerRemainingSec = remaining) }
+            }
+            if (_uiState.value.playback.isPlaying) {
+                player.pause()
+            }
+            stopMixPreviewPlayer()
+            _uiState.update { it.copy(sleepTimerOption = SleepTimerOption.OFF, sleepTimerRemainingSec = 0) }
+            postBanner(t(_uiState.value.language, "sleep_timer_triggered"))
+        }
     }
 
     fun seekToFraction(frac: Float) {
@@ -508,10 +782,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 postBanner("التسجيل قصير جداً أو لم يتم التقاط صوت")
                 return@launch
             }
-            setActiveBuffer(buf, recordUndo = false)
+            setActiveBuffer(buf, recordUndo = false, resetDspOnNewEntry = true)
             val nowStr = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
             repository.indexAudioRecording("تسجيل $nowStr", buf, RecordingSourceType.RECORDING)
-            postBanner("تم حفظ التسجيل في الاستوديو بنجاح")
+            postBanner("تم تحميل التسجيل بالصوت الأصلي النظيف (0%) في الاستوديو")
         }
     }
 
@@ -525,13 +799,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     postBanner("تعذر فك ترميز الملف الصوتي المحدد")
                     return@launch
                 }
-                setActiveBuffer(buf, recordUndo = false)
+                setActiveBuffer(buf, recordUndo = false, resetDspOnNewEntry = true)
                 val title = resolveFileName(uri)?.substringBeforeLast('.')?.ifEmpty { "ملف مستورد" } ?: "ملف مستورد"
                 if (_uiState.value.activeProjectId == 0L) {
                     _uiState.update { it.copy(activeProjectName = title) }
                 }
                 repository.indexAudioRecording(title, buf, RecordingSourceType.IMPORTED)
-                postBanner("تم استيراد الملف الصوتي وتحميل الموجات بنجاح")
+                postBanner("تم استيراد الملف بالصوت الأصلي النقي (0%) دون أي مؤثرات تلقائية")
             } finally {
                 _uiState.update { it.copy(isBusy = false) }
             }
@@ -672,7 +946,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         mixBgDurationMs = bg.durationMs,
                     )
                 }
-                postBanner("تم تحميل مسار الخلفية بنجاح، يمكنك الآن ضبط المستويات والمزج")
+                scheduleSmartDuckingPreviewRender()
+                postBanner("تم تحميل مسار الخلفية بنجاح، يمكنك الآن ضبط المستويات والمعاينة التلقائية")
             } finally {
                 _uiState.update { it.copy(isBusy = false) }
             }
@@ -681,7 +956,192 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearMixBackgroundTrack() {
         mixBgBuffer = null
-        _uiState.update { it.copy(mixBgName = null, mixBgDurationMs = 0L) }
+        stopMixPreviewPlayer()
+        _uiState.update { it.copy(mixBgName = null, mixBgDurationMs = 0L, isSmartMixPreviewActive = false) }
+    }
+
+    fun setSmartMixBgVolume(volume: Float) {
+        val clamped = clamp(volume, 0f, 1.0f)
+        _uiState.update { it.copy(smartMixBgVolume = clamped) }
+        scheduleSmartDuckingPreviewRender()
+    }
+
+    private fun scheduleSmartDuckingPreviewRender() {
+        val voice = activeBuffer ?: return
+        val music = mixBgBuffer ?: return
+        val bgVol = _uiState.value.smartMixBgVolume
+        smartMixPreviewJob?.cancel()
+        smartMixPreviewJob = viewModelScope.launch(Dispatchers.Default) {
+            delay(260L)
+            val mixed = mixWithSidechainAutoDucking(
+                voice = voice,
+                music = music,
+                musicBaseVolume = bgVol,
+            )
+            val tmpFile = File(getApplication<Application>().cacheDir, "temp_preview.wav.tmp")
+            val finalFile = previewTempFile()
+            writeStereoWavFile(tmpFile, mixed)
+            if (!tmpFile.renameTo(finalFile)) {
+                writeStereoWavFile(finalFile, mixed)
+                tmpFile.delete()
+            }
+            _uiState.update {
+                it.copy(
+                    previewWavPath = finalFile.absolutePath,
+                    isSmartMixPreviewActive = true,
+                )
+            }
+        }
+    }
+
+    fun toggleSmartDuckingPreviewPlayback() {
+        if (_uiState.value.isSmartMixPreviewActive && mixPreviewPlayer?.isPlaying == true) {
+            stopMixPreviewPlayer()
+            return
+        }
+        val voice = activeBuffer
+        val music = mixBgBuffer
+        if (voice == null || music == null) {
+            postBanner("يرجى اختيار مسار الصوت وموسيقى الخلفية أولاً")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            try {
+                player.pause()
+                val mixed = withContext(Dispatchers.Default) {
+                    mixWithSidechainAutoDucking(
+                        voice = voice,
+                        music = music,
+                        musicBaseVolume = _uiState.value.smartMixBgVolume,
+                    )
+                }
+                val finalFile = previewTempFile()
+                withContext(Dispatchers.IO) {
+                    writeStereoWavFile(finalFile, mixed)
+                }
+                _uiState.update { it.copy(previewWavPath = finalFile.absolutePath, isSmartMixPreviewActive = true) }
+                stopMixPreviewPlayer()
+                val mp = MediaPlayer().apply {
+                    setDataSource(finalFile.absolutePath)
+                    setOnCompletionListener {
+                        stopMixPreviewPlayer()
+                    }
+                    prepare()
+                    start()
+                }
+                mixPreviewPlayer = mp
+            } catch (_: Throwable) {
+                postBanner("تعذر تشغيل معاينة الدمج التلقائي")
+            } finally {
+                _uiState.update { it.copy(isBusy = false) }
+            }
+        }
+    }
+
+    private fun stopMixPreviewPlayer() {
+        runCatching { mixPreviewPlayer?.stop() }
+        runCatching { mixPreviewPlayer?.release() }
+        mixPreviewPlayer = null
+    }
+
+    fun applySmartDuckingMixToStudio() {
+        val voice = activeBuffer
+        val music = mixBgBuffer
+        if (voice == null || music == null) {
+            postBanner("يرجى اختيار مسار الصوت وموسيقى الخلفية أولاً")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            try {
+                stopMixPreviewPlayer()
+                val mixed = withContext(Dispatchers.Default) {
+                    mixWithSidechainAutoDucking(
+                        voice = voice,
+                        music = music,
+                        musicBaseVolume = _uiState.value.smartMixBgVolume,
+                    )
+                }
+                setActiveBuffer(mixed, recordUndo = true)
+                postBanner("تم اعتماد الدمج الذكي (Auto-Ducking) وحفظ النسخة في التراجع")
+            } finally {
+                _uiState.update { it.copy(isBusy = false) }
+            }
+        }
+    }
+
+    fun exportSmartDuckingMix(
+        format: ExportAudioFormat,
+        fileName: String,
+        shareAfter: Boolean = false,
+        targetPackage: String? = null,
+    ) {
+        val voice = activeBuffer ?: run {
+            postBanner(t(_uiState.value.language, "no_audio_loaded"))
+            return
+        }
+        val music = mixBgBuffer
+        if (music == null) {
+            exportRenderedAudio(
+                format = format,
+                fileName = fileName,
+                shareAfter = shareAfter,
+                targetPackage = targetPackage,
+            )
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, exportProgress = 0.08f) }
+            try {
+                val bgVol = _uiState.value.smartMixBgVolume
+                val mixed = withContext(Dispatchers.Default) {
+                    mixWithSidechainAutoDucking(
+                        voice = voice,
+                        music = music,
+                        musicBaseVolume = bgVol,
+                    )
+                }
+                _uiState.update { it.copy(exportProgress = 0.45f) }
+                val res = exportRenderedAudioToFile(
+                    context = getApplication(),
+                    buffer = mixed,
+                    format = format,
+                    baseFileName = fileName.ifBlank { "Sonix_Smart_Mix" },
+                ) { p ->
+                    _uiState.update { it.copy(exportProgress = 0.45f + p * 0.55f) }
+                }
+                pendingExportResult = res
+                if (shareAfter) {
+                    val app = getApplication<Application>()
+                    val uri = FileProvider.getUriForFile(
+                        app,
+                        "${app.packageName}.fileprovider",
+                        res.file,
+                    )
+                    _sideEffects.tryEmit(
+                        StudioSideEffect.LaunchShareIntent(
+                            uri = uri,
+                            mimeType = res.mimeType,
+                            title = res.file.name,
+                            targetPackage = targetPackage,
+                        ),
+                    )
+                } else {
+                    val cleanName = fileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "Sonix_Smart_Mix" }
+                    _sideEffects.tryEmit(
+                        StudioSideEffect.PromptSaveDocument(
+                            result = res,
+                            suggestedName = "$cleanName.${res.extension}",
+                        ),
+                    )
+                }
+            } catch (_: Throwable) {
+                postBanner("تعذر تصدير الدمج الذكي")
+            } finally {
+                _uiState.update { it.copy(isBusy = false, exportProgress = null) }
+            }
+        }
     }
 
     fun mixWithBackgroundTrack(mainGain: Float, bgGain: Float) {
@@ -742,49 +1202,73 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun undoLastEdit() {
         val prev = undoStack.removeLastOrNull() ?: return
-        activeBuffer?.let { cur ->
-            if (redoStack.size >= 12) redoStack.removeFirst()
-            redoStack.addLast(cur)
+        lastDspSnapshotTimeMs = 0L
+        if (redoStack.size >= 20) redoStack.removeFirst()
+        redoStack.addLast(currentSnapshot())
+
+        val bufferChanged = prev.buffer != null && prev.buffer !== activeBuffer
+        if (bufferChanged) {
+            activeBuffer = prev.buffer
+            player.setBuffer(prev.buffer, resetPosition = true)
         }
-        activeBuffer = prev
-        player.setBuffer(prev, resetPosition = true)
-        val peaks = computeWaveformPeaks(prev, 120)
-        _uiState.update {
-            it.copy(
-                durationMs = prev.durationMs,
-                waveformPeaks = peaks,
-                trimStart = 0f,
-                trimEnd = 1f,
+        val restoredCfg = prev.dspConfig.normalized()
+        syncPlayerConfig(restoredCfg)
+        _uiState.update { cur ->
+            val targetBuf = prev.buffer
+            val newPeaks = if (bufferChanged && targetBuf != null) computeWaveformPeaks(targetBuf, 120) else cur.waveformPeaks
+            cur.copy(
+                hasAudio = targetBuf != null || cur.hasAudio,
+                durationMs = if (bufferChanged && targetBuf != null) targetBuf.durationMs else cur.durationMs,
+                waveformPeaks = newPeaks,
+                trimStart = if (bufferChanged) 0f else cur.trimStart,
+                trimEnd = if (bufferChanged) 1f else cur.trimEnd,
+                dspConfig = restoredCfg,
+                activePresetId = prev.activePresetId,
+                selectedPresetLabel = prev.selectedPresetLabel,
                 canUndoEdit = undoStack.isNotEmpty(),
                 canRedoEdit = redoStack.isNotEmpty(),
+                hasUnsavedChanges = true,
             )
         }
+        scheduleTempPreviewRender()
         postBanner("تم التراجع عن آخر تعديل")
     }
 
     fun redoLastEdit() {
         val next = redoStack.removeLastOrNull() ?: return
-        activeBuffer?.let { cur ->
-            if (undoStack.size >= 12) undoStack.removeFirst()
-            undoStack.addLast(cur)
+        lastDspSnapshotTimeMs = 0L
+        if (undoStack.size >= 20) undoStack.removeFirst()
+        undoStack.addLast(currentSnapshot())
+
+        val bufferChanged = next.buffer != null && next.buffer !== activeBuffer
+        if (bufferChanged) {
+            activeBuffer = next.buffer
+            player.setBuffer(next.buffer, resetPosition = true)
         }
-        activeBuffer = next
-        player.setBuffer(next, resetPosition = true)
-        val peaks = computeWaveformPeaks(next, 120)
-        _uiState.update {
-            it.copy(
-                durationMs = next.durationMs,
-                waveformPeaks = peaks,
-                trimStart = 0f,
-                trimEnd = 1f,
+        val restoredCfg = next.dspConfig.normalized()
+        syncPlayerConfig(restoredCfg)
+        _uiState.update { cur ->
+            val targetBuf = next.buffer
+            val newPeaks = if (bufferChanged && targetBuf != null) computeWaveformPeaks(targetBuf, 120) else cur.waveformPeaks
+            cur.copy(
+                hasAudio = targetBuf != null || cur.hasAudio,
+                durationMs = if (bufferChanged && targetBuf != null) targetBuf.durationMs else cur.durationMs,
+                waveformPeaks = newPeaks,
+                trimStart = if (bufferChanged) 0f else cur.trimStart,
+                trimEnd = if (bufferChanged) 1f else cur.trimEnd,
+                dspConfig = restoredCfg,
+                activePresetId = next.activePresetId,
+                selectedPresetLabel = next.selectedPresetLabel,
                 canUndoEdit = undoStack.isNotEmpty(),
                 canRedoEdit = redoStack.isNotEmpty(),
+                hasUnsavedChanges = true,
             )
         }
+        scheduleTempPreviewRender()
         postBanner("تمت إعادة التعديل")
     }
 
-    // Projects, Presets & Export
+    // Projects, Presets, Cloud Drafts & Export
     fun setActiveProjectName(name: String) {
         _uiState.update { it.copy(activeProjectName = name) }
     }
@@ -817,6 +1301,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun saveEditsPermanent() {
         undoStack.clear()
         redoStack.clear()
+        lastDspSnapshotTimeMs = 0L
         _uiState.update { it.copy(canUndoEdit = false, canRedoEdit = false) }
         saveCurrentProject()
     }
@@ -826,18 +1311,22 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         activeBuffer = null
         undoStack.clear()
         redoStack.clear()
+        lastDspSnapshotTimeMs = 0L
+        deleteTempPreviewFile()
         val def = DspConfig()
         player.setBuffer(null, resetPosition = true)
         syncPlayerConfig(def, holdBypass = false)
         _uiState.update {
             it.copy(
                 activeProjectId = 0L,
+                activeCloudDraftId = null,
                 activeProjectName = t(it.language, "untitled_project"),
                 hasAudio = false,
                 durationMs = 0L,
                 waveformPeaks = emptyList(),
                 dspConfig = def,
                 activePresetId = null,
+                selectedPresetLabel = "",
                 hasUnsavedChanges = false,
                 canUndoEdit = false,
                 canRedoEdit = false,
@@ -856,17 +1345,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update {
                     it.copy(
                         activeProjectId = project.id,
+                        activeCloudDraftId = null,
                         activeProjectName = project.name,
                         dspConfig = project.config,
                         activePresetId = null,
+                        selectedPresetLabel = "",
                     )
                 }
                 syncPlayerConfig(project.config)
                 if (buf != null) {
-                    setActiveBuffer(buf, recordUndo = false)
+                    setActiveBuffer(buf, recordUndo = false, resetDspOnNewEntry = false)
                 } else {
                     activeBuffer = null
                     player.setBuffer(null, resetPosition = true)
+                    deleteTempPreviewFile()
                     _uiState.update {
                         it.copy(
                             hasAudio = false,
@@ -902,8 +1394,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     postBanner("تعذر تحميل التسجيل المحفوظ")
                     return@launch
                 }
-                setActiveBuffer(buf, recordUndo = false)
-                postBanner("تم فتح \"${rec.title}\" في الاستوديو بنجاح")
+                setActiveBuffer(buf, recordUndo = false, resetDspOnNewEntry = true)
+                postBanner("تم فتح \"${rec.title}\" بالصوت الأصلي النظيف في الاستوديو")
             } finally {
                 _uiState.update { it.copy(isBusy = false) }
             }
@@ -918,30 +1410,137 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun applyPreset(preset: StudioPreset) {
+        pushUndoSnapshot(debounced = false)
         val next = preset.config.copy(bypassAll = false).normalized()
         _uiState.update {
             it.copy(
                 dspConfig = next,
                 activePresetId = preset.id,
+                selectedPresetLabel = preset.name,
+                isHoldBypassing = false,
+                canUndoEdit = undoStack.isNotEmpty(),
+                canRedoEdit = redoStack.isNotEmpty(),
                 hasUnsavedChanges = true,
             )
         }
-        syncPlayerConfig(next)
-        postBanner("تم تطبيق قالب \"${preset.name}\"")
+        syncPlayerConfig(next, holdBypass = false)
+        scheduleTempPreviewRender()
+        postBanner("تم تطبيق قالب \"${preset.name}\" للمعاينة الفورية")
     }
 
     fun saveCustomPreset(name: String, description: String) {
         if (name.isBlank()) return
         viewModelScope.launch {
-            repository.saveCustomPreset(name, description, _uiState.value.dspConfig)
-            postBanner("تم حفظ القالب \"$name\"")
+            val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
+            if (!uid.isNullOrBlank()) {
+                val res = firestoreRepo.saveCustomPreset(uid, name, description, _uiState.value.dspConfig)
+                if (res.isSuccess) {
+                    postBanner("تم حفظ القالب \"$name\" في السحابة بنجاح")
+                } else {
+                    val errMsg = res.exceptionOrNull()?.localizedMessage ?: "تعذر حفظ القالب في السحابة"
+                    postBanner(errMsg)
+                }
+            } else {
+                repository.saveCustomPreset(name, description, _uiState.value.dspConfig)
+                postBanner("تم حفظ القالب \"$name\"")
+            }
         }
     }
 
     fun deleteCustomPreset(presetId: Long) {
         viewModelScope.launch {
-            repository.deleteCustomPreset(presetId)
-            postBanner("تم حذف القالب المخصص")
+            val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
+            val match = _uiState.value.customPresets.firstOrNull { it.id == presetId }
+            val cloudDocId = match?.cloudDocId
+            if (!uid.isNullOrBlank() && !cloudDocId.isNullOrBlank()) {
+                val res = firestoreRepo.deleteCustomPreset(uid, cloudDocId)
+                if (res.isSuccess) {
+                    postBanner("تم حذف القالب المخصص من السحابة")
+                } else {
+                    postBanner(res.exceptionOrNull()?.localizedMessage ?: "تعذر حذف القالب المخصص")
+                }
+            } else {
+                repository.deleteCustomPreset(presetId)
+                postBanner("تم حذف القالب المخصص")
+            }
+        }
+    }
+
+    fun saveCloudDraft(draftName: String) {
+        val cleanName = draftName.trim()
+        if (cleanName.isBlank()) return
+        val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
+        val lang = _uiState.value.language
+        if (uid.isNullOrBlank()) {
+            postBanner(t(lang, "cloud_drafts_signin_hint"))
+            return
+        }
+        val st = _uiState.value
+        val presetName = st.selectedPresetLabel.ifBlank { st.activeProjectName }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            try {
+                val res = firestoreRepo.saveDraft(
+                    userId = uid,
+                    existingDraftId = st.activeCloudDraftId,
+                    name = cleanName,
+                    selectedPresetName = presetName,
+                    durationMs = st.durationMs,
+                    sampleRate = activeBuffer?.sampleRate ?: 44100,
+                    config = st.dspConfig,
+                )
+                if (res.isSuccess) {
+                    val newDocId = res.getOrNull()
+                    _uiState.update {
+                        it.copy(
+                            activeCloudDraftId = newDocId ?: it.activeCloudDraftId,
+                            activeProjectName = cleanName,
+                            hasUnsavedChanges = false,
+                        )
+                    }
+                    postBanner(t(lang, "draft_saved_success"))
+                } else {
+                    postBanner(res.exceptionOrNull()?.localizedMessage ?: "تعذر حفظ المسودة السحابية")
+                }
+            } finally {
+                _uiState.update { it.copy(isBusy = false) }
+            }
+        }
+    }
+
+    fun loadCloudDraft(draft: CloudDraft) {
+        pushUndoSnapshot(debounced = false)
+        val restored = draft.config.copy(bypassAll = false).normalized()
+        syncPlayerConfig(restored, holdBypass = false)
+        _uiState.update {
+            it.copy(
+                activeCloudDraftId = draft.docId,
+                activeProjectName = draft.name,
+                dspConfig = restored,
+                activePresetId = null,
+                selectedPresetLabel = draft.selectedPresetName,
+                isHoldBypassing = false,
+                canUndoEdit = undoStack.isNotEmpty(),
+                canRedoEdit = redoStack.isNotEmpty(),
+                hasUnsavedChanges = false,
+            )
+        }
+        scheduleTempPreviewRender()
+        postBanner("تم تحميل المسودة \"${draft.name}\" للمعاينة")
+    }
+
+    fun deleteCloudDraft(draftId: String) {
+        val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull() ?: return
+        viewModelScope.launch {
+            val res = firestoreRepo.deleteDraft(uid, draftId)
+            if (res.isSuccess) {
+                if (_uiState.value.activeCloudDraftId == draftId) {
+                    _uiState.update { it.copy(activeCloudDraftId = null) }
+                }
+                postBanner("تم حذف المسودة السحابية")
+            } else {
+                postBanner(res.exceptionOrNull()?.localizedMessage ?: "تعذر حذف المسودة")
+            }
         }
     }
 
@@ -949,6 +1548,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         format: ExportAudioFormat,
         fileName: String,
         shareAfter: Boolean = false,
+        targetPackage: String? = null,
     ) {
         val src = activeBuffer ?: run {
             postBanner("لا يوجد صوت لتصديره حالياً")
@@ -984,10 +1584,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             uri = uri,
                             mimeType = res.mimeType,
                             title = res.file.name,
+                            targetPackage = targetPackage,
                         ),
                     )
                 } else {
-                    val cleanName = fileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "VoicePro_Export" }
+                    val cleanName = fileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "Sonix_Export" }
                     _sideEffects.tryEmit(
                         StudioSideEffect.PromptSaveDocument(
                             result = res,
@@ -1070,6 +1671,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
             try {
+                pushUndoSnapshot(debounced = false)
                 val analysis = withContext(Dispatchers.Default) {
                     analyzeAndOptimizeAudio(src, _uiState.value.dspConfig)
                 }
@@ -1078,10 +1680,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         smartMasterState = analysis,
                         dspConfig = analysis.optimizedConfig,
                         activePresetId = null,
+                        selectedPresetLabel = "Smart Auto-Master",
+                        canUndoEdit = undoStack.isNotEmpty(),
+                        canRedoEdit = redoStack.isNotEmpty(),
                         hasUnsavedChanges = true,
                     )
                 }
                 syncPlayerConfig(analysis.optimizedConfig)
+                scheduleTempPreviewRender()
                 postBanner("تم تحليل الصوت وتطبيق الماسترينغ الذكي تلقائياً")
             } finally {
                 _uiState.update { it.copy(isBusy = false) }
@@ -1122,10 +1728,275 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // TTS Studio (Android native TextToSpeech Preview & File Synthesis)
+    // In-App Audio Library Scanner & Actions
+    fun refreshDeviceAudios() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isScanningDeviceAudio = true) }
+            try {
+                val items = MediaStoreAudioRepository.queryDeviceAudioFiles(getApplication())
+                _uiState.update { it.copy(deviceAudios = items) }
+            } finally {
+                _uiState.update { it.copy(isScanningDeviceAudio = false) }
+            }
+        }
+    }
+
+    fun importDeviceAudioItem(item: DeviceAudioItem) {
+        importAudioUri(Uri.parse(item.uriString))
+    }
+
+    fun appendDeviceAudioItem(item: DeviceAudioItem) {
+        appendAudioUriToCurrent(Uri.parse(item.uriString))
+    }
+
+    fun loadMixBackgroundDeviceItem(item: DeviceAudioItem) {
+        loadMixBackgroundUri(Uri.parse(item.uriString))
+    }
+
+    // Global Pro Presets & 18-Tool Operations (100% Non-Destructive Live Preview)
+    fun applyGlobalProPreset(preset: GlobalProPreset, bakeOffline: Boolean = false) {
+        pushUndoSnapshot(debounced = false)
+        val nextCfg = preset.dspConfig.copy(bypassAll = false).normalized()
+        val title = t(_uiState.value.language, preset.titleKey)
+        _uiState.update {
+            it.copy(
+                dspConfig = nextCfg,
+                activePresetId = null,
+                selectedPresetLabel = title,
+                isHoldBypassing = false,
+                canUndoEdit = undoStack.isNotEmpty(),
+                canRedoEdit = redoStack.isNotEmpty(),
+                hasUnsavedChanges = true,
+            )
+        }
+        syncPlayerConfig(nextCfg, holdBypass = false)
+        scheduleTempPreviewRender()
+        postBanner("تم تفعيل القالب العالمي \"$title\" للمعاينة الحية بدون المساس بالأصل")
+    }
+
+    fun applyReverseAudio() {
+        val src = activeBuffer ?: run {
+            postBanner("يرجى تسجيل أو اختيار ملف صوتي أولاً")
+            return
+        }
+        val reversed = reverseAudio(src)
+        setActiveBuffer(reversed, recordUndo = true)
+        postBanner("تم عكس مسار الصوت بنجاح (Reverse)")
+    }
+
+    fun insertGeneratedSilence(durationSeconds: Float, appendToCurrent: Boolean) {
+        val silence = generateSilence(durationSeconds)
+        val cur = activeBuffer
+        val isAppend = appendToCurrent && cur != null
+        val result = if (isAppend) {
+            mergeClips(cur!!, silence, crossfadeMs = 5)
+        } else {
+            silence
+        }
+        setActiveBuffer(result, recordUndo = isAppend, resetDspOnNewEntry = !isAppend)
+        postBanner("تم إنشاء مسار صمت (${"%.1f".format(durationSeconds)} ثانية) وإدراجه بالاستوديو")
+    }
+
+    fun applySurroundStereo(midLevel: Float, sideLevel: Float, stereoWidth: Float) {
+        val src = activeBuffer ?: run {
+            postBanner("يرجى اختيار ملف صوتي أولاً للتحويل إلى ستيريو")
+            return
+        }
+        val widened = convertToSurroundStereo(src, midLevel, sideLevel, stereoWidth)
+        setActiveBuffer(widened, recordUndo = true)
+        postBanner("تم تحويل المقطع إلى ستيريو محيطي متسع (M/S Surround)")
+    }
+
+    fun applyPitchAndSpeed(semitones: Float, tempoRatio: Float) {
+        val src = activeBuffer ?: run {
+            postBanner("يرجى اختيار ملف صوتي أولاً لتعديل الطبقة والسرعة")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, purifyProgress = 0.2f) }
+            try {
+                val processed = applyPitchAndSpeedOffline(src, semitones, tempoRatio)
+                setActiveBuffer(processed, recordUndo = true)
+                postBanner("تم تعديل الطبقة والسرعة وحفظ النسخة في التراجع")
+            } finally {
+                _uiState.update { it.copy(isBusy = false, purifyProgress = null) }
+            }
+        }
+    }
+
+    fun splitAudioAtFraction(fraction: Float, loadPart: Int, saveBothPartsToLibrary: Boolean) {
+        val src = activeBuffer ?: run {
+            postBanner("يرجى اختيار ملف صوتي أولاً لتقسيمه")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            try {
+                val (part1, part2) = splitAudioByTime(src, fraction)
+                if (saveBothPartsToLibrary) {
+                    val base = _uiState.value.activeProjectName.ifBlank { "Clip" }
+                    repository.indexAudioRecording("$base • الجزء 1", part1, RecordingSourceType.RECORDING)
+                    repository.indexAudioRecording("$base • الجزء 2", part2, RecordingSourceType.RECORDING)
+                }
+                setActiveBuffer(if (loadPart == 2) part2 else part1, recordUndo = true)
+                postBanner("تم تقسيم المسار الصوتي وتحميل الجزء المختار في الاستوديو")
+            } finally {
+                _uiState.update { it.copy(isBusy = false) }
+            }
+        }
+    }
+
+    fun splitStereoChannel(keepLeft: Boolean) {
+        val src = activeBuffer ?: run {
+            postBanner("يرجى اختيار ملف صوتي أولاً لفصل القنوات")
+            return
+        }
+        val (leftBuf, rightBuf) = splitStereoChannels(src)
+        setActiveBuffer(if (keepLeft) leftBuf else rightBuf, recordUndo = true)
+        postBanner(if (keepLeft) "تم عزل القناة اليسرى (Left Channel)" else "تم عزل القناة اليمنى (Right Channel)")
+    }
+
+    fun compressAndExportAudio(bitrateKbps: Int, fileName: String, shareAfter: Boolean) {
+        val src = activeBuffer ?: run {
+            postBanner("لا يوجد صوت لضغطه حالياً")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, exportProgress = 0.1f) }
+            try {
+                val rendered = withContext(Dispatchers.Default) {
+                    renderOfflineDsp(src, _uiState.value.dspConfig)
+                }
+                _uiState.update { it.copy(exportProgress = 0.45f) }
+                val res = exportRenderedAudioToFile(
+                    context = getApplication(),
+                    buffer = rendered,
+                    format = ExportAudioFormat.M4A,
+                    baseFileName = fileName.ifBlank { "Sonix_${bitrateKbps}kbps" },
+                    bitrateKbps = bitrateKbps,
+                ) { p ->
+                    _uiState.update { it.copy(exportProgress = 0.45f + p * 0.55f) }
+                }
+                pendingExportResult = res
+                if (shareAfter) {
+                    val app = getApplication<Application>()
+                    val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", res.file)
+                    _sideEffects.tryEmit(StudioSideEffect.LaunchShareIntent(uri, res.mimeType, res.file.name))
+                } else {
+                    val cleanName = fileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "Sonix_${bitrateKbps}k" }
+                    _sideEffects.tryEmit(StudioSideEffect.PromptSaveDocument(res, "$cleanName.${res.extension}"))
+                }
+            } catch (_: Throwable) {
+                postBanner("تعذر ضغط وتصدير الملف الصوتي")
+            } finally {
+                _uiState.update { it.copy(isBusy = false, exportProgress = null) }
+            }
+        }
+    }
+
+    fun extractAudioFromVideoUri(videoUri: Uri) {
+        importAudioUri(videoUri)
+    }
+
+    fun exportVideoWithEditedAudio(
+        videoUri: Uri,
+        mixWithOriginal: Boolean,
+        originalGain: Float,
+        newGain: Float,
+        outputName: String,
+        shareAfter: Boolean,
+    ) {
+        val studioAudio = activeBuffer ?: run {
+            postBanner("استورد أو سجّل الصوت الجديد أولاً ثم امزجه مع الفيديو")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, exportProgress = 0.05f) }
+            try {
+                val app = getApplication<Application>()
+                val exportDir = File(app.cacheDir, "exports").apply { mkdirs() }
+                val cleanBase = outputName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "Sonix_Video_Mix" }
+                val outMp4 = File(exportDir, "$cleanBase.mp4")
+                val ok = replaceOrMixVideoAudio(
+                    context = app,
+                    videoUri = videoUri,
+                    newAudio = studioAudio,
+                    mixWithOriginal = mixWithOriginal,
+                    originalGain = originalGain,
+                    newGain = newGain,
+                    outputMp4File = outMp4,
+                ) { p ->
+                    _uiState.update { it.copy(exportProgress = p) }
+                }
+                if (!ok || !outMp4.exists()) {
+                    postBanner("تعذر دمج الصوت مع ملف الفيديو المحدد")
+                    return@launch
+                }
+                val res = ExportedAudioResult(outMp4, "mp4", "video/mp4")
+                pendingExportResult = res
+                if (shareAfter) {
+                    val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", outMp4)
+                    _sideEffects.tryEmit(StudioSideEffect.LaunchShareIntent(uri, "video/mp4", outMp4.name))
+                } else {
+                    _sideEffects.tryEmit(StudioSideEffect.PromptSaveDocument(res, "$cleanBase.mp4"))
+                }
+            } finally {
+                _uiState.update { it.copy(isBusy = false, exportProgress = null) }
+            }
+        }
+    }
+
+    fun createRingtoneFromSelection(
+        startFrac: Float,
+        endFrac: Float,
+        title: String,
+        setAsDefault: Boolean,
+        onNeedsWriteSettings: () -> Unit,
+    ) {
+        val src = activeBuffer ?: run {
+            postBanner("يرجى اختيار أو تسجيل مقطع صوتي لصناعة النغمة")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            try {
+                val clipped = trimToSelection(src, clamp(startFrac, 0f, 0.98f), clamp(endFrac, 0.02f, 1f))
+                val rendered = withContext(Dispatchers.Default) {
+                    renderOfflineDsp(clipped, _uiState.value.dspConfig)
+                }
+                when (val res = saveAndSetRingtone(getApplication(), rendered, title, setAsDefault)) {
+                    is RingtoneSaveResult.Saved -> {
+                        if (res.needsWriteSettings) {
+                            postBanner("تم حفظ النغمة بمجلد الرنين — اسمح بتعديل إعدادات النظام لتعيينها نغمة افتراضية")
+                            onNeedsWriteSettings()
+                        } else if (res.appliedAsDefault) {
+                            postBanner("تم حفظ النغمة وتعيينها كنغمة رنين افتراضية بنجاح")
+                        } else {
+                            postBanner("تم حفظ النغمة في مجلد نغمات الرنين بنجاح")
+                        }
+                    }
+                    is RingtoneSaveResult.Error -> postBanner(res.message)
+                }
+            } finally {
+                _uiState.update { it.copy(isBusy = false) }
+            }
+        }
+    }
+
+    // TTS Studio (Edge Neural TTS Cloud + Automatic On-Device Fallback)
+    private fun releaseTtsPreviewPlayer() {
+        runCatching { ttsPreviewPlayer?.stop() }
+        runCatching { ttsPreviewPlayer?.release() }
+        ttsPreviewPlayer = null
+        ttsPreviewTempFile?.delete()
+        ttsPreviewTempFile = null
+    }
+
     fun previewTtsSpeech(
         text: String,
         dialect: TtsDialect,
+        gender: TtsGender,
+        style: TtsDeliveryStyle,
         speechRate: Float,
         pitch: Float,
     ) {
@@ -1134,10 +2005,70 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         viewModelScope.launch {
+            stopTtsPreview()
             _uiState.update {
-                it.copy(ttsUiState = TtsStudioUiState(isPreviewing = true, isGenerating = false, errorMessage = null))
+                it.copy(
+                    ttsUiState = TtsStudioUiState(
+                        isSynthesizingPreview = true,
+                        isPreviewing = false,
+                        isGenerating = false,
+                        usedFallbackEngine = false,
+                        errorMessage = null,
+                    ),
+                )
             }
-            val started = ttsEngine.preview(text, dialect, speechRate, pitch) {
+            val edgeRes = EdgeTtsClient.synthesize(
+                context = getApplication(),
+                text = text.trim(),
+                dialect = dialect,
+                gender = gender,
+                style = style,
+                speechRate = speechRate,
+                pitch = pitch,
+            )
+            if (edgeRes != null) {
+                ttsPreviewTempFile = edgeRes.mp3File
+                val mp = MediaPlayer()
+                val prepared = runCatching {
+                    mp.setDataSource(edgeRes.mp3File.absolutePath)
+                    mp.prepare()
+                    mp.setOnCompletionListener {
+                        releaseTtsPreviewPlayer()
+                        _uiState.update { it.copy(ttsUiState = it.ttsUiState.copy(isPreviewing = false)) }
+                    }
+                    mp.start()
+                    ttsPreviewPlayer = mp
+                    true
+                }.getOrDefault(false)
+                if (prepared) {
+                    _uiState.update {
+                        it.copy(
+                            ttsUiState = TtsStudioUiState(
+                                isSynthesizingPreview = false,
+                                isPreviewing = true,
+                                usedFallbackEngine = false,
+                                errorMessage = null,
+                            ),
+                        )
+                    }
+                    return@launch
+                } else {
+                    runCatching { mp.release() }
+                    edgeRes.mp3File.delete()
+                }
+            }
+
+            // Fallback to local on-device Android TextToSpeech
+            _uiState.update {
+                it.copy(
+                    ttsUiState = it.ttsUiState.copy(
+                        isSynthesizingPreview = false,
+                        isPreviewing = true,
+                        usedFallbackEngine = true,
+                    ),
+                )
+            }
+            val started = ttsEngine.preview(text, dialect, speechRate * style.rateFactor, pitch) {
                 _uiState.update {
                     it.copy(ttsUiState = it.ttsUiState.copy(isPreviewing = false))
                 }
@@ -1146,7 +2077,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update {
                     it.copy(
                         ttsUiState = TtsStudioUiState(
+                            isSynthesizingPreview = false,
                             isPreviewing = false,
+                            usedFallbackEngine = true,
                             errorMessage = "تعذر تشغيل محرك النطق على هذا الجهاز.",
                         ),
                     )
@@ -1156,13 +2089,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun stopTtsPreview() {
+        releaseTtsPreviewPlayer()
         ttsEngine.stopPreview()
-        _uiState.update { it.copy(ttsUiState = it.ttsUiState.copy(isPreviewing = false)) }
+        _uiState.update {
+            it.copy(
+                ttsUiState = it.ttsUiState.copy(
+                    isSynthesizingPreview = false,
+                    isPreviewing = false,
+                ),
+            )
+        }
     }
 
     fun generateTtsToStudio(
         text: String,
         dialect: TtsDialect,
+        gender: TtsGender,
+        style: TtsDeliveryStyle,
         speechRate: Float,
         pitch: Float,
         appendToExisting: Boolean,
@@ -1172,18 +2115,41 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update {
                 it.copy(
                     isBusy = true,
-                    ttsUiState = TtsStudioUiState(isPreviewing = false, isGenerating = true, errorMessage = null),
+                    ttsUiState = TtsStudioUiState(
+                        isSynthesizingPreview = false,
+                        isPreviewing = false,
+                        isGenerating = true,
+                        usedFallbackEngine = false,
+                        errorMessage = null,
+                    ),
                 )
             }
             try {
-                ttsEngine.stopPreview()
-                val rawBuf = ttsEngine.synthesizeToBuffer(text.trim(), dialect, speechRate, pitch)
+                stopTtsPreview()
+                val edgeRes = EdgeTtsClient.synthesize(
+                    context = getApplication(),
+                    text = text.trim(),
+                    dialect = dialect,
+                    gender = gender,
+                    style = style,
+                    speechRate = speechRate,
+                    pitch = pitch,
+                )
+                edgeRes?.mp3File?.delete()
+
+                var fallbackUsed = false
+                val rawBuf = edgeRes?.buffer ?: run {
+                    fallbackUsed = true
+                    ttsEngine.synthesizeToBuffer(text.trim(), dialect, speechRate * style.rateFactor, pitch)
+                }
+
                 if (rawBuf == null || rawBuf.frameCount == 0) {
                     _uiState.update {
                         it.copy(
                             ttsUiState = TtsStudioUiState(
                                 isGenerating = false,
-                                errorMessage = "تعذر توليد الصوت عبر محرك النطق بالنظام.",
+                                usedFallbackEngine = fallbackUsed,
+                                errorMessage = "تعذر توليد الصوت عبر المحرك السحابي أو المحلي.",
                             ),
                         )
                     }
@@ -1191,15 +2157,19 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 val existing = activeBuffer
-                val finalBuf = if (appendToExisting && existing != null) {
-                    mergeClips(existing, rawBuf)
+                val isAppend = appendToExisting && existing != null
+                val finalBuf = if (isAppend) {
+                    mergeClips(existing!!, rawBuf)
                 } else {
                     rawBuf
                 }
-                setActiveBuffer(finalBuf, recordUndo = appendToExisting && existing != null)
+                setActiveBuffer(finalBuf, recordUndo = isAppend, resetDspOnNewEntry = !isAppend)
                 val dialectLabel = t(_uiState.value.language, dialect.titleKey)
                 repository.indexAudioRecording("TTS • $dialectLabel", rawBuf, RecordingSourceType.TTS)
-                postBanner("تم توليد وإدراج المقطع الصوتي ($dialectLabel) في الاستوديو بنجاح")
+                _uiState.update {
+                    it.copy(ttsUiState = it.ttsUiState.copy(usedFallbackEngine = fallbackUsed))
+                }
+                postBanner("تم توليد وإدراج الصوت البشري ($dialectLabel) في الاستوديو بنجاح")
             } finally {
                 _uiState.update {
                     it.copy(
@@ -1245,10 +2215,62 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // Native Android SpeechRecognizer Studio
+    fun isSpeechRecognizerAvailable(): Boolean = speechTranscriber.isAvailable()
+
+    fun setSpeechLocale(localeTag: String) {
+        speechTranscriber.setLocale(localeTag)
+    }
+
+    fun updateSpeechTranscript(text: String) {
+        speechTranscriber.setEditedText(text)
+    }
+
+    fun startLiveSpeechDictation() {
+        player.pause()
+        stopMixPreviewPlayer()
+        val loc = _uiState.value.speechState.localeTag
+        speechTranscriber.startListening(localeTag = loc, isClipRouting = false)
+    }
+
+    fun startStudioClipSpeechTranscription() {
+        if (activeBuffer == null) {
+            postBanner(t(_uiState.value.language, "no_audio_loaded"))
+            return
+        }
+        stopMixPreviewPlayer()
+        val loc = _uiState.value.speechState.localeTag
+        player.seekToFraction(0f)
+        player.play()
+        speechTranscriber.startListening(localeTag = loc, isClipRouting = true)
+    }
+
+    fun stopSpeechTranscription() {
+        val wasClipRouting = speechTranscriber.state.value.isRoutingClip
+        speechTranscriber.stop()
+        if (wasClipRouting && _uiState.value.playback.isPlaying) {
+            player.pause()
+        }
+    }
+
+    fun clearSpeechTranscription() {
+        speechTranscriber.clear()
+    }
+
     override fun onCleared() {
         super.onCleared()
+        runCatching { Firebase.auth.removeAuthStateListener(authStateListener) }
+        cloudPresetsJob?.cancel()
+        cloudDraftsJob?.cancel()
+        sleepTimerJob?.cancel()
+        smartMixPreviewJob?.cancel()
+        deleteTempPreviewFile()
         player.dispose()
         recorder.discard()
+        stopMixPreviewPlayer()
+        releaseTtsPreviewPlayer()
         ttsEngine.shutdown()
+        speechTranscriber.destroy()
+        SonixMediaPlaybackService.stopService(getApplication())
     }
 }

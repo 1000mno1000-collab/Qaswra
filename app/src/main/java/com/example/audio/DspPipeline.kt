@@ -11,6 +11,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.tanh
 
 class DspPipeline(
@@ -32,6 +33,14 @@ class DspPipeline(
     private val compressor = CompressorProcessor(sampleRate)
     private val echoReverb = EchoReverbProcessor(sampleRate)
     private val limiter = LimiterProcessor(sampleRate)
+
+    private var spatialPhase = 0.0
+    private var vibratoPhase = 0.0
+    private val vibSize = 512
+    private val vibMask = vibSize - 1
+    private val vibRingL = FloatArray(vibSize)
+    private val vibRingR = FloatArray(vibSize)
+    private var vibIdx = 0
 
     private var lastBassKey = ""
     private var lastTrebleKey = ""
@@ -113,6 +122,11 @@ class DspPipeline(
         compressor.reset()
         echoReverb.reset()
         limiter.reset()
+        spatialPhase = 0.0
+        vibratoPhase = 0.0
+        vibRingL.fill(0f)
+        vibRingR.fill(0f)
+        vibIdx = 0
     }
 
     @Synchronized
@@ -122,7 +136,7 @@ class DspPipeline(
         count: Int,
     ) {
         val cfg = config
-        if (cfg.bypassAll || count <= 0) return
+        if (count <= 0 || !cfg.hasAnyActiveProcessing()) return
 
         for (slot in cfg.chain) {
             if (!slot.enabled) continue
@@ -140,6 +154,40 @@ class DspPipeline(
                 EffectType.COMPRESSOR -> compressor.processStereo(left, right, count, cfg.compressor)
                 EffectType.ECHO_REVERB -> echoReverb.processStereo(left, right, count)
                 EffectType.LIMITER -> limiter.processStereo(left, right, count, cfg.limiter)
+            }
+        }
+
+        if (cfg.vibratoHz > 0.1f && cfg.vibratoDepth > 0.01f) {
+            val vibInc = (2.0 * PI * cfg.vibratoHz) / sampleRate
+            val maxDelay = min(vibSize - 8.0, sampleRate * 0.004 * cfg.vibratoDepth)
+            for (i in 0 until count) {
+                vibRingL[vibIdx] = left[i]
+                vibRingR[vibIdx] = right[i]
+                val lfo = 0.5 * (1.0 + sin(vibratoPhase))
+                val delay = 2.0 + lfo * maxDelay
+                val rp = (vibIdx - delay + vibSize) % vibSize
+                val i0 = floor(rp).toInt() and vibMask
+                val i1 = (i0 + 1) and vibMask
+                val f = (rp - floor(rp)).toFloat()
+                left[i] = vibRingL[i0] + (vibRingL[i1] - vibRingL[i0]) * f
+                right[i] = vibRingR[i0] + (vibRingR[i1] - vibRingR[i0]) * f
+                vibIdx = (vibIdx + 1) and vibMask
+                vibratoPhase += vibInc
+                if (vibratoPhase > 2.0 * PI) vibratoPhase -= 2.0 * PI
+            }
+        }
+
+        if (cfg.spatialPanHz > 0.01f) {
+            val panInc = (2.0 * PI * cfg.spatialPanHz) / sampleRate
+            for (i in 0 until count) {
+                val angle = 0.5 * (1.0 + sin(spatialPhase)) * (PI / 2.0)
+                val gL = cos(angle).toFloat()
+                val gR = sin(angle).toFloat()
+                val mono = 0.5f * (left[i] + right[i])
+                left[i] = clamp(mono * gL * 1.12f + left[i] * 0.25f, -1f, 1f)
+                right[i] = clamp(mono * gR * 1.12f + right[i] * 0.25f, -1f, 1f)
+                spatialPhase += panInc
+                if (spatialPhase > 2.0 * PI) spatialPhase -= 2.0 * PI
             }
         }
 

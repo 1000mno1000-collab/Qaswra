@@ -28,10 +28,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.rounded.Redo
+import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.BookmarkAdd
+import androidx.compose.material.icons.rounded.CompareArrows
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
@@ -42,6 +48,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -69,6 +76,34 @@ import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import kotlin.math.roundToInt
+
+@Composable
+fun InfoBadgeButton(
+    contentDescription: String,
+    testTag: String,
+    accentColor: Color = StudioColors.Cyan,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = accentColor.copy(alpha = 0.16f),
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.5f)),
+        modifier = modifier
+            .size(48.dp)
+            .padding(8.dp)
+            .testTag(testTag),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = "!",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
+                color = accentColor,
+            )
+        }
+    }
+}
 
 @Composable
 fun StudioScrollColumn(
@@ -357,6 +392,179 @@ fun RealTimeWaveformCanvas(
 }
 
 @Composable
+fun StudioPreviewControlsBar(
+    uiState: StudioUiState,
+    onHoldBypassChange: (Boolean) -> Unit,
+    onToggleBypass: () -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onResetZero: () -> Unit,
+    onOpenSaveDraft: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val lang = uiState.language
+    val effectiveBypass = uiState.dspConfig.bypassAll || uiState.isHoldBypassing
+
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+        border = BorderStroke(1.dp, StudioColors.Border),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (effectiveBypass) StudioColors.Amber.copy(alpha = 0.2f) else StudioColors.ElevatedSurface,
+                    border = BorderStroke(
+                        1.dp,
+                        if (effectiveBypass) StudioColors.Amber else StudioColors.Cyan.copy(alpha = 0.45f),
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onPress = {
+                                    onHoldBypassChange(true)
+                                    try {
+                                        tryAwaitRelease()
+                                    } finally {
+                                        onHoldBypassChange(false)
+                                    }
+                                },
+                                onTap = {
+                                    onToggleBypass()
+                                },
+                            )
+                        }
+                        .testTag("preview_compare_original_button"),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.CompareArrows,
+                            contentDescription = t(lang, "compare_original"),
+                            tint = if (effectiveBypass) StudioColors.Amber else StudioColors.Cyan,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = if (effectiveBypass) t(lang, "bypass_all") else t(lang, "compare_original"),
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = if (effectiveBypass) StudioColors.Amber else StudioColors.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onUndo,
+                    enabled = uiState.canUndoEdit,
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = StudioColors.ElevatedSurface,
+                        contentColor = StudioColors.Cyan,
+                        disabledContainerColor = StudioColors.BgMid,
+                        disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
+                    ),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("preview_undo_button"),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.Undo,
+                        contentDescription = t(lang, "undo_edit"),
+                    )
+                }
+
+                IconButton(
+                    onClick = onRedo,
+                    enabled = uiState.canRedoEdit,
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = StudioColors.ElevatedSurface,
+                        contentColor = StudioColors.Cyan,
+                        disabledContainerColor = StudioColors.BgMid,
+                        disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
+                    ),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("preview_redo_button"),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.Redo,
+                        contentDescription = t(lang, "redo_edit"),
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onResetZero,
+                    border = BorderStroke(1.dp, StudioColors.Rose.copy(alpha = 0.5f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("preview_reset_zero_button"),
+                ) {
+                    Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = t(lang, "reset_zero"),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                Button(
+                    onClick = onOpenSaveDraft,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.Violet.copy(alpha = 0.22f),
+                        contentColor = StudioColors.Violet,
+                    ),
+                    border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("preview_save_draft_button"),
+                ) {
+                    Icon(Icons.Rounded.BookmarkAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = t(lang, "save_to_drafts"),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun PersistentTransportBar(
     uiState: StudioUiState,
     onPlayPause: () -> Unit,
@@ -365,6 +573,10 @@ fun PersistentTransportBar(
     onToggleAutoLoop: () -> Unit,
     onToggleBypass: () -> Unit,
     onHoldBypassChange: (Boolean) -> Unit,
+    onOpenSleepTimer: (() -> Unit)? = null,
+    onUndo: (() -> Unit)? = null,
+    onRedo: (() -> Unit)? = null,
+    includeNavBarsPadding: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val lang = uiState.language
@@ -381,14 +593,16 @@ fun PersistentTransportBar(
         else -> StudioColors.Emerald
     }
 
+    val barModifier = modifier
+        .fillMaxWidth()
+        .let { if (includeNavBarsPadding) it.navigationBarsPadding() else it }
+
     Surface(
         shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
         color = StudioColors.CardSurface,
         border = BorderStroke(1.dp, StudioColors.BorderBright.copy(alpha = 0.7f)),
         shadowElevation = 12.dp,
-        modifier = modifier
-            .fillMaxWidth()
-            .navigationBarsPadding(),
+        modifier = barModifier,
     ) {
         Box(
             modifier = Modifier.fillMaxWidth(),
@@ -500,6 +714,84 @@ fun PersistentTransportBar(
                             imageVector = Icons.Rounded.Repeat,
                             contentDescription = t(lang, "loop_repeat"),
                         )
+                    }
+
+                    if (onOpenSleepTimer != null) {
+                        val timerActive = uiState.sleepTimerRemainingSec > 0
+                        Surface(
+                            onClick = onOpenSleepTimer,
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (timerActive) StudioColors.Violet.copy(alpha = 0.22f) else StudioColors.ElevatedSurface,
+                            border = if (timerActive) BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)) else null,
+                            modifier = Modifier
+                                .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                .testTag("transport_sleep_timer_button"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = if (timerActive) 10.dp else 0.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Bedtime,
+                                    contentDescription = t(lang, "sleep_timer_title"),
+                                    tint = if (timerActive) StudioColors.Violet else StudioColors.TextSecondary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                if (timerActive) {
+                                    Spacer(Modifier.width(4.dp))
+                                    val mins = uiState.sleepTimerRemainingSec / 60
+                                    val secs = uiState.sleepTimerRemainingSec % 60
+                                    Text(
+                                        text = String.format("%02d:%02d", mins, secs),
+                                        style = TelemetryTextStyle.copy(fontSize = 11.sp),
+                                        color = StudioColors.Violet,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (onUndo != null) {
+                        IconButton(
+                            onClick = onUndo,
+                            enabled = uiState.canUndoEdit,
+                            colors = IconButtonDefaults.iconButtonColors(
+                                containerColor = StudioColors.ElevatedSurface,
+                                contentColor = StudioColors.Cyan,
+                                disabledContainerColor = StudioColors.BgMid,
+                                disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
+                            ),
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("transport_undo_button"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.Undo,
+                                contentDescription = t(lang, "undo_edit"),
+                            )
+                        }
+                    }
+
+                    if (onRedo != null) {
+                        IconButton(
+                            onClick = onRedo,
+                            enabled = uiState.canRedoEdit,
+                            colors = IconButtonDefaults.iconButtonColors(
+                                containerColor = StudioColors.ElevatedSurface,
+                                contentColor = StudioColors.Cyan,
+                                disabledContainerColor = StudioColors.BgMid,
+                                disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
+                            ),
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("transport_redo_button"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.Redo,
+                                contentDescription = t(lang, "redo_edit"),
+                            )
+                        }
                     }
 
                     // Output level meter pill

@@ -95,12 +95,12 @@ class EchoReverbProcessor(private val sampleRate: Int = 44100) {
     private val tankPreHpf = StereoBiquadFilter().apply { configureHighPass(sampleRate, 110.0, 0.707) }
     private val wetToneLpf = StereoBiquadFilter().apply { configureLowPass(sampleRate, 11000.0, 0.707) }
 
-    private var smoothEchoStrength = 0.4f
-    private var smoothEchoDepth = 0.45f
-    private var smoothDelaySamples = 0.28f * sampleRate
-    private var smoothFeedback = 0.35f
-    private var smoothWetMix = 0.38f
-    private var smoothStereoWidth = 0.65f
+    private var smoothEchoStrength = 0f
+    private var smoothEchoDepth = 0f
+    private var smoothDelaySamples = 0.24f * sampleRate
+    private var smoothFeedback = 0f
+    private var smoothWetMix = 0f
+    private var smoothStereoWidth = 0f
 
     private var params: EchoReverbParams? = null
     private var lastSampleRateUsed = -1
@@ -137,6 +137,11 @@ class EchoReverbProcessor(private val sampleRate: Int = 44100) {
         allpassR.forEach { it.reset() }
         tankPreHpf.reset()
         wetToneLpf.reset()
+        smoothEchoStrength = 0f
+        smoothEchoDepth = 0f
+        smoothFeedback = 0f
+        smoothWetMix = 0f
+        smoothStereoWidth = 0f
     }
 
     private fun readFrac(buf: FloatArray, writeIdx: Int, delaySamples: Float): Float {
@@ -164,6 +169,7 @@ class EchoReverbProcessor(private val sampleRate: Int = 44100) {
         val targetFeedback = clamp(p.feedback, 0f, 0.92f)
         val targetWet = clamp(p.wetDryMix, 0f, 1f)
         val targetWidth = clamp(p.stereoWidth, 0f, 1f)
+        if (targetWet <= 0.0005f && smoothWetMix <= 0.0005f) return
 
         val preDelaySamples = clamp(
             ((p.preDelayMs / 1000f) * sampleRate).roundToInt(),

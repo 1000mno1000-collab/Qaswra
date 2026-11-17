@@ -1,5 +1,181 @@
 package com.example.model
 
+val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
+    run {
+        val def = DspConfig()
+        GlobalProPreset(
+            id = GlobalProPresetId.BROADCAST_RADIO,
+            titleKey = "pro_preset_broadcast",
+            descKey = "pro_preset_broadcast_desc",
+            ffmpegFilter = "acompressor=threshold=-18dB:ratio=4:attack=5:release=50,bass=g=5,treble=g=3,alimiter=limit=0.95",
+            dspConfig = def
+                .withSlotEnabled(EffectType.COMPRESSOR, true)
+                .withSlotEnabled(EffectType.BASS_BOOST, true)
+                .withSlotEnabled(EffectType.TREBLE, true)
+                .withSlotEnabled(EffectType.LIMITER, true)
+                .copy(
+                    compressor = CompressorParams(
+                        thresholdDb = -18f,
+                        ratio = 4f,
+                        attackMs = 5f,
+                        releaseMs = 50f,
+                        makeupGainDb = 3.2f,
+                    ),
+                    bassBoost = BassBoostParams(gainDb = 5f, frequencyHz = 105f),
+                    treble = TrebleParams(gainDb = 3f, frequencyHz = 6500f),
+                    limiter = LimiterParams(ceilingDb = -0.45f, releaseMs = 60f),
+                ),
+        )
+    },
+    run {
+        val def = DspConfig()
+        GlobalProPreset(
+            id = GlobalProPresetId.AUTOTUNE_SYNTH,
+            titleKey = "pro_preset_autotune",
+            descKey = "pro_preset_autotune_desc",
+            ffmpegFilter = "asetrate=44100*0.97,aresample=44100,aecho=0.8:0.88:40:0.3,treble=g=4",
+            dspConfig = def
+                .withSlotEnabled(EffectType.PITCH_SHIFT, true)
+                .withSlotEnabled(EffectType.ECHO_REVERB, true)
+                .withSlotEnabled(EffectType.TREBLE, true)
+                .withSlotEnabled(EffectType.CHORUS, true)
+                .withSlotEnabled(EffectType.LIMITER, true)
+                .copy(
+                    vibratoHz = 6f,
+                    vibratoDepth = 0.42f,
+                    pitchShift = PitchShiftParams(semitones = -0.53f, wetMix = 0.85f),
+                    treble = TrebleParams(gainDb = 4f, frequencyHz = 6200f),
+                    chorus = ChorusParams(rateHz = 4.2f, depthMs = 3.8f, mix = 0.28f),
+                    echoReverb = EchoReverbParams(
+                        echoStrength = 0.35f,
+                        echoDepth = 0.4f,
+                        delayTimeMs = 40f,
+                        feedback = 0.3f,
+                        reverbSize = 0.32f,
+                        reverbDecay = 0.28f,
+                        preDelayMs = 10f,
+                        wetDryMix = 0.28f,
+                        stereoWidth = 0.65f,
+                        earlyReflections = 0.35f,
+                        lateReflections = 0.32f,
+                        damping = 0.3f,
+                        diffusion = 0.65f,
+                    ),
+                    limiter = LimiterParams(ceilingDb = -0.6f, releaseMs = 70f),
+                ),
+        )
+    },
+    run {
+        val def = DspConfig()
+        GlobalProPreset(
+            id = GlobalProPresetId.EPIC_CINEMATIC,
+            titleKey = "pro_preset_cinematic",
+            descKey = "pro_preset_cinematic_desc",
+            ffmpegFilter = "asetrate=44100*0.86,aresample=44100,bass=g=7,aecho=0.8:0.9:80:0.45",
+            dspConfig = def
+                .withSlotEnabled(EffectType.PITCH_SHIFT, true)
+                .withSlotEnabled(EffectType.BASS_BOOST, true)
+                .withSlotEnabled(EffectType.COMPRESSOR, true)
+                .withSlotEnabled(EffectType.ECHO_REVERB, true)
+                .withSlotEnabled(EffectType.LIMITER, true)
+                .copy(
+                    pitchShift = PitchShiftParams(semitones = -2.6f, wetMix = 1f),
+                    bassBoost = BassBoostParams(gainDb = 7f, frequencyHz = 95f),
+                    compressor = CompressorParams(
+                        thresholdDb = -18f,
+                        ratio = 3.6f,
+                        attackMs = 10f,
+                        releaseMs = 130f,
+                        makeupGainDb = 2.5f,
+                    ),
+                    echoReverb = EchoReverbParams(
+                        echoStrength = 0.48f,
+                        echoDepth = 0.68f,
+                        delayTimeMs = 80f,
+                        feedback = 0.45f,
+                        reverbSize = 0.78f,
+                        reverbDecay = 0.68f,
+                        preDelayMs = 24f,
+                        wetDryMix = 0.4f,
+                        stereoWidth = 0.85f,
+                        earlyReflections = 0.52f,
+                        lateReflections = 0.68f,
+                        damping = 0.35f,
+                        diffusion = 0.82f,
+                    ),
+                    limiter = LimiterParams(ceilingDb = -0.6f, releaseMs = 80f),
+                ),
+        )
+    },
+    run {
+        val def = DspConfig()
+        GlobalProPreset(
+            id = GlobalProPresetId.SURROUND_8D_CINEMA,
+            titleKey = "pro_preset_8d",
+            descKey = "pro_preset_8d_desc",
+            ffmpegFilter = "apulsator=hz=0.125,aecho=0.8:0.88:60:0.4",
+            dspConfig = def
+                .withSlotEnabled(EffectType.ECHO_REVERB, true)
+                .withSlotEnabled(EffectType.CHORUS, true)
+                .withSlotEnabled(EffectType.LIMITER, true)
+                .copy(
+                    spatialPanHz = 0.125f,
+                    chorus = ChorusParams(rateHz = 0.25f, depthMs = 8f, mix = 0.35f),
+                    echoReverb = EchoReverbParams(
+                        echoStrength = 0.62f,
+                        echoDepth = 0.78f,
+                        delayTimeMs = 60f,
+                        feedback = 0.4f,
+                        reverbSize = 0.84f,
+                        reverbDecay = 0.72f,
+                        preDelayMs = 22f,
+                        wetDryMix = 0.44f,
+                        stereoWidth = 0.98f,
+                        earlyReflections = 0.64f,
+                        lateReflections = 0.78f,
+                        damping = 0.28f,
+                        diffusion = 0.88f,
+                    ),
+                    limiter = LimiterParams(ceilingDb = -0.6f, releaseMs = 80f),
+                ),
+        )
+    },
+    run {
+        val def = DspConfig()
+        GlobalProPreset(
+            id = GlobalProPresetId.CRYSTAL_VOCAL,
+            titleKey = "pro_preset_crystal",
+            descKey = "pro_preset_crystal_desc",
+            ffmpegFilter = "afftdn=nf=-25,highpass=f=85,loudnorm=I=-16:TP=-1.5:LRA=11",
+            dspConfig = def
+                .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
+                .withSlotEnabled(EffectType.EQUALIZER, true)
+                .withSlotEnabled(EffectType.COMPRESSOR, true)
+                .withSlotEnabled(EffectType.LIMITER, true)
+                .copy(
+                    noiseReduction = NoiseReductionParams(
+                        thresholdDb = -44f,
+                        reductionDb = 25f,
+                        highPassHz = 85f,
+                        spectralStrength = 0.82f,
+                        deEssAmount = 0.45f,
+                        clarityBoostDb = 3.5f,
+                        spectralCleanerEnabled = true,
+                    ),
+                    equalizer = EqualizerParams(-2f, -1f, 0.5f, 3.2f, 2f),
+                    compressor = CompressorParams(
+                        thresholdDb = -18f,
+                        ratio = 3.2f,
+                        attackMs = 10f,
+                        releaseMs = 120f,
+                        makeupGainDb = 2.8f,
+                    ),
+                    limiter = LimiterParams(ceilingDb = -1.5f, releaseMs = 70f),
+                ),
+        )
+    },
+)
+
 val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
     run {
         val def = DspConfig()
@@ -26,13 +202,22 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                     ),
                     equalizer = EqualizerParams(-3f, -1.5f, 1.5f, 4f, 2.5f),
                     compressor = CompressorParams(-19f, 4f, 10f, 130f, 3.5f),
-                    echoReverb = def.echoReverb.copy(
+                    echoReverb = EchoReverbParams(
                         echoStrength = 0.12f,
                         echoDepth = 0.15f,
-                        wetDryMix = 0.12f,
+                        delayTimeMs = 160f,
+                        feedback = 0.15f,
                         reverbSize = 0.25f,
                         reverbDecay = 0.2f,
+                        preDelayMs = 12f,
+                        wetDryMix = 0.12f,
+                        stereoWidth = 0.45f,
+                        earlyReflections = 0.25f,
+                        lateReflections = 0.22f,
+                        damping = 0.42f,
+                        diffusion = 0.6f,
                     ),
+                    limiter = LimiterParams(ceilingDb = -0.8f, releaseMs = 80f),
                 ),
         )
     },
@@ -51,6 +236,15 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
                 .withSlotEnabled(EffectType.LIMITER, true)
                 .copy(
+                    noiseReduction = NoiseReductionParams(
+                        thresholdDb = -48f,
+                        reductionDb = 14f,
+                        highPassHz = 80f,
+                        spectralStrength = 0.55f,
+                        deEssAmount = 0.35f,
+                        clarityBoostDb = 2f,
+                        spectralCleanerEnabled = true,
+                    ),
                     equalizer = EqualizerParams(-1f, 1f, 1f, 3.5f, 4.5f),
                     chorus = ChorusParams(0.9f, 5f, 0.22f),
                     echoReverb = EchoReverbParams(
@@ -69,6 +263,7 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                         diffusion = 0.85f,
                     ),
                     compressor = CompressorParams(-16f, 3.2f, 15f, 160f, 2.5f),
+                    limiter = LimiterParams(ceilingDb = -0.8f, releaseMs = 80f),
                 ),
         )
     },
@@ -87,16 +282,34 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
                 .withSlotEnabled(EffectType.LIMITER, true)
                 .copy(
+                    noiseReduction = NoiseReductionParams(
+                        thresholdDb = -48f,
+                        reductionDb = 16f,
+                        highPassHz = 70f,
+                        spectralStrength = 0.6f,
+                        deEssAmount = 0.35f,
+                        clarityBoostDb = 2f,
+                        spectralCleanerEnabled = true,
+                    ),
                     bassBoost = BassBoostParams(5.5f, 110f),
                     equalizer = EqualizerParams(2.5f, 2f, 0.5f, 2f, -1f),
                     compressor = CompressorParams(-22f, 4.5f, 8f, 120f, 4f),
-                    echoReverb = def.echoReverb.copy(
+                    echoReverb = EchoReverbParams(
                         echoStrength = 0.1f,
                         echoDepth = 0.18f,
-                        wetDryMix = 0.15f,
+                        delayTimeMs = 190f,
+                        feedback = 0.18f,
                         reverbSize = 0.3f,
+                        reverbDecay = 0.25f,
+                        preDelayMs = 14f,
+                        wetDryMix = 0.15f,
+                        stereoWidth = 0.5f,
+                        earlyReflections = 0.28f,
+                        lateReflections = 0.25f,
                         damping = 0.65f,
+                        diffusion = 0.58f,
                     ),
+                    limiter = LimiterParams(ceilingDb = -0.8f, releaseMs = 80f),
                 ),
         )
     },
@@ -113,6 +326,7 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                 .withSlotEnabled(EffectType.COMPRESSOR, true)
                 .copy(
                     treble = TrebleParams(3f, 7500f),
+                    compressor = CompressorParams(-16f, 2.8f, 14f, 160f, 2f),
                     echoReverb = EchoReverbParams(
                         echoStrength = 0.62f,
                         echoDepth = 0.86f,
@@ -148,13 +362,20 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                     phaser = PhaserParams(0.85f, 0.82f, 0.5f, 0.45f),
                     chorus = ChorusParams(1.8f, 9f, 0.45f),
                     distortion = DistortionParams(3.2f, 3200f, 0.25f, DistortionMode.SOFT_CLIP),
-                    echoReverb = def.echoReverb.copy(
+                    echoReverb = EchoReverbParams(
                         echoStrength = 0.72f,
                         echoDepth = 0.75f,
                         delayTimeMs = 360f,
                         feedback = 0.6f,
+                        reverbSize = 0.68f,
+                        reverbDecay = 0.6f,
+                        preDelayMs = 24f,
                         wetDryMix = 0.52f,
                         stereoWidth = 0.96f,
+                        earlyReflections = 0.5f,
+                        lateReflections = 0.65f,
+                        damping = 0.35f,
+                        diffusion = 0.8f,
                     ),
                 ),
         )
@@ -183,6 +404,7 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                     ),
                     treble = TrebleParams(3.5f, 6000f),
                     compressor = CompressorParams(-18f, 3.8f, 12f, 145f, 3f),
+                    limiter = LimiterParams(ceilingDb = -0.8f, releaseMs = 80f),
                 ),
         )
     },
@@ -201,17 +423,34 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
                 .withSlotEnabled(EffectType.LIMITER, true)
                 .copy(
+                    noiseReduction = NoiseReductionParams(
+                        thresholdDb = -48f,
+                        reductionDb = 16f,
+                        highPassHz = 75f,
+                        spectralStrength = 0.6f,
+                        deEssAmount = 0.3f,
+                        clarityBoostDb = 2f,
+                        spectralCleanerEnabled = true,
+                    ),
                     pitchShift = PitchShiftParams(-2.2f, 1f),
                     equalizer = EqualizerParams(3.5f, 1.5f, -1f, 2.5f, 1.5f),
-                    echoReverb = def.echoReverb.copy(
+                    compressor = CompressorParams(-18f, 3.5f, 12f, 140f, 2.5f),
+                    echoReverb = EchoReverbParams(
                         echoStrength = 0.42f,
                         echoDepth = 0.65f,
                         delayTimeMs = 310f,
                         feedback = 0.35f,
                         reverbSize = 0.7f,
+                        reverbDecay = 0.58f,
+                        preDelayMs = 26f,
                         wetDryMix = 0.34f,
+                        stereoWidth = 0.8f,
+                        earlyReflections = 0.45f,
+                        lateReflections = 0.6f,
                         damping = 0.45f,
+                        diffusion = 0.78f,
                     ),
+                    limiter = LimiterParams(ceilingDb = -0.8f, releaseMs = 80f),
                 ),
         )
     },

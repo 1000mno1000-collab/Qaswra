@@ -3,6 +3,14 @@ package com.example.model
 import kotlinx.serialization.Serializable
 
 @Serializable
+enum class AudioPickerTarget {
+    LIBRARY_BROWSE,
+    IMPORT_MAIN,
+    APPEND_CLIP,
+    MIX_BACKGROUND,
+}
+
+@Serializable
 sealed interface StudioRoute {
     @Serializable
     data object Home : StudioRoute
@@ -48,4 +56,46 @@ sealed interface StudioRoute {
 
     @Serializable
     data object Settings : StudioRoute
+
+    @Serializable
+    data class AudioPicker(val target: AudioPickerTarget = AudioPickerTarget.LIBRARY_BROWSE) : StudioRoute
+
+    @Serializable
+    data object AudioMerge : StudioRoute
+
+    @Serializable
+    data object AudioSplit : StudioRoute
+
+    @Serializable
+    data object PitchAndSpeed : StudioRoute
+
+    @Serializable
+    data object ReverseAudio : StudioRoute
+
+    @Serializable
+    data object SurroundStereo : StudioRoute
+
+    @Serializable
+    data object GenerateSilence : StudioRoute
+
+    @Serializable
+    data object FormatConverter : StudioRoute
+
+    @Serializable
+    data object ExtractVideoAudio : StudioRoute
+
+    @Serializable
+    data object VideoAudioEditor : StudioRoute
+
+    @Serializable
+    data object CompressAudio : StudioRoute
+
+    @Serializable
+    data object RingtoneMaker : StudioRoute
+
+    @Serializable
+    data object SpeechToText : StudioRoute
+
+    @Serializable
+    data object SmartMusicMixer : StudioRoute
 }
