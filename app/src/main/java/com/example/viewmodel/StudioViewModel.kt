@@ -13,8 +13,10 @@ import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.audio.AudioDecodeOutcome
 import com.example.audio.AudioDecoder
 import com.example.audio.AudioFileUploader
+import com.example.audio.AudioUploadOutcome
 import com.example.audio.ExportedAudioResult
 import com.example.audio.NativeSpeechState
 import com.example.audio.OnlineGuard
@@ -884,13 +886,19 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         viewModelScope.launch {
             val app = getApplication<Application>()
+            runCatching {
+                app.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
             val resolvedName = AudioFileUploader.resolveDisplayName(app, uri)
                 ?: resolveFileName(uri)
                 ?: "ملف مستورد"
             _uiState.update {
                 it.copy(
                     isBusy = true,
-                    importProgress = 0.02f,
+                    importProgress = 0f,
                     importLabel = resolvedName,
                     importBytesLabel = null,
                 )
@@ -898,8 +906,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             var cachedFile: File? = null
             try {
                 player.stop()
-                val uploaded = AudioFileUploader.copyAudioUriToCache(app, uri) { info ->
-                    val scaled = (0.02f + info.fraction * 0.53f).coerceIn(0.02f, 0.55f)
+                val uploadOutcome = AudioFileUploader.copyAudioUriToCacheDetailed(app, uri) { info ->
                     val bytesText = if (info.totalBytes > 0L) {
                         "${AudioFileUploader.formatBytes(info.bytesCopied)} / ${AudioFileUploader.formatBytes(info.totalBytes)}"
                     } else {
@@ -907,26 +914,38 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     _uiState.update {
                         it.copy(
-                            importProgress = scaled,
+                            importProgress = info.fraction.coerceIn(0f, 1f),
                             importLabel = info.fileName,
                             importBytesLabel = bytesText,
                         )
                     }
                 }
-                if (uploaded == null) {
-                    postBanner("تعذر نسخ الملف الصوتي إلى ذاكرة التطبيق المؤقتة")
-                    return@launch
+                val uploaded = when (uploadOutcome) {
+                    is AudioUploadOutcome.Success -> uploadOutcome.uploaded
+                    is AudioUploadOutcome.Failure -> {
+                        postBanner("تعذر نسخ الملف الصوتي: ${uploadOutcome.errorMessage}")
+                        return@launch
+                    }
                 }
                 cachedFile = uploaded.file
-                val buf = AudioDecoder.decodeFileWithProgress(uploaded.file) { decFrac ->
-                    val scaled = (0.55f + decFrac * 0.43f).coerceIn(0.55f, 0.98f)
-                    _uiState.update { it.copy(importProgress = scaled) }
+                _uiState.update {
+                    it.copy(
+                        importProgress = 1.0f,
+                        importLabel = "جاري تجهيز الصوت: ${uploaded.displayName}",
+                    )
                 }
-                if (buf == null || buf.frameCount == 0) {
-                    postBanner("تعذر فك ترميز الملف الصوتي المحدد — تأكد من سلامة الصيغة أو الصلاحيات")
+                val decodeOutcome = AudioDecoder.decodeFileDetailedWithProgress(uploaded.file) {}
+                val buf = when (decodeOutcome) {
+                    is AudioDecodeOutcome.Success -> decodeOutcome.buffer
+                    is AudioDecodeOutcome.Failure -> {
+                        postBanner("تعذر قراءة الملف الصوتي: ${decodeOutcome.reason}")
+                        return@launch
+                    }
+                }
+                if (buf.frameCount == 0) {
+                    postBanner("تعذر قراءة الملف الصوتي: ملف فارغ (0 إطارات)")
                     return@launch
                 }
-                _uiState.update { it.copy(importProgress = 1.0f) }
                 setActiveBuffer(buf, recordUndo = false, resetDspOnNewEntry = true)
                 val title = uploaded.displayName.substringBeforeLast('.').ifEmpty { "ملف مستورد" }
                 if (_uiState.value.activeProjectId == 0L) {
@@ -935,6 +954,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 repository.indexAudioRecording(title, buf, RecordingSourceType.IMPORTED)
                 postBanner("تم استيراد الملف ($title) بالصوت الأصلي النقي (0%) جاهزاً للمعالجة")
                 onComplete?.invoke()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                postBanner("تعذر استيراد الملف الصوتي: ${e.javaClass.simpleName}: ${e.message}")
             } finally {
                 runCatching { cachedFile?.delete() }
                 _uiState.update {
@@ -1072,21 +1095,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         viewModelScope.launch {
             val app = getApplication<Application>()
+            runCatching {
+                app.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
             val name = AudioFileUploader.resolveDisplayName(app, uri)
                 ?: resolveFileName(uri)
                 ?: "Background Track"
             _uiState.update {
                 it.copy(
                     isBusy = true,
-                    importProgress = 0.02f,
+                    importProgress = 0f,
                     importLabel = name,
                     importBytesLabel = null,
                 )
             }
             var cachedFile: File? = null
             try {
-                val uploaded = AudioFileUploader.copyAudioUriToCache(app, uri) { info ->
-                    val scaled = (0.02f + info.fraction * 0.53f).coerceIn(0.02f, 0.55f)
+                val uploadOutcome = AudioFileUploader.copyAudioUriToCacheDetailed(app, uri) { info ->
                     val bytesText = if (info.totalBytes > 0L) {
                         "${AudioFileUploader.formatBytes(info.bytesCopied)} / ${AudioFileUploader.formatBytes(info.totalBytes)}"
                     } else {
@@ -1094,26 +1122,38 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     _uiState.update {
                         it.copy(
-                            importProgress = scaled,
+                            importProgress = info.fraction.coerceIn(0f, 1f),
                             importLabel = info.fileName,
                             importBytesLabel = bytesText,
                         )
                     }
                 }
-                if (uploaded == null) {
-                    postBanner("تعذر نسخ ملف الخلفية إلى الذاكرة المؤقتة")
-                    return@launch
+                val uploaded = when (uploadOutcome) {
+                    is AudioUploadOutcome.Success -> uploadOutcome.uploaded
+                    is AudioUploadOutcome.Failure -> {
+                        postBanner("تعذر نسخ ملف الخلفية الصوتية: ${uploadOutcome.errorMessage}")
+                        return@launch
+                    }
                 }
                 cachedFile = uploaded.file
-                val bg = AudioDecoder.decodeFileWithProgress(uploaded.file) { decFrac ->
-                    val scaled = (0.55f + decFrac * 0.43f).coerceIn(0.55f, 0.98f)
-                    _uiState.update { it.copy(importProgress = scaled) }
+                _uiState.update {
+                    it.copy(
+                        importProgress = 1.0f,
+                        importLabel = "جاري تجهيز الخلفية: ${uploaded.displayName}",
+                    )
                 }
-                if (bg == null || bg.frameCount == 0) {
-                    postBanner("تعذر قراءة ملف الخلفية الصوتية")
+                val decodeOutcome = AudioDecoder.decodeFileDetailedWithProgress(uploaded.file) {}
+                val bg = when (decodeOutcome) {
+                    is AudioDecodeOutcome.Success -> decodeOutcome.buffer
+                    is AudioDecodeOutcome.Failure -> {
+                        postBanner("تعذر قراءة ملف الخلفية الصوتية: ${decodeOutcome.reason}")
+                        return@launch
+                    }
+                }
+                if (bg.frameCount == 0) {
+                    postBanner("تعذر قراءة ملف الخلفية الصوتية: ملف فارغ (0 إطارات)")
                     return@launch
                 }
-                _uiState.update { it.copy(importProgress = 1.0f) }
                 mixBgBuffer = bg
                 _uiState.update {
                     it.copy(
@@ -1124,6 +1164,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 scheduleSmartDuckingPreviewRender()
                 postBanner("تم تحميل مسار الخلفية بنجاح، يمكنك الآن ضبط المستويات والمعاينة التلقائية")
                 onComplete?.invoke()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                postBanner("تعذر قراءة ملف الخلفية الصوتية: ${e.javaClass.simpleName}: ${e.message}")
             } finally {
                 runCatching { cachedFile?.delete() }
                 _uiState.update {
@@ -1351,21 +1395,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch {
             val app = getApplication<Application>()
+            runCatching {
+                app.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
             val name = AudioFileUploader.resolveDisplayName(app, uri)
                 ?: resolveFileName(uri)
                 ?: "Extra Clip"
             _uiState.update {
                 it.copy(
                     isBusy = true,
-                    importProgress = 0.02f,
+                    importProgress = 0f,
                     importLabel = name,
                     importBytesLabel = null,
                 )
             }
             var cachedFile: File? = null
             try {
-                val uploaded = AudioFileUploader.copyAudioUriToCache(app, uri) { info ->
-                    val scaled = (0.02f + info.fraction * 0.53f).coerceIn(0.02f, 0.55f)
+                val uploadOutcome = AudioFileUploader.copyAudioUriToCacheDetailed(app, uri) { info ->
                     val bytesText = if (info.totalBytes > 0L) {
                         "${AudioFileUploader.formatBytes(info.bytesCopied)} / ${AudioFileUploader.formatBytes(info.totalBytes)}"
                     } else {
@@ -1373,29 +1422,45 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     _uiState.update {
                         it.copy(
-                            importProgress = scaled,
+                            importProgress = info.fraction.coerceIn(0f, 1f),
                             importLabel = info.fileName,
                             importBytesLabel = bytesText,
                         )
                     }
                 }
-                if (uploaded == null) {
-                    postBanner("تعذر نسخ المقطع الإضافي إلى الذاكرة المؤقتة")
-                    return@launch
+                val uploaded = when (uploadOutcome) {
+                    is AudioUploadOutcome.Success -> uploadOutcome.uploaded
+                    is AudioUploadOutcome.Failure -> {
+                        postBanner("تعذر نسخ المقطع الإضافي: ${uploadOutcome.errorMessage}")
+                        return@launch
+                    }
                 }
                 cachedFile = uploaded.file
-                val extra = AudioDecoder.decodeFileWithProgress(uploaded.file) { decFrac ->
-                    val scaled = (0.55f + decFrac * 0.43f).coerceIn(0.55f, 0.98f)
-                    _uiState.update { it.copy(importProgress = scaled) }
+                _uiState.update {
+                    it.copy(
+                        importProgress = 1.0f,
+                        importLabel = "جاري تجهيز المقطع: ${uploaded.displayName}",
+                    )
                 }
-                if (extra == null || extra.frameCount == 0) {
-                    postBanner("تعذر فك ترميز المقطع الإضافي للدمج")
+                val decodeOutcome = AudioDecoder.decodeFileDetailedWithProgress(uploaded.file) {}
+                val extra = when (decodeOutcome) {
+                    is AudioDecodeOutcome.Success -> decodeOutcome.buffer
+                    is AudioDecodeOutcome.Failure -> {
+                        postBanner("تعذر فك ترميز المقطع الإضافي للدمج: ${decodeOutcome.reason}")
+                        return@launch
+                    }
+                }
+                if (extra.frameCount == 0) {
+                    postBanner("تعذر فك ترميز المقطع الإضافي للدمج: ملف فارغ (0 إطارات)")
                     return@launch
                 }
-                _uiState.update { it.copy(importProgress = 1.0f) }
                 setActiveBuffer(mergeClips(src, extra), recordUndo = true)
                 postBanner("تم دمج المقطع الصوتي في نهاية الصوت بنجاح")
                 onComplete?.invoke()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                postBanner("تعذر دمج المقطع الصوتي: ${e.javaClass.simpleName}: ${e.message}")
             } finally {
                 runCatching { cachedFile?.delete() }
                 _uiState.update {

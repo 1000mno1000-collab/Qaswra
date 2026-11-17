@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -68,6 +69,8 @@ import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioScrollColumn
 import com.example.ui.components.ToolInfoDialog
+import com.example.ui.components.UndoRedoActionsRow
+import com.example.ui.components.rememberEditHistory
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
@@ -88,6 +91,19 @@ private val REELS_WAVE_SWATCHES = listOf(
     ReelsColorSwatch("emerald", "زمردي حيوي", "Emerald", "0x10B981", StudioColors.Emerald),
     ReelsColorSwatch("amber", "ذهبي دافئ", "Warm Gold", "0xF59E0B", StudioColors.Amber),
     ReelsColorSwatch("rose", "قرمزي ناري", "Neon Rose", "0xF43F5E", StudioColors.RoseBright),
+)
+
+private data class CinematicUiSnapshot(
+    val selectedTab: Int,
+    val selectedPreset: CinematicReshadePreset?,
+    val contrastBoost: Float,
+    val vibranceBoost: Float,
+    val sharpnessAmount: Float,
+    val warmthShift: Float,
+    val vignetteAmount: Float,
+    val cinemaOutputName: String,
+    val reelsTitle: String,
+    val selectedSwatchId: String,
 )
 
 @Composable
@@ -117,13 +133,74 @@ fun CinematicReelsScreen(
     var reelsTitle by remember { mutableStateOf(uiState.activeProjectName.ifBlank { "Sonix ✦ Studio" }) }
     var selectedSwatch by remember { mutableStateOf(REELS_WAVE_SWATCHES.first()) }
 
+    val editHistory = rememberEditHistory(
+        CinematicUiSnapshot(
+            selectedTab = selectedTab,
+            selectedPreset = selectedPreset,
+            contrastBoost = contrastBoost,
+            vibranceBoost = vibranceBoost,
+            sharpnessAmount = sharpnessAmount,
+            warmthShift = warmthShift,
+            vignetteAmount = vignetteAmount,
+            cinemaOutputName = cinemaOutputName,
+            reelsTitle = reelsTitle,
+            selectedSwatchId = selectedSwatch.id,
+        ),
+    )
+
+    fun currentSnapshot(
+        tab: Int = selectedTab,
+        preset: CinematicReshadePreset? = selectedPreset,
+        contrast: Float = contrastBoost,
+        vibrance: Float = vibranceBoost,
+        sharpness: Float = sharpnessAmount,
+        warmth: Float = warmthShift,
+        vignette: Float = vignetteAmount,
+        outName: String = cinemaOutputName,
+        rTitle: String = reelsTitle,
+        swatchId: String = selectedSwatch.id,
+    ) = CinematicUiSnapshot(
+        selectedTab = tab,
+        selectedPreset = preset,
+        contrastBoost = contrast,
+        vibranceBoost = vibrance,
+        sharpnessAmount = sharpness,
+        warmthShift = warmth,
+        vignetteAmount = vignette,
+        cinemaOutputName = outName,
+        reelsTitle = rTitle,
+        selectedSwatchId = swatchId,
+    )
+
+    fun applySnapshot(snap: CinematicUiSnapshot) {
+        selectedTab = snap.selectedTab
+        selectedPreset = snap.selectedPreset
+        contrastBoost = snap.contrastBoost
+        vibranceBoost = snap.vibranceBoost
+        sharpnessAmount = snap.sharpnessAmount
+        warmthShift = snap.warmthShift
+        vignetteAmount = snap.vignetteAmount
+        cinemaOutputName = snap.cinemaOutputName
+        reelsTitle = snap.reelsTitle
+        selectedSwatch = REELS_WAVE_SWATCHES.firstOrNull { it.id == snap.selectedSwatchId }
+            ?: REELS_WAVE_SWATCHES.first()
+    }
+
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
             selectedVideoUri = uri
             selectedVideoName = resolvePickedVideoName(context, uri)
-            cinemaOutputName = selectedVideoName.substringBeforeLast('.').ifBlank { "Sonix_Cinema" } + "_HDR"
+            val newOut = selectedVideoName.substringBeforeLast('.').ifBlank { "Sonix_Cinema" } + "_HDR"
+            cinemaOutputName = newOut
+            editHistory.commit(currentSnapshot(outName = newOut))
         }
     }
 
@@ -134,11 +211,22 @@ fun CinematicReelsScreen(
             language = lang,
             onBack = onBack,
             trailing = {
-                InfoBadgeButton(
-                    contentDescription = t(lang, "tool_cinematic_video_reels"),
-                    testTag = "cinematic_info_button",
-                    accentColor = StudioColors.Amber,
-                    onClick = { infoOpen = true },
+                UndoRedoActionsRow(
+                    canUndo = editHistory.canUndo,
+                    canRedo = editHistory.canRedo,
+                    language = lang,
+                    undoTag = "cinematic_undo_button",
+                    redoTag = "cinematic_redo_button",
+                    onUndo = { editHistory.undo()?.let(::applySnapshot) },
+                    onRedo = { editHistory.redo()?.let(::applySnapshot) },
+                    extraTrailing = {
+                        InfoBadgeButton(
+                            contentDescription = t(lang, "tool_cinematic_video_reels"),
+                            testTag = "cinematic_info_button",
+                            accentColor = StudioColors.Amber,
+                            onClick = { infoOpen = true },
+                        )
+                    },
                 )
             },
         )
@@ -155,7 +243,10 @@ fun CinematicReelsScreen(
                 val isSel = selectedTab == idx
                 val interaction = remember { MutableInteractionSource() }
                 Surface(
-                    onClick = { selectedTab = idx },
+                    onClick = {
+                        selectedTab = idx
+                        editHistory.commit(currentSnapshot(tab = idx))
+                    },
                     interactionSource = interaction,
                     shape = RoundedCornerShape(14.dp),
                     color = if (isSel) StudioColors.ElevatedSurface else StudioColors.CardSurface,
@@ -234,6 +325,16 @@ fun CinematicReelsScreen(
                                 sharpnessAmount = 0f
                                 warmthShift = 0f
                                 vignetteAmount = 0f
+                                editHistory.commit(
+                                    currentSnapshot(
+                                        preset = null,
+                                        contrast = 0f,
+                                        vibrance = 0f,
+                                        sharpness = 0f,
+                                        warmth = 0f,
+                                        vignette = 0f,
+                                    ),
+                                )
                             },
                             interactionSource = resetInteraction,
                             shape = RoundedCornerShape(10.dp),
@@ -259,6 +360,16 @@ fun CinematicReelsScreen(
                                 sharpnessAmount = preset.sharpnessAmount
                                 warmthShift = preset.warmthShift
                                 vignetteAmount = preset.vignetteAmount
+                                editHistory.commit(
+                                    currentSnapshot(
+                                        preset = preset,
+                                        contrast = preset.contrastBoost,
+                                        vibrance = preset.vibranceBoost,
+                                        sharpness = preset.sharpnessAmount,
+                                        warmth = preset.warmthShift,
+                                        vignette = preset.vignetteAmount,
+                                    ),
+                                )
                             },
                             interactionSource = pInteraction,
                             shape = RoundedCornerShape(14.dp),
@@ -302,7 +413,10 @@ fun CinematicReelsScreen(
                         formattedValue = "${(contrastBoost * 100f).roundToInt()}%",
                         accentColor = StudioColors.Amber,
                         testTag = "cinematic_contrast_slider",
-                        onValueChange = { contrastBoost = it },
+                        onValueChange = {
+                            contrastBoost = it
+                            editHistory.commit(currentSnapshot(contrast = it), debounceMs = 350L)
+                        },
                     )
                     StudioParamSlider(
                         label = if (lang == AppLanguage.EN) "Color Vibrance" else "تشبع وحيوية الألوان",
@@ -312,7 +426,10 @@ fun CinematicReelsScreen(
                         formattedValue = "${(vibranceBoost * 100f).roundToInt()}%",
                         accentColor = StudioColors.Cyan,
                         testTag = "cinematic_vibrance_slider",
-                        onValueChange = { vibranceBoost = it },
+                        onValueChange = {
+                            vibranceBoost = it
+                            editHistory.commit(currentSnapshot(vibrance = it), debounceMs = 350L)
+                        },
                     )
                     StudioParamSlider(
                         label = if (lang == AppLanguage.EN) "LumaSharpen Detail" else "وضوح التفاصيل (LumaSharpen)",
@@ -322,7 +439,10 @@ fun CinematicReelsScreen(
                         formattedValue = "${(sharpnessAmount * 100f).roundToInt()}%",
                         accentColor = StudioColors.Emerald,
                         testTag = "cinematic_sharpness_slider",
-                        onValueChange = { sharpnessAmount = it },
+                        onValueChange = {
+                            sharpnessAmount = it
+                            editHistory.commit(currentSnapshot(sharpness = it), debounceMs = 350L)
+                        },
                     )
                     StudioParamSlider(
                         label = if (lang == AppLanguage.EN) "Warmth / Teal-Gold" else "دفء الألوان السينمائي",
@@ -332,7 +452,10 @@ fun CinematicReelsScreen(
                         formattedValue = "${(warmthShift * 100f).roundToInt()}%",
                         accentColor = StudioColors.Violet,
                         testTag = "cinematic_warmth_slider",
-                        onValueChange = { warmthShift = it },
+                        onValueChange = {
+                            warmthShift = it
+                            editHistory.commit(currentSnapshot(warmth = it), debounceMs = 350L)
+                        },
                     )
                     StudioParamSlider(
                         label = if (lang == AppLanguage.EN) "Cinema Vignette" else "تظليل الحواف السينمائي",
@@ -342,12 +465,18 @@ fun CinematicReelsScreen(
                         formattedValue = "${(vignetteAmount * 100f).roundToInt()}%",
                         accentColor = StudioColors.RoseBright,
                         testTag = "cinematic_vignette_slider",
-                        onValueChange = { vignetteAmount = it },
+                        onValueChange = {
+                            vignetteAmount = it
+                            editHistory.commit(currentSnapshot(vignette = it), debounceMs = 350L)
+                        },
                     )
 
                     OutlinedTextField(
                         value = cinemaOutputName,
-                        onValueChange = { cinemaOutputName = it },
+                        onValueChange = {
+                            cinemaOutputName = it
+                            editHistory.commit(currentSnapshot(outName = it), debounceMs = 350L)
+                        },
                         singleLine = true,
                         label = { Text(if (lang == AppLanguage.EN) "Output Video Name" else "اسم الفيديو المصدّر") },
                         colors = OutlinedTextFieldDefaults.colors(
@@ -467,7 +596,10 @@ fun CinematicReelsScreen(
 
                     OutlinedTextField(
                         value = reelsTitle,
-                        onValueChange = { reelsTitle = it },
+                        onValueChange = {
+                            reelsTitle = it
+                            editHistory.commit(currentSnapshot(rTitle = it), debounceMs = 350L)
+                        },
                         singleLine = true,
                         label = { Text(t(lang, "reels_title_hint")) },
                         colors = OutlinedTextFieldDefaults.colors(
@@ -491,7 +623,10 @@ fun CinematicReelsScreen(
                             val isSel = selectedSwatch.id == swatch.id
                             val swInt = remember { MutableInteractionSource() }
                             Surface(
-                                onClick = { selectedSwatch = swatch },
+                                onClick = {
+                                    selectedSwatch = swatch
+                                    editHistory.commit(currentSnapshot(swatchId = swatch.id))
+                                },
                                 interactionSource = swInt,
                                 shape = RoundedCornerShape(12.dp),
                                 color = swatch.color.copy(alpha = if (isSel) 0.25f else 0.1f),

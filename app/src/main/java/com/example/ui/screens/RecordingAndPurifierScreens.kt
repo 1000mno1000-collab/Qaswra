@@ -92,6 +92,7 @@ import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
+import com.example.ui.components.UndoRedoActionsRow
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
@@ -138,6 +139,17 @@ fun RecordingStudioScreen(
             subtitle = t(lang, "section_record_subtitle"),
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "recorder_undo_button",
+                    redoTag = "recorder_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                )
+            },
         )
 
         if (!uiState.micPermissionError.isNullOrBlank()) {
@@ -579,14 +591,25 @@ fun VoicePurifierScreen(
             language = lang,
             onBack = onBack,
             trailing = {
-                Switch(
-                    checked = enabled,
-                    onCheckedChange = { viewModel.toggleEffectEnabled(EffectType.NOISE_REDUCTION, it) },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = StudioColors.BgTop,
-                        checkedTrackColor = StudioColors.Emerald,
-                    ),
-                    modifier = Modifier.testTag("purifier_enable_switch"),
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "purifier_top_undo_button",
+                    redoTag = "purifier_top_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                    extraTrailing = {
+                        Switch(
+                            checked = enabled,
+                            onCheckedChange = { viewModel.toggleEffectEnabled(EffectType.NOISE_REDUCTION, it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = StudioColors.BgTop,
+                                checkedTrackColor = StudioColors.Emerald,
+                            ),
+                            modifier = Modifier.testTag("purifier_enable_switch"),
+                        )
+                    },
                 )
             },
         )

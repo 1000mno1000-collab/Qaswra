@@ -57,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,6 +84,8 @@ import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioScrollColumn
 import com.example.ui.components.ToolInfoDialog
+import com.example.ui.components.UndoRedoActionsRow
+import com.example.ui.components.rememberEditHistory
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
@@ -113,6 +116,13 @@ fun SpeechToTextScreen(
 
     var infoDialogOpen by remember { mutableStateOf(false) }
     var pendingClipRouteAfterGrant by remember { mutableStateOf(false) }
+    val textHistory = rememberEditHistory(stt.displayText)
+
+    LaunchedEffect(stt.displayText) {
+        if (stt.displayText != textHistory.current) {
+            textHistory.commit(stt.displayText, debounceMs = if (stt.isListening) 600L else 0L)
+        }
+    }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -165,11 +175,22 @@ fun SpeechToTextScreen(
             language = lang,
             onBack = onBack,
             trailing = {
-                InfoBadgeButton(
-                    contentDescription = t(lang, "tool_speech_to_text"),
-                    testTag = "stt_info_badge",
-                    accentColor = StudioColors.Cyan,
-                    onClick = { infoDialogOpen = true },
+                UndoRedoActionsRow(
+                    canUndo = textHistory.canUndo,
+                    canRedo = textHistory.canRedo,
+                    language = lang,
+                    undoTag = "stt_undo_button",
+                    redoTag = "stt_redo_button",
+                    onUndo = { textHistory.undo()?.let { viewModel.updateSpeechTranscript(it) } },
+                    onRedo = { textHistory.redo()?.let { viewModel.updateSpeechTranscript(it) } },
+                    extraTrailing = {
+                        InfoBadgeButton(
+                            contentDescription = t(lang, "tool_speech_to_text"),
+                            testTag = "stt_info_badge",
+                            accentColor = StudioColors.Cyan,
+                            onClick = { infoDialogOpen = true },
+                        )
+                    },
                 )
             },
         )
@@ -416,7 +437,10 @@ fun SpeechToTextScreen(
                     if (stt.displayText.isNotBlank()) {
                         val clearInteraction = remember { MutableInteractionSource() }
                         IconButton(
-                            onClick = { viewModel.clearSpeechTranscription() },
+                            onClick = {
+                                textHistory.commit("")
+                                viewModel.clearSpeechTranscription()
+                            },
                             interactionSource = clearInteraction,
                             modifier = Modifier
                                 .size(48.dp)
@@ -434,7 +458,10 @@ fun SpeechToTextScreen(
 
                 OutlinedTextField(
                     value = stt.displayText,
-                    onValueChange = { viewModel.updateSpeechTranscript(it) },
+                    onValueChange = {
+                        textHistory.commit(it, debounceMs = 350L)
+                        viewModel.updateSpeechTranscript(it)
+                    },
                     minLines = 6,
                     maxLines = 14,
                     placeholder = {
@@ -535,6 +562,8 @@ fun SmartMusicMixerScreen(
     val lang = uiState.language
     var infoDialogOpen by remember { mutableStateOf(false) }
     var exportDialogOpen by remember { mutableStateOf(false) }
+    val mixVolHistory = rememberEditHistory(uiState.smartMixBgVolume)
+    var preferVmUndo by remember { mutableStateOf(false) }
 
     val hasVoice = uiState.hasAudio
     val hasMusic = !uiState.mixBgName.isNullOrBlank()
@@ -547,11 +576,34 @@ fun SmartMusicMixerScreen(
             language = lang,
             onBack = onBack,
             trailing = {
-                InfoBadgeButton(
-                    contentDescription = t(lang, "tool_smart_music_mixer"),
-                    testTag = "smart_mixer_info_badge",
-                    accentColor = StudioColors.Amber,
-                    onClick = { infoDialogOpen = true },
+                UndoRedoActionsRow(
+                    canUndo = mixVolHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = mixVolHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "smart_mixer_undo_button",
+                    redoTag = "smart_mixer_redo_button",
+                    onUndo = {
+                        if ((preferVmUndo && uiState.canUndoEdit) || !mixVolHistory.canUndo) {
+                            viewModel.undoLastEdit()
+                        } else {
+                            mixVolHistory.undo()?.let { viewModel.setSmartMixBgVolume(it) }
+                        }
+                    },
+                    onRedo = {
+                        if ((preferVmUndo && uiState.canRedoEdit) || !mixVolHistory.canRedo) {
+                            viewModel.redoLastEdit()
+                        } else {
+                            mixVolHistory.redo()?.let { viewModel.setSmartMixBgVolume(it) }
+                        }
+                    },
+                    extraTrailing = {
+                        InfoBadgeButton(
+                            contentDescription = t(lang, "tool_smart_music_mixer"),
+                            testTag = "smart_mixer_info_badge",
+                            accentColor = StudioColors.Amber,
+                            onClick = { infoDialogOpen = true },
+                        )
+                    },
                 )
             },
         )
@@ -749,7 +801,11 @@ fun SmartMusicMixerScreen(
                     formattedValue = "${(uiState.smartMixBgVolume * 100f).roundToInt()}%",
                     accentColor = StudioColors.Amber,
                     testTag = "smart_mixer_volume_slider",
-                    onValueChange = { viewModel.setSmartMixBgVolume(it) },
+                    onValueChange = {
+                        preferVmUndo = false
+                        mixVolHistory.commit(it, debounceMs = 350L)
+                        viewModel.setSmartMixBgVolume(it)
+                    },
                 )
 
                 if (canMix) {
@@ -815,7 +871,10 @@ fun SmartMusicMixerScreen(
 
                 val mixApplyInteraction = remember { MutableInteractionSource() }
                 Button(
-                    onClick = { viewModel.applySmartDuckingMixToStudio() },
+                    onClick = {
+                        preferVmUndo = true
+                        viewModel.applySmartDuckingMixToStudio()
+                    },
                     enabled = canMix && !uiState.isBusy,
                     interactionSource = mixApplyInteraction,
                     colors = ButtonDefaults.buttonColors(

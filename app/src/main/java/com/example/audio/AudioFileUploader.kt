@@ -6,10 +6,12 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
@@ -29,65 +31,96 @@ data class UploadedCacheFile(
     val totalBytes: Long,
 )
 
+sealed interface AudioUploadOutcome {
+    data class Success(val uploaded: UploadedCacheFile) : AudioUploadOutcome
+    data class Failure(val errorMessage: String) : AudioUploadOutcome
+}
+
 /**
- * Reliable background URI-to-cacheDir audio uploader on [Dispatchers.IO].
- * Supports both tiny KB voice notes and large multi-MB recordings with accurate byte-level
- * percentage calculation for live [androidx.compose.material3.LinearProgressIndicator] reporting.
+ * Fast, direct URI-to-`cacheDir` audio uploader running on [Dispatchers.IO] with a 64 KB buffer
+ * (`ByteArray(65536)`). Takes persistable read permission, queries [OpenableColumns.SIZE] for accurate
+ * `0%..100%` progress reporting, and preserves/detects the true audio extension so decoders and
+ * `MediaPlayer` / `FFmpegKit` only ever open completed local files via `file.absolutePath`.
  */
 object AudioFileUploader {
+    private const val COPY_BUFFER_SIZE = 65_536
 
     suspend fun copyAudioUriToCache(
         context: Context,
         uri: Uri,
         onProgress: (UploadProgressInfo) -> Unit,
-    ): UploadedCacheFile? = withContext(Dispatchers.IO) {
+    ): UploadedCacheFile? {
+        return when (val outcome = copyAudioUriToCacheDetailed(context, uri, onProgress)) {
+            is AudioUploadOutcome.Success -> outcome.uploaded
+            is AudioUploadOutcome.Failure -> null
+        }
+    }
+
+    suspend fun copyAudioUriToCacheDetailed(
+        context: Context,
+        uri: Uri,
+        onProgress: (UploadProgressInfo) -> Unit,
+    ): AudioUploadOutcome = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+
+        // Take persistable read permission immediately before opening any stream
+        runCatching {
+            resolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+
         val displayName = resolveDisplayName(context, uri)
         val totalBytes = queryContentSize(context, uri)
-        val ext = resolveExtension(context, uri, displayName)
+        val initialExt = resolveExtension(context, uri, displayName)
 
         onProgress(
             UploadProgressInfo(
-                fraction = 0.01f,
-                percent = 1,
+                fraction = 0f,
+                percent = 0,
                 bytesCopied = 0L,
                 totalBytes = totalBytes,
                 fileName = displayName,
             ),
         )
 
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
-        }
-
         val uploadDir = File(context.cacheDir, "audio_upload_cache").apply { mkdirs() }
-        val destFile = File(uploadDir, "upload_${UUID.randomUUID()}.$ext")
+        var destFile = File(uploadDir, "upload_${UUID.randomUUID()}.$initialExt")
 
-        val resolver = context.contentResolver
         var pfd: ParcelFileDescriptor? = null
+        var openError: Throwable? = null
         val inputStream = if (uri.scheme.equals("file", ignoreCase = true)) {
             val direct = uri.path?.let { File(it) }
             if (direct != null && direct.exists() && direct.canRead()) {
-                direct.inputStream()
+                runCatching { direct.inputStream() }
+                    .onFailure { openError = it }
+                    .getOrNull()
             } else {
+                openError = IllegalStateException(
+                    "File path is missing or unreadable (${uri.path ?: uri.toString()})",
+                )
                 null
             }
         } else {
-            resolver.openInputStream(uri) ?: run {
-                pfd = runCatching { resolver.openFileDescriptor(uri, "r") }.getOrNull()
-                pfd?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
-            }
+            runCatching { resolver.openInputStream(uri) }
+                .onFailure { openError = it }
+                .getOrNull()
+                ?: run {
+                    val fdRes = runCatching { resolver.openFileDescriptor(uri, "r") }
+                    fdRes.onFailure { if (openError == null) openError = it }
+                    pfd = fdRes.getOrNull()
+                    pfd?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
+                }
         }
 
         if (inputStream == null) {
             runCatching { pfd?.close() }
-            return@withContext null
+            val reason = openError?.let { "${it.javaClass.simpleName}: ${it.message}" }
+                ?: "SecurityException: contentResolver.openInputStream returned null for $uri"
+            return@withContext AudioUploadOutcome.Failure(reason)
         }
 
-        // Smaller chunk for KB files so progress moves smoothly; larger chunk for MB files for speed
-        val bufferSize = if (totalBytes in 1L..262_144L) 4096 else 32_768
         val effectiveTotal = if (totalBytes > 0L) {
             totalBytes
         } else if (uri.scheme.equals("file", ignoreCase = true)) {
@@ -99,25 +132,26 @@ object AudioFileUploader {
         return@withContext try {
             var copiedBytes = 0L
             inputStream.use { input ->
-                destFile.outputStream().buffered(bufferSize).use { out ->
-                    val buf = ByteArray(bufferSize)
+                destFile.outputStream().buffered(COPY_BUFFER_SIZE).use { out ->
+                    val buf = ByteArray(COPY_BUFFER_SIZE)
                     var lastEmittedMs = 0L
-                    var lastEmittedPct = 0
+                    var lastEmittedPct = -1
                     while (true) {
                         coroutineContext.ensureActive()
                         val read = input.read(buf)
-                        if (read <= 0) break
+                        if (read < 0) break
+                        if (read == 0) continue
                         out.write(buf, 0, read)
                         copiedBytes += read
 
                         val fraction = if (effectiveTotal > 0L) {
-                            (copiedBytes.toDouble() / effectiveTotal.toDouble()).toFloat().coerceIn(0.01f, 1f)
+                            (copiedBytes.toDouble() / effectiveTotal.toDouble()).toFloat().coerceIn(0f, 1f)
                         } else {
-                            (1f - 1f / (1f + copiedBytes / 524_288f)).coerceIn(0.05f, 0.96f)
+                            (1f - 1f / (1f + copiedBytes / 524_288f)).coerceIn(0.04f, 0.96f)
                         }
-                        val pct = (fraction * 100f).roundToInt().coerceIn(1, 100)
+                        val pct = (fraction * 100f).roundToInt().coerceIn(0, 100)
                         val now = System.currentTimeMillis()
-                        if (pct != lastEmittedPct || now - lastEmittedMs >= 35L || (effectiveTotal > 0L && copiedBytes >= effectiveTotal)) {
+                        if (pct != lastEmittedPct || now - lastEmittedMs >= 25L || (effectiveTotal > 0L && copiedBytes >= effectiveTotal)) {
                             lastEmittedPct = pct
                             lastEmittedMs = now
                             onProgress(
@@ -137,8 +171,19 @@ object AudioFileUploader {
 
             if (copiedBytes <= 0L || !destFile.exists() || destFile.length() <= 0L) {
                 runCatching { destFile.delete() }
-                null
+                AudioUploadOutcome.Failure("EOFException: Copied 0 bytes from $displayName")
             } else {
+                // If MIME/name gave a generic .bin extension, inspect audio magic header and rename cleanly
+                if (initialExt == "bin") {
+                    val sniffedExt = sniffAudioExtension(destFile)
+                    if (sniffedExt != null) {
+                        val renamed = File(uploadDir, "${destFile.nameWithoutExtension}.$sniffedExt")
+                        if (destFile.renameTo(renamed)) {
+                            destFile = renamed
+                        }
+                    }
+                }
+
                 val finalTotal = if (effectiveTotal > 0L) effectiveTotal else copiedBytes
                 onProgress(
                     UploadProgressInfo(
@@ -149,17 +194,19 @@ object AudioFileUploader {
                         fileName = displayName,
                     ),
                 )
-                UploadedCacheFile(
-                    file = destFile,
-                    displayName = displayName,
-                    bytesCopied = copiedBytes,
-                    totalBytes = finalTotal,
+                AudioUploadOutcome.Success(
+                    UploadedCacheFile(
+                        file = destFile,
+                        displayName = displayName,
+                        bytesCopied = copiedBytes,
+                        totalBytes = finalTotal,
+                    ),
                 )
             }
         } catch (t: Throwable) {
             runCatching { destFile.delete() }
-            if (t is kotlinx.coroutines.CancellationException) throw t
-            null
+            if (t is CancellationException) throw t
+            AudioUploadOutcome.Failure("${t.javaClass.simpleName}: ${t.message ?: "Failed copying URI to cache"}")
         } finally {
             runCatching { pfd?.close() }
         }
@@ -206,17 +253,45 @@ object AudioFileUploader {
         }.getOrDefault(-1L)
     }
 
+    private val KNOWN_MEDIA_EXTENSIONS = setOf(
+        "mp3", "wav", "m4a", "aac", "ogg", "oga", "opus", "flac", "wma", "amr", "3gp", "mp4", "mkv", "webm", "aiff",
+    )
+
     private fun resolveExtension(context: Context, uri: Uri, displayName: String): String {
+        val fromName = displayName.substringAfterLast('.', "").lowercase()
+        if (fromName in KNOWN_MEDIA_EXTENSIONS) return fromName
+
         val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
         val extFromMime = if (!mime.isNullOrBlank()) {
-            MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+            MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)?.lowercase()
         } else {
             null
         }
-        val fromName = displayName.substringAfterLast('.', "")
-        return (extFromMime?.takeIf { it.isNotBlank() }
+        if (extFromMime != null && extFromMime in KNOWN_MEDIA_EXTENSIONS) return extFromMime
+
+        val fromPath = uri.lastPathSegment?.substringAfterLast('.', "")?.lowercase().orEmpty()
+        if (fromPath in KNOWN_MEDIA_EXTENSIONS) return fromPath
+
+        return (extFromMime?.takeIf { it.isNotBlank() && it != "bin" }
             ?: fromName.takeIf { it.length in 2..5 }
-            ?: uri.lastPathSegment?.substringAfterLast('.', "")?.takeIf { it.length in 2..5 }
             ?: "bin").lowercase()
+    }
+
+    private fun sniffAudioExtension(file: File): String? {
+        return runCatching {
+            val head = ByteArray(16)
+            val n = FileInputStream(file).use { it.read(head) }
+            if (n < 4) return@runCatching null
+            val ascii4 = String(head, 0, 4, Charsets.US_ASCII)
+            when {
+                ascii4 == "RIFF" -> "wav"
+                ascii4 == "OggS" -> "ogg"
+                ascii4 == "fLaC" -> "flac"
+                ascii4.startsWith("ID3") -> "mp3"
+                (head[0].toInt() and 0xFF) == 0xFF && (head[1].toInt() and 0xE0) == 0xE0 -> "mp3"
+                n >= 8 && String(head, 4, 4, Charsets.US_ASCII) == "ftyp" -> "m4a"
+                else -> null
+            }
+        }.getOrNull()
     }
 }

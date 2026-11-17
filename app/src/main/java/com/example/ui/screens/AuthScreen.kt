@@ -68,12 +68,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
 import com.example.i18n.t
@@ -137,62 +139,6 @@ fun AuthScreen(
                 email = existingUser.email.orEmpty(),
             )
             onLoginSuccess()
-            return@LaunchedEffect
-        }
-        val activity = context.findActivity() ?: return@LaunchedEffect
-        try {
-            val credentialManager = CredentialManager.create(activity)
-            val autoSignInOption = GetGoogleIdOption.Builder()
-                .setFilterByAuthorizedAccounts(true)
-                .setServerClientId(GOOGLE_WEB_CLIENT_ID)
-                .setAutoSelectEnabled(true)
-                .build()
-            val request = GetCredentialRequest.Builder()
-                .addCredentialOption(autoSignInOption)
-                .build()
-            val result = credentialManager.getCredential(
-                context = activity,
-                request = request,
-            )
-            val credential = result.credential
-            val googleIdTokenCredential = when {
-                credential is GoogleIdTokenCredential -> credential
-                credential is CustomCredential &&
-                    credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL ->
-                    GoogleIdTokenCredential.createFrom(credential.data)
-                else -> null
-            }
-            if (googleIdTokenCredential != null) {
-                val firebaseCredential = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
-                FirebaseAuth.getInstance()
-                    .signInWithCredential(firebaseCredential)
-                    .addOnSuccessListener { authResult ->
-                        val user = authResult.user ?: FirebaseAuth.getInstance().currentUser
-                        if (user != null) {
-                            viewModel.onGoogleLoginSuccess(
-                                uid = user.uid,
-                                displayName = user.displayName ?: googleIdTokenCredential.displayName.orEmpty(),
-                                email = user.email ?: googleIdTokenCredential.id,
-                            )
-                            onLoginSuccess()
-                        } else {
-                            errorMsg = "NullUserException: Firebase signInWithCredential returned null user."
-                        }
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e("Auth", "Silent Firebase signInWithCredential failed", e)
-                        errorMsg = "${e.javaClass.simpleName}: ${e.message}"
-                    }
-            }
-        } catch (_: NoCredentialException) {
-            // Expected when no prior authorized Google account exists silently
-        } catch (_: GetCredentialCancellationException) {
-            // User dismissed silent prompt
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e("Auth", "Silent Google sign-in error", e)
-            errorMsg = "${e.javaClass.simpleName}: ${e.message}"
         }
     }
 
@@ -233,16 +179,38 @@ fun AuthScreen(
             scope.launch {
                 try {
                     val credentialManager = CredentialManager.create(activity)
-                    val signInOption = GetSignInWithGoogleOption.Builder(
-                        serverClientId = GOOGLE_WEB_CLIENT_ID,
-                    ).build()
-                    val request = GetCredentialRequest.Builder()
-                        .addCredentialOption(signInOption)
+                    val googleIdOption = GetGoogleIdOption.Builder()
+                        .setFilterByAuthorizedAccounts(false)
+                        .setServerClientId(GOOGLE_WEB_CLIENT_ID)
+                        .setAutoSelectEnabled(false)
                         .build()
-                    val result = credentialManager.getCredential(
-                        context = activity,
-                        request = request,
-                    )
+                    val primaryRequest = GetCredentialRequest.Builder()
+                        .addCredentialOption(googleIdOption)
+                        .build()
+                    val result = try {
+                        credentialManager.getCredential(
+                            context = activity,
+                            request = primaryRequest,
+                        )
+                    } catch (primaryEx: GetCredentialException) {
+                        val msg = primaryEx.message.orEmpty()
+                        val isReauthOrNoCred = primaryEx is NoCredentialException ||
+                            msg.contains("reauth", ignoreCase = true) ||
+                            msg.contains("16") ||
+                            primaryEx !is GetCredentialCancellationException
+                        if (!isReauthOrNoCred) throw primaryEx
+                        Log.w("Auth", "Primary GetGoogleIdOption failed (${primaryEx.javaClass.simpleName}: $msg), retrying with GetSignInWithGoogleOption")
+                        val fallbackOption = GetSignInWithGoogleOption.Builder(
+                            serverClientId = GOOGLE_WEB_CLIENT_ID,
+                        ).build()
+                        val fallbackRequest = GetCredentialRequest.Builder()
+                            .addCredentialOption(fallbackOption)
+                            .build()
+                        credentialManager.getCredential(
+                            context = activity,
+                            request = fallbackRequest,
+                        )
+                    }
                     val credential = result.credential
                     val googleIdTokenCredential = when {
                         credential is GoogleIdTokenCredential -> credential
@@ -409,9 +377,14 @@ private fun AuthScreenContent(
             ) {
                 Text(
                     text = t(lang, "app_name"),
-                    style = MaterialTheme.typography.displaySmall,
+                    style = MaterialTheme.typography.displaySmall.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        textDirection = TextDirection.Ltr,
+                    ),
                     color = StudioColors.TextPrimary,
                     textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    softWrap = false,
                 )
                 Text(
                     text = t(lang, "studio_tagline"),

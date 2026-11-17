@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.net.Uri
@@ -66,6 +67,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +78,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.audio.AudioFileUploader
+import com.example.audio.AudioUploadOutcome
 import com.example.audio.formatDurationMs
 import com.example.data.MediaStoreAudioRepository
 import com.example.i18n.t
@@ -87,6 +91,10 @@ import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import java.io.File
 
 @Composable
 fun InAppAudioPickerScreen(
@@ -122,10 +130,18 @@ fun InAppAudioPickerScreen(
         }
     }
 
+    val scope = rememberCoroutineScope()
+
     val externalDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri: Uri? ->
         if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
             val doneCallback: () -> Unit = {
                 if (showBackButton) onPickedComplete()
             }
@@ -146,11 +162,21 @@ fun InAppAudioPickerScreen(
 
     var previewingUri by remember { mutableStateOf<String?>(null) }
     var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var previewCachedFile by remember { mutableStateOf<File?>(null) }
+    var previewCopyJob by remember { mutableStateOf<Job?>(null) }
+    var previewCopyProgress by remember { mutableStateOf<Float?>(null) }
+    var previewCopyName by remember { mutableStateOf<String?>(null) }
 
     fun stopPreview() {
+        previewCopyJob?.cancel()
+        previewCopyJob = null
+        previewCopyProgress = null
+        previewCopyName = null
         runCatching { previewPlayer?.stop() }
         runCatching { previewPlayer?.release() }
         previewPlayer = null
+        runCatching { previewCachedFile?.delete() }
+        previewCachedFile = null
         previewingUri = null
     }
 
@@ -160,33 +186,63 @@ fun InAppAudioPickerScreen(
             return
         }
         stopPreview()
-        val mp = MediaPlayer()
-        val ok = runCatching {
-            mp.setDataSource(context, Uri.parse(item.uriString))
-            mp.setOnPreparedListener { prepared ->
-                runCatching { prepared.start() }
-            }
-            mp.setOnCompletionListener {
+        previewingUri = item.uriString
+        previewCopyName = item.displayName
+        previewCopyProgress = 0f
+
+        previewCopyJob = scope.launch {
+            try {
+                val uri = Uri.parse(item.uriString)
+                val uploadOutcome = AudioFileUploader.copyAudioUriToCacheDetailed(context, uri) { info ->
+                    previewCopyProgress = info.fraction.coerceIn(0f, 1f)
+                }
+                val uploaded = when (uploadOutcome) {
+                    is AudioUploadOutcome.Success -> uploadOutcome.uploaded
+                    is AudioUploadOutcome.Failure -> {
+                        stopPreview()
+                        viewModel.showStatusBanner("تعذر نسخ ملف المعاينة: ${uploadOutcome.errorMessage}")
+                        return@launch
+                    }
+                }
+                previewCopyProgress = null
+                previewCachedFile = uploaded.file
+                val mp = MediaPlayer()
+                try {
+                    // Open MediaPlayer strictly via local cacheDir file.absolutePath after 100% copy
+                    mp.setDataSource(uploaded.file.absolutePath)
+                    mp.setOnPreparedListener { prepared ->
+                        runCatching { prepared.start() }
+                    }
+                    mp.setOnCompletionListener {
+                        stopPreview()
+                    }
+                    mp.setOnErrorListener { _, what, extra ->
+                        stopPreview()
+                        viewModel.showStatusBanner("MediaPlayerError: what=$what extra=$extra")
+                        true
+                    }
+                    previewPlayer = mp
+                    mp.prepareAsync()
+                } catch (e: Exception) {
+                    runCatching { mp.release() }
+                    stopPreview()
+                    viewModel.showStatusBanner("تعذر تشغيل المعاينة: ${e.javaClass.simpleName}: ${e.message}")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
                 stopPreview()
+                viewModel.showStatusBanner("تعذر معاينة الملف: ${e.javaClass.simpleName}: ${e.message}")
             }
-            mp.setOnErrorListener { _, _, _ ->
-                stopPreview()
-                true
-            }
-            previewPlayer = mp
-            previewingUri = item.uriString
-            mp.prepareAsync()
-            true
-        }.getOrDefault(false)
-        if (!ok) {
-            runCatching { mp.release() }
         }
     }
 
     DisposableEffect(Unit) {
         onDispose {
+            previewCopyJob?.cancel()
             runCatching { previewPlayer?.stop() }
             runCatching { previewPlayer?.release() }
+            runCatching { previewCachedFile?.delete() }
         }
     }
 
@@ -327,7 +383,9 @@ fun InAppAudioPickerScreen(
                 }
             }
 
-            uiState.importProgress?.let { prog ->
+            val activeProgress = uiState.importProgress ?: previewCopyProgress
+            val activeLabel = uiState.importLabel ?: previewCopyName
+            activeProgress?.let { prog ->
                 item(key = "picker_upload_progress", contentType = "upload_progress") {
                     val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
                     Surface(
@@ -361,14 +419,14 @@ fun InAppAudioPickerScreen(
                                     color = StudioColors.Emerald,
                                 )
                             }
-                            if (!uiState.importLabel.isNullOrBlank() || !uiState.importBytesLabel.isNullOrBlank()) {
+                            if (!activeLabel.isNullOrBlank() || !uiState.importBytesLabel.isNullOrBlank()) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Text(
-                                        text = uiState.importLabel.orEmpty(),
+                                        text = activeLabel.orEmpty(),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = StudioColors.TextPrimary,
                                         maxLines = 1,

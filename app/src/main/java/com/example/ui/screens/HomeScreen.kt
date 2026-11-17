@@ -39,6 +39,7 @@ import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SpatialAudioOff
@@ -79,6 +80,7 @@ import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -371,14 +373,14 @@ fun HomeScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(176.dp)
+                        .defaultMinSize(minHeight = 168.dp)
                         .clip(RoundedCornerShape(22.dp))
                         .background(heroBgBrush),
                 ) {
                     // Ambient glowing cyan-violet studio backdrop + watermark of the primary logo silhouette
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
+                            .matchParentSize()
                             .background(heroRadialBrush),
                     )
                     Image(
@@ -395,118 +397,132 @@ fun HomeScreen(
 
                     Column(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .padding(14.dp),
-                        verticalArrangement = Arrangement.SpaceBetween,
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        // Row 1: Unconstrained Identity (Logo + full "Sonix ✦" LTR title + readable tagline)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            val logoBorderBrush = remember {
+                                Brush.linearGradient(
+                                    colors = listOf(StudioColors.Cyan, StudioColors.Violet),
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFFFFFFFE),
+                                border = BorderStroke(
+                                    width = 1.5.dp,
+                                    brush = logoBorderBrush,
+                                ),
+                                shadowElevation = 8.dp,
+                                modifier = Modifier.size(56.dp),
+                            ) {
+                                Image(
+                                    bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
+                                    contentDescription = t(lang, "app_name"),
+                                    contentScale = ContentScale.Crop,
+                                    filterQuality = FilterQuality.High,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(15.dp)),
+                                )
+                            }
+
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    text = t(lang, "app_name"),
+                                    style = MaterialTheme.typography.headlineMedium.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        textDirection = TextDirection.Ltr,
+                                    ),
+                                    color = StudioColors.TextPrimary,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                                Text(
+                                    text = t(lang, "studio_tagline"),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = StudioColors.Cyan,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+
+                        // Row 2: Balanced utility bar (Guest / Sign-In chip + Language badge)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
-                            Row(
-                                modifier = Modifier.weight(1f),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            val authChipInteraction = remember { MutableInteractionSource() }
+                            Surface(
+                                onClick = {
+                                    if (uiState.authSession is AuthSession.Guest) {
+                                        viewModel.requestSignIn()
+                                    } else {
+                                        viewModel.signOut()
+                                    }
+                                },
+                                interactionSource = authChipInteraction,
+                                shape = RoundedCornerShape(999.dp),
+                                color = StudioColors.ElevatedSurface.copy(alpha = 0.92f),
+                                border = BorderStroke(1.dp, StudioColors.BorderBright),
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .lit(authChipInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                                    .testTag("home_auth_chip"),
                             ) {
-                                val logoBorderBrush = remember {
-                                    Brush.linearGradient(
-                                        colors = listOf(StudioColors.Cyan, StudioColors.Violet),
-                                    )
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(16.dp),
-                                    color = Color(0xFFFFFFFE),
-                                    border = BorderStroke(
-                                        width = 1.5.dp,
-                                        brush = logoBorderBrush,
-                                    ),
-                                    shadowElevation = 8.dp,
-                                    modifier = Modifier.size(52.dp),
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                                 ) {
-                                    Image(
-                                        bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
-                                        contentDescription = t(lang, "app_name"),
-                                        contentScale = ContentScale.Crop,
-                                        filterQuality = FilterQuality.High,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .clip(RoundedCornerShape(15.dp)),
+                                    Icon(
+                                        imageVector = Icons.Rounded.Person,
+                                        contentDescription = null,
+                                        tint = StudioColors.Cyan,
+                                        modifier = Modifier.size(16.dp),
                                     )
-                                }
-
-                                Column(
-                                    modifier = Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                                ) {
                                     Text(
-                                        text = t(lang, "app_name"),
-                                        style = MaterialTheme.typography.displaySmall,
+                                        text = if (uiState.authSession is AuthSession.Guest) {
+                                            "$userLabel • ${t(lang, "auth_sign_in")}"
+                                        } else {
+                                            "$userLabel • ${t(lang, "auth_sign_out")}"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
                                         color = StudioColors.TextPrimary,
-                                    )
-                                    Text(
-                                        text = t(lang, "studio_tagline"),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = StudioColors.Cyan,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                             }
 
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                val authChipInteraction = remember { MutableInteractionSource() }
-                                Surface(
-                                    onClick = {
-                                        if (uiState.authSession is AuthSession.Guest) {
-                                            viewModel.requestSignIn()
-                                        } else {
-                                            viewModel.signOut()
-                                        }
-                                    },
-                                    interactionSource = authChipInteraction,
-                                    shape = RoundedCornerShape(999.dp),
-                                    color = StudioColors.ElevatedSurface.copy(alpha = 0.9f),
-                                    border = BorderStroke(1.dp, StudioColors.BorderBright),
-                                    modifier = Modifier
-                                        .defaultMinSize(minHeight = 48.dp)
-                                        .lit(authChipInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                                        .testTag("home_auth_chip"),
-                                ) {
-                                    Box(
-                                        contentAlignment = Alignment.Center,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                    ) {
-                                        Text(
-                                            text = if (uiState.authSession is AuthSession.Guest) {
-                                                "$userLabel • ${t(lang, "auth_sign_in")}"
-                                            } else {
-                                                "$userLabel • ${t(lang, "auth_sign_out")}"
-                                            },
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = StudioColors.TextPrimary,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                }
+                            Spacer(Modifier.width(10.dp))
 
-                                LanguageBadgeButton(
-                                    currentLanguage = lang,
-                                    onClick = { langDialogOpen = true },
-                                )
-                            }
+                            LanguageBadgeButton(
+                                currentLanguage = lang,
+                                onClick = { langDialogOpen = true },
+                            )
                         }
 
+                        // Row 3: Live Audio Waveform Visualizer
                         RealTimeWaveformCanvas(
                             bars = if (uiState.recorder.isRecording) uiState.recorder.waveformBars else uiState.playback.waveformBars,
                             isActive = uiState.playback.isPlaying || uiState.recorder.isRecording,
                             accentColor = if (uiState.recorder.isRecording) StudioColors.Rose else StudioColors.Cyan,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(46.dp),
+                                .height(44.dp),
                         )
                     }
                 }

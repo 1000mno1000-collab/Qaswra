@@ -76,6 +76,8 @@ import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
+import com.example.ui.components.UndoRedoActionsRow
+import com.example.ui.components.rememberEditHistory
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
@@ -119,15 +121,6 @@ private fun ActiveTrackPromptCard(
                         )
                     }
                 }
-                if (uiState.canUndoEdit) {
-                    OutlinedButton(
-                        onClick = { },
-                        enabled = false,
-                        modifier = Modifier.defaultMinSize(minHeight = 36.dp),
-                    ) {
-                        Text(t(lang, "undo_edit"))
-                    }
-                }
             }
             val pickInteraction = remember { MutableInteractionSource() }
             OutlinedButton(
@@ -163,6 +156,17 @@ fun AudioMergeScreen(
             subtitle = if (lang == AppLanguage.EN) "Join multiple clips seamlessly with crossfade" else "إلحاق ودمج عدة مقاطع صوتية بسلاسة عالية",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "merge_undo_button",
+                    redoTag = "merge_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
@@ -240,6 +244,8 @@ fun AudioSplitScreen(
     var splitPoint by remember { mutableFloatStateOf(0.5f) }
     var saveBothToLibrary by remember { mutableStateOf(true) }
     var loadPart by remember { mutableIntStateOf(1) }
+    var preferVmUndo by remember { mutableStateOf(false) }
+    val splitHistory = rememberEditHistory(Triple(splitPoint, loadPart, saveBothToLibrary))
 
     val splitMs = (uiState.durationMs * splitPoint).roundToInt().toLong()
 
@@ -249,6 +255,37 @@ fun AudioSplitScreen(
             subtitle = if (lang == AppLanguage.EN) "Split by timeline point or isolate Stereo L/R channels" else "تقسيم المقطع زمنياً أو فصل قنوات الستيريو (يمين / يسار)",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = splitHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = splitHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "split_undo_button",
+                    redoTag = "split_redo_button",
+                    onUndo = {
+                        if ((preferVmUndo && uiState.canUndoEdit) || !splitHistory.canUndo) {
+                            viewModel.undoLastEdit()
+                        } else {
+                            splitHistory.undo()?.let { (pt, part, saveBoth) ->
+                                splitPoint = pt
+                                loadPart = part
+                                saveBothToLibrary = saveBoth
+                            }
+                        }
+                    },
+                    onRedo = {
+                        if ((preferVmUndo && uiState.canRedoEdit) || !splitHistory.canRedo) {
+                            viewModel.redoLastEdit()
+                        } else {
+                            splitHistory.redo()?.let { (pt, part, saveBoth) ->
+                                splitPoint = pt
+                                loadPart = part
+                                saveBothToLibrary = saveBoth
+                            }
+                        }
+                    },
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
@@ -273,7 +310,11 @@ fun AudioSplitScreen(
                     formattedValue = formatDurationMs(splitMs),
                     accentColor = StudioColors.Cyan,
                     testTag = "split_point_slider",
-                    onValueChange = { splitPoint = it },
+                    onValueChange = {
+                        preferVmUndo = false
+                        splitPoint = it
+                        splitHistory.commit(Triple(it, loadPart, saveBothToLibrary), debounceMs = 350L)
+                    },
                 )
 
                 Row(
@@ -283,7 +324,11 @@ fun AudioSplitScreen(
                     val part1Interaction = remember { MutableInteractionSource() }
                     FilterChip(
                         selected = loadPart == 1,
-                        onClick = { loadPart = 1 },
+                        onClick = {
+                            preferVmUndo = false
+                            loadPart = 1
+                            splitHistory.commit(Triple(splitPoint, 1, saveBothToLibrary))
+                        },
                         interactionSource = part1Interaction,
                         label = { Text(if (lang == AppLanguage.EN) "Open Part 1" else "فتح الجزء الأول") },
                         modifier = Modifier
@@ -293,7 +338,11 @@ fun AudioSplitScreen(
                     val part2Interaction = remember { MutableInteractionSource() }
                     FilterChip(
                         selected = loadPart == 2,
-                        onClick = { loadPart = 2 },
+                        onClick = {
+                            preferVmUndo = false
+                            loadPart = 2
+                            splitHistory.commit(Triple(splitPoint, 2, saveBothToLibrary))
+                        },
                         interactionSource = part2Interaction,
                         label = { Text(if (lang == AppLanguage.EN) "Open Part 2" else "فتح الجزء الثاني") },
                         modifier = Modifier
@@ -318,7 +367,10 @@ fun AudioSplitScreen(
 
                 val splitExecInteraction = remember { MutableInteractionSource() }
                 Button(
-                    onClick = { viewModel.splitAudioAtFraction(splitPoint, loadPart, saveBothToLibrary) },
+                    onClick = {
+                        preferVmUndo = true
+                        viewModel.splitAudioAtFraction(splitPoint, loadPart, saveBothToLibrary)
+                    },
                     enabled = uiState.hasAudio && !uiState.isBusy,
                     interactionSource = splitExecInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
@@ -386,6 +438,17 @@ fun PitchAndSpeedScreen(
             subtitle = if (lang == AppLanguage.EN) "Adjust pitch semitones & tempo independently" else "تعديل حدة الطبقة الصوتية وسرعة الإيقاع بدقة",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "pitch_speed_top_undo_button",
+                    redoTag = "pitch_speed_top_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
@@ -490,6 +553,17 @@ fun ReverseAudioScreen(
             subtitle = if (lang == AppLanguage.EN) "Reverse audio playback cleanly with Undo support" else "عكس اتجاه المقطع الصوتي مع دعم التراجع الفوري",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "reverse_undo_button",
+                    redoTag = "reverse_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
@@ -526,6 +600,8 @@ fun SurroundStereoScreen(
     var sideLevel by remember { mutableFloatStateOf(1.0f) }
     var stereoWidth by remember { mutableFloatStateOf(0f) }
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
+    var preferVmUndo by remember { mutableStateOf(false) }
+    val stereoHistory = rememberEditHistory(Triple(midLevel, sideLevel, stereoWidth))
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -533,6 +609,37 @@ fun SurroundStereoScreen(
             subtitle = if (lang == AppLanguage.EN) "Convert mono or narrow clips into wide spatial stereo" else "توسيع المجال الصوتي M/S وتحويل المونو إلى ستيريو محيطي",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = stereoHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = stereoHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "stereo_top_undo_button",
+                    redoTag = "stereo_top_redo_button",
+                    onUndo = {
+                        if ((preferVmUndo && uiState.canUndoEdit) || !stereoHistory.canUndo) {
+                            viewModel.undoLastEdit()
+                        } else {
+                            stereoHistory.undo()?.let { (m, s, w) ->
+                                midLevel = m
+                                sideLevel = s
+                                stereoWidth = w
+                            }
+                        }
+                    },
+                    onRedo = {
+                        if ((preferVmUndo && uiState.canRedoEdit) || !stereoHistory.canRedo) {
+                            viewModel.redoLastEdit()
+                        } else {
+                            stereoHistory.redo()?.let { (m, s, w) ->
+                                midLevel = m
+                                sideLevel = s
+                                stereoWidth = w
+                            }
+                        }
+                    },
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
@@ -544,9 +651,11 @@ fun SurroundStereoScreen(
             onUndo = { viewModel.undoLastEdit() },
             onRedo = { viewModel.redoLastEdit() },
             onResetZero = {
+                preferVmUndo = false
                 midLevel = 1.0f
                 sideLevel = 1.0f
                 stereoWidth = 0f
+                stereoHistory.commit(Triple(1.0f, 1.0f, 0f))
                 viewModel.resetAllEffects()
             },
             onOpenSaveDraft = { saveDraftDialogOpen = true },
@@ -572,7 +681,11 @@ fun SurroundStereoScreen(
                     formattedValue = "${(midLevel * 100f).roundToInt()}%",
                     accentColor = StudioColors.Cyan,
                     testTag = "stereo_mid_slider",
-                    onValueChange = { midLevel = it },
+                    onValueChange = {
+                        preferVmUndo = false
+                        midLevel = it
+                        stereoHistory.commit(Triple(it, sideLevel, stereoWidth), debounceMs = 350L)
+                    },
                 )
                 StudioParamSlider(
                     label = if (lang == AppLanguage.EN) "Side Surround Level" else "مستوى الجوانب المحيطية (Side)",
@@ -582,7 +695,11 @@ fun SurroundStereoScreen(
                     formattedValue = "${(sideLevel * 100f).roundToInt()}%",
                     accentColor = StudioColors.Violet,
                     testTag = "stereo_side_slider",
-                    onValueChange = { sideLevel = it },
+                    onValueChange = {
+                        preferVmUndo = false
+                        sideLevel = it
+                        stereoHistory.commit(Triple(midLevel, it, stereoWidth), debounceMs = 350L)
+                    },
                 )
                 StudioParamSlider(
                     label = t(lang, "param_stereo_width"),
@@ -592,12 +709,19 @@ fun SurroundStereoScreen(
                     formattedValue = "${(stereoWidth * 100f).roundToInt()}%",
                     accentColor = StudioColors.Emerald,
                     testTag = "stereo_width_slider",
-                    onValueChange = { stereoWidth = it },
+                    onValueChange = {
+                        preferVmUndo = false
+                        stereoWidth = it
+                        stereoHistory.commit(Triple(midLevel, sideLevel, it), debounceMs = 350L)
+                    },
                 )
 
                 val stereoInteraction = remember { MutableInteractionSource() }
                 Button(
-                    onClick = { viewModel.applySurroundStereo(midLevel, sideLevel, stereoWidth) },
+                    onClick = {
+                        preferVmUndo = true
+                        viewModel.applySurroundStereo(midLevel, sideLevel, stereoWidth)
+                    },
                     enabled = uiState.hasAudio && !uiState.isBusy,
                     interactionSource = stereoInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
@@ -636,6 +760,8 @@ fun GenerateSilenceScreen(
     val lang = uiState.language
     var durationSec by remember { mutableFloatStateOf(3.0f) }
     var appendMode by remember { mutableStateOf(uiState.hasAudio) }
+    var preferVmUndo by remember { mutableStateOf(false) }
+    val silenceHistory = rememberEditHistory(durationSec to appendMode)
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -643,6 +769,35 @@ fun GenerateSilenceScreen(
             subtitle = if (lang == AppLanguage.EN) "Create exact silent tracks or insert pauses" else "إنشاء مسار صمت نقي أو إضافته كوقفة زمنية للمشروع",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = silenceHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = silenceHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "silence_undo_button",
+                    redoTag = "silence_redo_button",
+                    onUndo = {
+                        if ((preferVmUndo && uiState.canUndoEdit) || !silenceHistory.canUndo) {
+                            viewModel.undoLastEdit()
+                        } else {
+                            silenceHistory.undo()?.let { (d, app) ->
+                                durationSec = d
+                                appendMode = app
+                            }
+                        }
+                    },
+                    onRedo = {
+                        if ((preferVmUndo && uiState.canRedoEdit) || !silenceHistory.canRedo) {
+                            viewModel.redoLastEdit()
+                        } else {
+                            silenceHistory.redo()?.let { (d, app) ->
+                                durationSec = d
+                                appendMode = app
+                            }
+                        }
+                    },
+                )
+            },
         )
 
         Card(
@@ -665,7 +820,11 @@ fun GenerateSilenceScreen(
                     formattedValue = "${"%.1f".format(durationSec)} s",
                     accentColor = StudioColors.Cyan,
                     testTag = "silence_duration_slider",
-                    onValueChange = { durationSec = it },
+                    onValueChange = {
+                        preferVmUndo = false
+                        durationSec = it
+                        silenceHistory.commit(it to appendMode, debounceMs = 350L)
+                    },
                 )
 
                 if (uiState.hasAudio) {
@@ -680,13 +839,23 @@ fun GenerateSilenceScreen(
                             color = StudioColors.TextSecondary,
                             modifier = Modifier.weight(1f),
                         )
-                        Switch(checked = appendMode, onCheckedChange = { appendMode = it })
+                        Switch(
+                            checked = appendMode,
+                            onCheckedChange = {
+                                preferVmUndo = false
+                                appendMode = it
+                                silenceHistory.commit(durationSec to it)
+                            },
+                        )
                     }
                 }
 
                 val silenceInteraction = remember { MutableInteractionSource() }
                 Button(
-                    onClick = { viewModel.insertGeneratedSilence(durationSec, appendMode) },
+                    onClick = {
+                        preferVmUndo = true
+                        viewModel.insertGeneratedSilence(durationSec, appendMode)
+                    },
                     interactionSource = silenceInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
@@ -717,6 +886,7 @@ fun FormatConverterScreen(
     var fileName by remember(uiState.activeProjectName) {
         mutableStateOf(uiState.activeProjectName.ifBlank { "Sonix_Converted" })
     }
+    val convertHistory = rememberEditHistory(selectedFormat to fileName)
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -724,6 +894,35 @@ fun FormatConverterScreen(
             subtitle = if (lang == AppLanguage.EN) "Convert between MP3, M4A, WAV, FLAC, and OGG" else "تحويل الصيغ بين MP3 و M4A و WAV و FLAC و OGG",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = convertHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = convertHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "convert_undo_button",
+                    redoTag = "convert_redo_button",
+                    onUndo = {
+                        if (convertHistory.canUndo) {
+                            convertHistory.undo()?.let { (fmt, name) ->
+                                selectedFormat = fmt
+                                fileName = name
+                            }
+                        } else {
+                            viewModel.undoLastEdit()
+                        }
+                    },
+                    onRedo = {
+                        if (convertHistory.canRedo) {
+                            convertHistory.redo()?.let { (fmt, name) ->
+                                selectedFormat = fmt
+                                fileName = name
+                            }
+                        } else {
+                            viewModel.redoLastEdit()
+                        }
+                    },
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
@@ -742,7 +941,10 @@ fun FormatConverterScreen(
             ) {
                 OutlinedTextField(
                     value = fileName,
-                    onValueChange = { fileName = it },
+                    onValueChange = {
+                        fileName = it
+                        convertHistory.commit(selectedFormat to it, debounceMs = 350L)
+                    },
                     singleLine = true,
                     label = { Text(if (lang == AppLanguage.EN) "Output Filename" else "اسم الملف الناتج") },
                     colors = OutlinedTextFieldDefaults.colors(
@@ -767,7 +969,10 @@ fun FormatConverterScreen(
                         val fmtInteraction = remember { MutableInteractionSource() }
                         FilterChip(
                             selected = isFmtSelected,
-                            onClick = { selectedFormat = fmt },
+                            onClick = {
+                                selectedFormat = fmt
+                                convertHistory.commit(fmt to fileName)
+                            },
                             interactionSource = fmtInteraction,
                             label = { Text(fmt.displayName) },
                             modifier = Modifier
@@ -835,11 +1040,18 @@ fun ExtractVideoAudioScreen(
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
+    val context = LocalContext.current
     var selectedFormat by remember { mutableStateOf(ExportAudioFormat.M4A) }
     val videoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri: Uri? ->
         if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
             viewModel.extractAudioFromVideoUri(uri)
         }
     }
@@ -850,6 +1062,17 @@ fun ExtractVideoAudioScreen(
             subtitle = if (lang == AppLanguage.EN) "Extract high-fidelity audio from any video" else "استخراج المسار الصوتي عالي الدقة من أي فيديو فوراً",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "extract_video_undo_button",
+                    redoTag = "extract_video_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                )
+            },
         )
 
         val pickVideoInteraction = remember { MutableInteractionSource() }
@@ -935,16 +1158,45 @@ fun VideoAudioEditorScreen(
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
+    val context = LocalContext.current
     var selectedVideoUri by remember { mutableStateOf<Uri?>(null) }
     var mixWithOriginal by remember { mutableStateOf(false) }
     var origGain by remember { mutableFloatStateOf(0.45f) }
     var newGain by remember { mutableFloatStateOf(1.0f) }
     var outputName by remember { mutableStateOf("Sonix_Video_Edit") }
+    val videoEditHistory = rememberEditHistory(
+        listOf<Any>(mixWithOriginal, origGain, newGain, outputName),
+    )
+
+    fun commitVideoEdit(
+        mixOrig: Boolean = mixWithOriginal,
+        oGain: Float = origGain,
+        nGain: Float = newGain,
+        outName: String = outputName,
+        debounceMs: Long = 0L,
+    ) {
+        videoEditHistory.commit(listOf<Any>(mixOrig, oGain, nGain, outName), debounceMs = debounceMs)
+    }
+
+    fun applyVideoEdit(snap: List<Any>) {
+        mixWithOriginal = snap[0] as Boolean
+        origGain = snap[1] as Float
+        newGain = snap[2] as Float
+        outputName = snap[3] as String
+    }
 
     val videoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri: Uri? ->
-        if (uri != null) selectedVideoUri = uri
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            selectedVideoUri = uri
+        }
     }
 
     StudioScrollColumn {
@@ -953,6 +1205,29 @@ fun VideoAudioEditorScreen(
             subtitle = if (lang == AppLanguage.EN) "Dub or mix studio audio onto video losslessly" else "دمج أو استبدال صوت الفيديو بصوت الاستوديو بدون فقدان جودة الصورة",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = videoEditHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = videoEditHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "video_edit_undo_button",
+                    redoTag = "video_edit_redo_button",
+                    onUndo = {
+                        if (videoEditHistory.canUndo) {
+                            videoEditHistory.undo()?.let(::applyVideoEdit)
+                        } else {
+                            viewModel.undoLastEdit()
+                        }
+                    },
+                    onRedo = {
+                        if (videoEditHistory.canRedo) {
+                            videoEditHistory.redo()?.let(::applyVideoEdit)
+                        } else {
+                            viewModel.redoLastEdit()
+                        }
+                    },
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
@@ -998,7 +1273,13 @@ fun VideoAudioEditorScreen(
                         color = StudioColors.TextSecondary,
                         modifier = Modifier.weight(1f),
                     )
-                    Switch(checked = mixWithOriginal, onCheckedChange = { mixWithOriginal = it })
+                    Switch(
+                        checked = mixWithOriginal,
+                        onCheckedChange = {
+                            mixWithOriginal = it
+                            commitVideoEdit(mixOrig = it)
+                        },
+                    )
                 }
 
                 if (mixWithOriginal) {
@@ -1010,7 +1291,10 @@ fun VideoAudioEditorScreen(
                         formattedValue = "${(origGain * 100f).roundToInt()}%",
                         accentColor = StudioColors.Violet,
                         testTag = "video_orig_gain_slider",
-                        onValueChange = { origGain = it },
+                        onValueChange = {
+                            origGain = it
+                            commitVideoEdit(oGain = it, debounceMs = 350L)
+                        },
                     )
                 }
 
@@ -1022,12 +1306,18 @@ fun VideoAudioEditorScreen(
                     formattedValue = "${(newGain * 100f).roundToInt()}%",
                     accentColor = StudioColors.Cyan,
                     testTag = "video_new_gain_slider",
-                    onValueChange = { newGain = it },
+                    onValueChange = {
+                        newGain = it
+                        commitVideoEdit(nGain = it, debounceMs = 350L)
+                    },
                 )
 
                 OutlinedTextField(
                     value = outputName,
-                    onValueChange = { outputName = it },
+                    onValueChange = {
+                        outputName = it
+                        commitVideoEdit(outName = it, debounceMs = 350L)
+                    },
                     singleLine = true,
                     label = { Text(if (lang == AppLanguage.EN) "Output Video Name" else "اسم الفيديو الناتج") },
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1096,6 +1386,7 @@ fun CompressAudioScreen(
     var fileName by remember(uiState.activeProjectName) {
         mutableStateOf("${uiState.activeProjectName.ifBlank { "Sonix" }}_Compressed")
     }
+    val compressHistory = rememberEditHistory(bitrateKbps to fileName)
     val estKb = ((uiState.durationMs / 1000.0) * bitrateKbps / 8.0).roundToInt().coerceAtLeast(1)
 
     StudioScrollColumn {
@@ -1104,6 +1395,35 @@ fun CompressAudioScreen(
             subtitle = if (lang == AppLanguage.EN) "Reduce audio file size smoothly with AAC compression" else "ضغط وتقليل حجم الملف الصوتي مع الحفاظ على نقاء الصوت",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = compressHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = compressHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "compress_undo_button",
+                    redoTag = "compress_redo_button",
+                    onUndo = {
+                        if (compressHistory.canUndo) {
+                            compressHistory.undo()?.let { (br, name) ->
+                                bitrateKbps = br
+                                fileName = name
+                            }
+                        } else {
+                            viewModel.undoLastEdit()
+                        }
+                    },
+                    onRedo = {
+                        if (compressHistory.canRedo) {
+                            compressHistory.redo()?.let { (br, name) ->
+                                bitrateKbps = br
+                                fileName = name
+                            }
+                        } else {
+                            viewModel.redoLastEdit()
+                        }
+                    },
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
@@ -1134,7 +1454,10 @@ fun CompressAudioScreen(
                         val brInteraction = remember { MutableInteractionSource() }
                         FilterChip(
                             selected = brSelected,
-                            onClick = { bitrateKbps = br },
+                            onClick = {
+                                bitrateKbps = br
+                                compressHistory.commit(br to fileName)
+                            },
                             interactionSource = brInteraction,
                             label = { Text("${br}k") },
                             modifier = Modifier
@@ -1154,7 +1477,10 @@ fun CompressAudioScreen(
 
                 OutlinedTextField(
                     value = fileName,
-                    onValueChange = { fileName = it },
+                    onValueChange = {
+                        fileName = it
+                        compressHistory.commit(bitrateKbps to it, debounceMs = 350L)
+                    },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = StudioColors.Cyan,
@@ -1203,6 +1529,26 @@ fun RingtoneMakerScreen(
         mutableStateOf("Sonix_${uiState.activeProjectName.ifBlank { "Ringtone" }}")
     }
     var setAsDefault by remember { mutableStateOf(true) }
+    val ringtoneHistory = rememberEditHistory(
+        listOf<Any>(startFrac, endFrac, ringtoneTitle, setAsDefault),
+    )
+
+    fun commitRingtone(
+        s: Float = startFrac,
+        e: Float = endFrac,
+        title: String = ringtoneTitle,
+        def: Boolean = setAsDefault,
+        debounceMs: Long = 0L,
+    ) {
+        ringtoneHistory.commit(listOf<Any>(s, e, title, def), debounceMs = debounceMs)
+    }
+
+    fun applyRingtone(snap: List<Any>) {
+        startFrac = snap[0] as Float
+        endFrac = snap[1] as Float
+        ringtoneTitle = snap[2] as String
+        setAsDefault = snap[3] as Boolean
+    }
 
     val clipLenMs = ((endFrac - startFrac).coerceAtLeast(0.02f) * uiState.durationMs).roundToInt().toLong()
 
@@ -1212,6 +1558,29 @@ fun RingtoneMakerScreen(
             subtitle = if (lang == AppLanguage.EN) "Cut custom ringtones and assign to device" else "قص وتخصيص نغمات الرنين وحفظها وتعيينها للهاتف",
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = ringtoneHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = ringtoneHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "ringtone_undo_button",
+                    redoTag = "ringtone_redo_button",
+                    onUndo = {
+                        if (ringtoneHistory.canUndo) {
+                            ringtoneHistory.undo()?.let(::applyRingtone)
+                        } else {
+                            viewModel.undoLastEdit()
+                        }
+                    },
+                    onRedo = {
+                        if (ringtoneHistory.canRedo) {
+                            ringtoneHistory.redo()?.let(::applyRingtone)
+                        } else {
+                            viewModel.redoLastEdit()
+                        }
+                    },
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
@@ -1230,7 +1599,10 @@ fun RingtoneMakerScreen(
             ) {
                 OutlinedTextField(
                     value = ringtoneTitle,
-                    onValueChange = { ringtoneTitle = it },
+                    onValueChange = {
+                        ringtoneTitle = it
+                        commitRingtone(title = it, debounceMs = 350L)
+                    },
                     singleLine = true,
                     label = { Text(if (lang == AppLanguage.EN) "Ringtone Title" else "اسم نغمة الرنين") },
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1251,7 +1623,10 @@ fun RingtoneMakerScreen(
                     formattedValue = formatDurationMs((uiState.durationMs * startFrac).roundToInt().toLong()),
                     accentColor = StudioColors.Cyan,
                     testTag = "ringtone_start_slider",
-                    onValueChange = { startFrac = it },
+                    onValueChange = {
+                        startFrac = it
+                        commitRingtone(s = it, debounceMs = 350L)
+                    },
                 )
 
                 StudioParamSlider(
@@ -1262,7 +1637,10 @@ fun RingtoneMakerScreen(
                     formattedValue = formatDurationMs((uiState.durationMs * endFrac).roundToInt().toLong()),
                     accentColor = StudioColors.Emerald,
                     testTag = "ringtone_end_slider",
-                    onValueChange = { endFrac = it },
+                    onValueChange = {
+                        endFrac = it
+                        commitRingtone(e = it, debounceMs = 350L)
+                    },
                 )
 
                 Text(
@@ -1282,7 +1660,13 @@ fun RingtoneMakerScreen(
                         color = StudioColors.TextSecondary,
                         modifier = Modifier.weight(1f),
                     )
-                    Switch(checked = setAsDefault, onCheckedChange = { setAsDefault = it })
+                    Switch(
+                        checked = setAsDefault,
+                        onCheckedChange = {
+                            setAsDefault = it
+                            commitRingtone(def = it)
+                        },
+                    )
                 }
 
                 val ringtoneSaveInteraction = remember { MutableInteractionSource() }

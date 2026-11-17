@@ -79,6 +79,15 @@ fun decodeWavBytes(bytes: ByteArray): StereoAudioBuffer? {
                     bb.int // byteRate
                     bb.short // blockAlign
                     bitsPerSample = bb.short.toInt() and 0xFFFF
+                    if (audioFormat == 0xFFFE && safeSize >= 26) {
+                        bb.short // cbSize
+                        bb.short // wValidBitsPerSample
+                        bb.int // dwChannelMask
+                        val subFormat = bb.short.toInt() and 0xFFFF
+                        if (subFormat == 1 || subFormat == 3) {
+                            audioFormat = subFormat
+                        }
+                    }
                 }
                 val padded = rawChunkSize + (rawChunkSize and 1)
                 val nextPos = minOf(bb.limit(), chunkStart + padded)

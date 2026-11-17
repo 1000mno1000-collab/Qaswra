@@ -22,8 +22,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.rounded.Redo
-import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Clear
@@ -99,11 +97,31 @@ import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
 import com.example.ui.components.StudioSectionCard
 import com.example.ui.components.ToolInfoDialog
+import com.example.ui.components.UndoRedoActionsRow
+import com.example.ui.components.rememberEditHistory
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
 import kotlin.math.roundToInt
+
+private data class TtsEditorSnapshot(
+    val textInput: String,
+    val dialectId: String,
+    val gender: TtsGender,
+    val style: TtsDeliveryStyle,
+    val rateOffsetPercent: Float,
+    val pitchOffsetPercent: Float,
+)
+
+private data class VoiceTransformSnapshot(
+    val presetId: String?,
+    val pitchSemitones: Float,
+    val formantShift: Float,
+    val warmthDb: Float,
+    val presenceDb: Float,
+    val mix: Float,
+)
 
 @Composable
 fun AiStudioScreen(
@@ -169,9 +187,38 @@ fun AiToolDetailScreen(
         AiToolType.SMART_MASTER -> if (lang == AppLanguage.EN) "Smart Auto-Master" else "مهندس الصوت الذكي"
         AiToolType.SEARCH -> if (lang == AppLanguage.EN) "Audio Knowledge Assistant" else "مساعد الهندسة الصوتية"
     }
+    var searchQuery by remember { mutableStateOf("") }
+    val searchHistory = rememberEditHistory("")
 
     StudioScrollColumn {
-        StudioFocusTopBar(title = title, language = lang, onBack = onBack)
+        StudioFocusTopBar(
+            title = title,
+            language = lang,
+            onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = if (tool == AiToolType.SEARCH) searchHistory.canUndo else uiState.canUndoEdit,
+                    canRedo = if (tool == AiToolType.SEARCH) searchHistory.canRedo else uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "ai_tool_undo_button",
+                    redoTag = "ai_tool_redo_button",
+                    onUndo = {
+                        if (tool == AiToolType.SEARCH) {
+                            searchHistory.undo()?.let { searchQuery = it }
+                        } else {
+                            viewModel.undoLastEdit()
+                        }
+                    },
+                    onRedo = {
+                        if (tool == AiToolType.SEARCH) {
+                            searchHistory.redo()?.let { searchQuery = it }
+                        } else {
+                            viewModel.redoLastEdit()
+                        }
+                    },
+                )
+            },
+        )
 
         when (tool) {
             AiToolType.TRANSCRIBE -> {
@@ -391,7 +438,6 @@ fun AiToolDetailScreen(
 
             AiToolType.SEARCH -> {
                 val st = uiState.searchAssistantState
-                var query by remember { mutableStateOf("") }
 
                 Card(
                     shape = RoundedCornerShape(20.dp),
@@ -406,8 +452,11 @@ fun AiToolDetailScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         OutlinedTextField(
-                            value = query,
-                            onValueChange = { query = it },
+                            value = searchQuery,
+                            onValueChange = {
+                                searchQuery = it
+                                searchHistory.commit(it, debounceMs = 350L)
+                            },
                             label = {
                                 Text(if (lang == AppLanguage.EN) "Ask an audio engineering question" else "اكتب سؤالك في الهندسة الصوتية")
                             },
@@ -426,8 +475,8 @@ fun AiToolDetailScreen(
 
                         val searchInteraction = remember { MutableInteractionSource() }
                         Button(
-                            onClick = { viewModel.askSearchAssistant(query) },
-                            enabled = query.isNotBlank() && !st.isLoading,
+                            onClick = { viewModel.askSearchAssistant(searchQuery) },
+                            enabled = searchQuery.isNotBlank() && !st.isLoading,
                             interactionSource = searchInteraction,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.Violet,
@@ -571,6 +620,43 @@ fun TextToSpeechStudioScreen(
     var appendToExisting by remember { mutableStateOf(false) }
     var articleUrl by rememberSaveable { mutableStateOf("") }
     var infoOpen by remember { mutableStateOf(false) }
+    var preferVmUndo by remember { mutableStateOf(false) }
+    val ttsHistory = rememberEditHistory(
+        TtsEditorSnapshot(
+            textInput = textInput,
+            dialectId = selectedDialect.id,
+            gender = selectedGender,
+            style = selectedStyle,
+            rateOffsetPercent = rateOffsetPercent,
+            pitchOffsetPercent = pitchOffsetPercent,
+        ),
+    )
+
+    fun currentTtsSnap(
+        txt: String = textInput,
+        dialectId: String = selectedDialect.id,
+        gender: TtsGender = selectedGender,
+        style: TtsDeliveryStyle = selectedStyle,
+        rate: Float = rateOffsetPercent,
+        pitch: Float = pitchOffsetPercent,
+    ) = TtsEditorSnapshot(
+        textInput = txt,
+        dialectId = dialectId,
+        gender = gender,
+        style = style,
+        rateOffsetPercent = rate,
+        pitchOffsetPercent = pitch,
+    )
+
+    fun applyTtsSnap(snap: TtsEditorSnapshot) {
+        textInput = snap.textInput
+        selectedDialect = TTS_DIALECTS.firstOrNull { it.id == snap.dialectId } ?: TTS_DIALECTS.first()
+        selectedGender = snap.gender
+        selectedStyle = snap.style
+        rateOffsetPercent = snap.rateOffsetPercent
+        pitchOffsetPercent = snap.pitchOffsetPercent
+    }
+
     val hasInternet = remember(uiState.ttsUiState, uiState.studioLuxuryEnhancement, uiState.isExtractingArticle) {
         OnlineGuard.isOnline(context)
     }
@@ -584,43 +670,35 @@ fun TextToSpeechStudioScreen(
             language = lang,
             onBack = onBack,
             trailing = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    IconButton(
-                        onClick = { viewModel.undoLastEdit() },
-                        enabled = uiState.canUndoEdit,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("tts_undo_button"),
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.Undo,
-                            contentDescription = t(lang, "undo_edit"),
-                            tint = if (uiState.canUndoEdit) StudioColors.TextPrimary else StudioColors.TextMuted,
+                UndoRedoActionsRow(
+                    canUndo = ttsHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = ttsHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "tts_undo_button",
+                    redoTag = "tts_redo_button",
+                    onUndo = {
+                        if ((preferVmUndo && uiState.canUndoEdit) || !ttsHistory.canUndo) {
+                            viewModel.undoLastEdit()
+                        } else {
+                            ttsHistory.undo()?.let(::applyTtsSnap)
+                        }
+                    },
+                    onRedo = {
+                        if ((preferVmUndo && uiState.canRedoEdit) || !ttsHistory.canRedo) {
+                            viewModel.redoLastEdit()
+                        } else {
+                            ttsHistory.redo()?.let(::applyTtsSnap)
+                        }
+                    },
+                    extraTrailing = {
+                        InfoBadgeButton(
+                            contentDescription = t(lang, "section_tts_title"),
+                            testTag = "tts_info_button",
+                            accentColor = StudioColors.Cyan,
+                            onClick = { infoOpen = true },
                         )
-                    }
-                    IconButton(
-                        onClick = { viewModel.redoLastEdit() },
-                        enabled = uiState.canRedoEdit,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("tts_redo_button"),
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.Redo,
-                            contentDescription = t(lang, "redo_edit"),
-                            tint = if (uiState.canRedoEdit) StudioColors.TextPrimary else StudioColors.TextMuted,
-                        )
-                    }
-                    InfoBadgeButton(
-                        contentDescription = t(lang, "section_tts_title"),
-                        testTag = "tts_info_button",
-                        accentColor = StudioColors.Cyan,
-                        onClick = { infoOpen = true },
-                    )
-                }
+                    },
+                )
             },
         )
 
@@ -854,7 +932,9 @@ fun TextToSpeechStudioScreen(
                 OutlinedButton(
                     onClick = {
                         viewModel.extractArticleTextForTts(articleUrl) { extracted ->
+                            preferVmUndo = false
                             textInput = extracted
+                            ttsHistory.commit(currentTtsSnap(txt = extracted))
                         }
                     },
                     enabled = !uiState.isExtractingArticle && articleUrl.isNotBlank(),
@@ -911,7 +991,11 @@ fun TextToSpeechStudioScreen(
                     Text(t(lang, "tts_input_label"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                     val sampleInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
-                        onClick = { textInput = selectedDialect.sampleText },
+                        onClick = {
+                            preferVmUndo = false
+                            textInput = selectedDialect.sampleText
+                            ttsHistory.commit(currentTtsSnap(txt = selectedDialect.sampleText))
+                        },
                         interactionSource = sampleInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -925,7 +1009,11 @@ fun TextToSpeechStudioScreen(
 
                 OutlinedTextField(
                     value = textInput,
-                    onValueChange = { textInput = it },
+                    onValueChange = {
+                        preferVmUndo = false
+                        textInput = it
+                        ttsHistory.commit(currentTtsSnap(txt = it), debounceMs = 350L)
+                    },
                     minLines = 3,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = StudioColors.Cyan,
@@ -951,7 +1039,11 @@ fun TextToSpeechStudioScreen(
                         val isSel = selectedGender == genderOption
                         val genderInteraction = remember { MutableInteractionSource() }
                         Surface(
-                            onClick = { selectedGender = genderOption },
+                            onClick = {
+                                preferVmUndo = false
+                                selectedGender = genderOption
+                                ttsHistory.commit(currentTtsSnap(gender = genderOption))
+                            },
                             interactionSource = genderInteraction,
                             shape = RoundedCornerShape(14.dp),
                             color = if (isSel) StudioColors.ElevatedSurface else StudioColors.BgMid,
@@ -985,7 +1077,11 @@ fun TextToSpeechStudioScreen(
                             val isSel = selectedStyle == st
                             val styleInteraction = remember { MutableInteractionSource() }
                             Surface(
-                                onClick = { selectedStyle = st },
+                                onClick = {
+                                    preferVmUndo = false
+                                    selectedStyle = st
+                                    ttsHistory.commit(currentTtsSnap(style = st))
+                                },
                                 interactionSource = styleInteraction,
                                 shape = RoundedCornerShape(14.dp),
                                 color = if (isSel) StudioColors.ElevatedSurface else StudioColors.BgMid,
@@ -1022,9 +1118,17 @@ fun TextToSpeechStudioScreen(
                             val dialectInteraction = remember { MutableInteractionSource() }
                             Surface(
                                 onClick = {
+                                    preferVmUndo = false
                                     selectedDialect = dialect
                                     rateOffsetPercent = 0f
                                     pitchOffsetPercent = 0f
+                                    ttsHistory.commit(
+                                        currentTtsSnap(
+                                            dialectId = dialect.id,
+                                            rate = 0f,
+                                            pitch = 0f,
+                                        ),
+                                    )
                                 },
                                 interactionSource = dialectInteraction,
                                 shape = RoundedCornerShape(14.dp),
@@ -1059,7 +1163,11 @@ fun TextToSpeechStudioScreen(
                     formattedValue = "${if (rateOffsetPercent > 0f) "+" else ""}${rateOffsetPercent.roundToInt()}%",
                     accentColor = StudioColors.Cyan,
                     testTag = "tts_rate_slider",
-                    onValueChange = { rateOffsetPercent = it },
+                    onValueChange = {
+                        preferVmUndo = false
+                        rateOffsetPercent = it
+                        ttsHistory.commit(currentTtsSnap(rate = it), debounceMs = 350L)
+                    },
                 )
 
                 StudioParamSlider(
@@ -1070,7 +1178,11 @@ fun TextToSpeechStudioScreen(
                     formattedValue = "${if (pitchOffsetPercent > 0f) "+" else ""}${pitchOffsetPercent.roundToInt()}%",
                     accentColor = StudioColors.Violet,
                     testTag = "tts_pitch_slider",
-                    onValueChange = { pitchOffsetPercent = it },
+                    onValueChange = {
+                        preferVmUndo = false
+                        pitchOffsetPercent = it
+                        ttsHistory.commit(currentTtsSnap(pitch = it), debounceMs = 350L)
+                    },
                 )
 
                 if (uiState.hasAudio) {
@@ -1174,6 +1286,7 @@ fun TextToSpeechStudioScreen(
                     val insertInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
+                            preferVmUndo = true
                             viewModel.generateTtsToStudio(
                                 text = textInput,
                                 dialect = selectedDialect,
@@ -1231,6 +1344,42 @@ fun VoiceTransformerScreen(
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
     var infoOpen by remember { mutableStateOf(false) }
     var selectedLiveEffect by remember { mutableStateOf(uiState.liveVoiceEffect) }
+    var preferVmUndo by remember { mutableStateOf(false) }
+    val voiceHistory = rememberEditHistory(
+        VoiceTransformSnapshot(
+            presetId = selectedPreset?.id,
+            pitchSemitones = pitchSemitones,
+            formantShift = formantShift,
+            warmthDb = warmthDb,
+            presenceDb = presenceDb,
+            mix = mix,
+        ),
+    )
+
+    fun currentVoiceSnap(
+        presetId: String? = selectedPreset?.id,
+        pitch: Float = pitchSemitones,
+        formant: Float = formantShift,
+        warmth: Float = warmthDb,
+        presence: Float = presenceDb,
+        mixVal: Float = mix,
+    ) = VoiceTransformSnapshot(
+        presetId = presetId,
+        pitchSemitones = pitch,
+        formantShift = formant,
+        warmthDb = warmth,
+        presenceDb = presence,
+        mix = mixVal,
+    )
+
+    fun applyVoiceSnap(snap: VoiceTransformSnapshot) {
+        selectedPreset = snap.presetId?.let { id -> VOICE_CHARACTER_PRESETS.firstOrNull { it.id == id } }
+        pitchSemitones = snap.pitchSemitones
+        formantShift = snap.formantShift
+        warmthDb = snap.warmthDb
+        presenceDb = snap.presenceDb
+        mix = snap.mix
+    }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -1262,11 +1411,34 @@ fun VoiceTransformerScreen(
             language = lang,
             onBack = onBack,
             trailing = {
-                InfoBadgeButton(
-                    contentDescription = t(lang, "section_voice_transformer_title"),
-                    testTag = "voice_transformer_info_button",
-                    accentColor = StudioColors.Violet,
-                    onClick = { infoOpen = true },
+                UndoRedoActionsRow(
+                    canUndo = voiceHistory.canUndo || uiState.canUndoEdit,
+                    canRedo = voiceHistory.canRedo || uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "voice_transformer_undo_button",
+                    redoTag = "voice_transformer_redo_button",
+                    onUndo = {
+                        if ((preferVmUndo && uiState.canUndoEdit) || !voiceHistory.canUndo) {
+                            viewModel.undoLastEdit()
+                        } else {
+                            voiceHistory.undo()?.let(::applyVoiceSnap)
+                        }
+                    },
+                    onRedo = {
+                        if ((preferVmUndo && uiState.canRedoEdit) || !voiceHistory.canRedo) {
+                            viewModel.redoLastEdit()
+                        } else {
+                            voiceHistory.redo()?.let(::applyVoiceSnap)
+                        }
+                    },
+                    extraTrailing = {
+                        InfoBadgeButton(
+                            contentDescription = t(lang, "section_voice_transformer_title"),
+                            testTag = "voice_transformer_info_button",
+                            accentColor = StudioColors.Violet,
+                            onClick = { infoOpen = true },
+                        )
+                    },
                 )
             },
         )
@@ -1278,12 +1450,23 @@ fun VoiceTransformerScreen(
             onUndo = { viewModel.undoLastEdit() },
             onRedo = { viewModel.redoLastEdit() },
             onResetZero = {
+                preferVmUndo = false
                 selectedPreset = null
                 pitchSemitones = 0f
                 formantShift = 1.0f
                 warmthDb = 0f
                 presenceDb = 0f
                 mix = 0f
+                voiceHistory.commit(
+                    currentVoiceSnap(
+                        presetId = null,
+                        pitch = 0f,
+                        formant = 1.0f,
+                        warmth = 0f,
+                        presence = 0f,
+                        mixVal = 0f,
+                    ),
+                )
                 viewModel.resetAllEffects()
             },
             onOpenSaveDraft = { saveDraftDialogOpen = true },
@@ -1451,12 +1634,23 @@ fun VoiceTransformerScreen(
                         accentColor = StudioColors.Cyan,
                         language = lang,
                         onClick = {
+                            preferVmUndo = false
                             selectedPreset = preset
                             pitchSemitones = preset.pitchSemitones
                             formantShift = preset.formantShift
                             warmthDb = preset.warmthDb
                             presenceDb = preset.presenceDb
                             mix = 1f
+                            voiceHistory.commit(
+                                currentVoiceSnap(
+                                    presetId = preset.id,
+                                    pitch = preset.pitchSemitones,
+                                    formant = preset.formantShift,
+                                    warmth = preset.warmthDb,
+                                    presence = preset.presenceDb,
+                                    mixVal = 1f,
+                                ),
+                            )
                         },
                     )
                 }
@@ -1478,12 +1672,23 @@ fun VoiceTransformerScreen(
                         accentColor = StudioColors.Violet,
                         language = lang,
                         onClick = {
+                            preferVmUndo = false
                             selectedPreset = preset
                             pitchSemitones = preset.pitchSemitones
                             formantShift = preset.formantShift
                             warmthDb = preset.warmthDb
                             presenceDb = preset.presenceDb
                             mix = 1f
+                            voiceHistory.commit(
+                                currentVoiceSnap(
+                                    presetId = preset.id,
+                                    pitch = preset.pitchSemitones,
+                                    formant = preset.formantShift,
+                                    warmth = preset.warmthDb,
+                                    presence = preset.presenceDb,
+                                    mixVal = 1f,
+                                ),
+                            )
                         },
                     )
                 }
@@ -1511,8 +1716,11 @@ fun VoiceTransformerScreen(
                     accentColor = StudioColors.Violet,
                     testTag = "voice_pitch_slider",
                     onValueChange = {
+                        preferVmUndo = false
                         pitchSemitones = it
-                        if (mix == 0f) mix = 1f
+                        val nextMix = if (mix == 0f) 1f else mix
+                        mix = nextMix
+                        voiceHistory.commit(currentVoiceSnap(pitch = it, mixVal = nextMix), debounceMs = 350L)
                     },
                 )
                 StudioParamSlider(
@@ -1524,8 +1732,11 @@ fun VoiceTransformerScreen(
                     accentColor = StudioColors.Cyan,
                     testTag = "voice_formant_slider",
                     onValueChange = {
+                        preferVmUndo = false
                         formantShift = it
-                        if (mix == 0f) mix = 1f
+                        val nextMix = if (mix == 0f) 1f else mix
+                        mix = nextMix
+                        voiceHistory.commit(currentVoiceSnap(formant = it, mixVal = nextMix), debounceMs = 350L)
                     },
                 )
                 StudioParamSlider(
@@ -1537,8 +1748,11 @@ fun VoiceTransformerScreen(
                     accentColor = StudioColors.Amber,
                     testTag = "voice_warmth_slider",
                     onValueChange = {
+                        preferVmUndo = false
                         warmthDb = it
-                        if (mix == 0f) mix = 1f
+                        val nextMix = if (mix == 0f) 1f else mix
+                        mix = nextMix
+                        voiceHistory.commit(currentVoiceSnap(warmth = it, mixVal = nextMix), debounceMs = 350L)
                     },
                 )
                 StudioParamSlider(
@@ -1550,8 +1764,11 @@ fun VoiceTransformerScreen(
                     accentColor = StudioColors.Emerald,
                     testTag = "voice_presence_slider",
                     onValueChange = {
+                        preferVmUndo = false
                         presenceDb = it
-                        if (mix == 0f) mix = 1f
+                        val nextMix = if (mix == 0f) 1f else mix
+                        mix = nextMix
+                        voiceHistory.commit(currentVoiceSnap(presence = it, mixVal = nextMix), debounceMs = 350L)
                     },
                 )
                 StudioParamSlider(
@@ -1562,7 +1779,11 @@ fun VoiceTransformerScreen(
                     formattedValue = "${(mix * 100f).roundToInt()}%",
                     accentColor = StudioColors.Cyan,
                     testTag = "voice_mix_slider",
-                    onValueChange = { mix = it },
+                    onValueChange = {
+                        preferVmUndo = false
+                        mix = it
+                        voiceHistory.commit(currentVoiceSnap(mixVal = it), debounceMs = 350L)
+                    },
                 )
 
                 uiState.purifyProgress?.let { prog ->
@@ -1580,6 +1801,7 @@ fun VoiceTransformerScreen(
                 val applyTransformInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = {
+                        preferVmUndo = true
                         viewModel.transformVoiceOffline(
                             pitchSemitones = pitchSemitones,
                             formantShift = formantShift,

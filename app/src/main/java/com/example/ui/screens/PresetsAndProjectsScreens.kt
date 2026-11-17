@@ -67,6 +67,7 @@ import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
+import com.example.ui.components.UndoRedoActionsRow
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
@@ -91,6 +92,17 @@ fun PresetsScreen(
             subtitle = t(lang, "section_presets_subtitle"),
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "presets_top_undo_button",
+                    redoTag = "presets_top_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                )
+            },
         )
 
         StudioPreviewControlsBar(

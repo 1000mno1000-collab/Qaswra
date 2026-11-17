@@ -87,6 +87,7 @@ import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
 import com.example.ui.components.StudioSectionCard
+import com.example.ui.components.UndoRedoActionsRow
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
@@ -130,14 +131,25 @@ fun EchoReverbScreen(
             language = lang,
             onBack = onBack,
             trailing = {
-                Switch(
-                    checked = enabled,
-                    onCheckedChange = { viewModel.toggleEffectEnabled(EffectType.ECHO_REVERB, it) },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = StudioColors.BgTop,
-                        checkedTrackColor = StudioColors.Cyan,
-                    ),
-                    modifier = Modifier.testTag("echo_enable_switch"),
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "echo_top_undo_button",
+                    redoTag = "echo_top_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                    extraTrailing = {
+                        Switch(
+                            checked = enabled,
+                            onCheckedChange = { viewModel.toggleEffectEnabled(EffectType.ECHO_REVERB, it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = StudioColors.BgTop,
+                                checkedTrackColor = StudioColors.Cyan,
+                            ),
+                            modifier = Modifier.testTag("echo_enable_switch"),
+                        )
+                    },
                 )
             },
         )
@@ -528,7 +540,22 @@ fun EchoDetailScreen(
     }
 
     StudioScrollColumn {
-        StudioFocusTopBar(title = title, language = lang, onBack = onBack)
+        StudioFocusTopBar(
+            title = title,
+            language = lang,
+            onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "echo_detail_undo_button",
+                    redoTag = "echo_detail_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                )
+            },
+        )
 
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -701,6 +728,17 @@ fun EffectsChainScreen(
             subtitle = t(lang, "chain_order_hint"),
             language = lang,
             onBack = onBack,
+            trailing = {
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "chain_undo_button",
+                    redoTag = "chain_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                )
+            },
         )
 
         SpectrumVisualizer(
@@ -898,14 +936,25 @@ fun EffectDetailScreen(
             language = lang,
             onBack = onBack,
             trailing = {
-                Switch(
-                    checked = enabled,
-                    onCheckedChange = { viewModel.toggleEffectEnabled(effect, it) },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = StudioColors.BgTop,
-                        checkedTrackColor = StudioColors.Cyan,
-                    ),
-                    modifier = Modifier.testTag("effect_detail_enable_switch"),
+                UndoRedoActionsRow(
+                    canUndo = uiState.canUndoEdit,
+                    canRedo = uiState.canRedoEdit,
+                    language = lang,
+                    undoTag = "effect_detail_top_undo_button",
+                    redoTag = "effect_detail_top_redo_button",
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                    extraTrailing = {
+                        Switch(
+                            checked = enabled,
+                            onCheckedChange = { viewModel.toggleEffectEnabled(effect, it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = StudioColors.BgTop,
+                                checkedTrackColor = StudioColors.Cyan,
+                            ),
+                            modifier = Modifier.testTag("effect_detail_enable_switch"),
+                        )
+                    },
                 )
             },
         )
