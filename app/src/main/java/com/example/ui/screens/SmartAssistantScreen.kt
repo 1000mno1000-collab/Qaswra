@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -144,6 +145,25 @@ fun SmartAssistantScreen(
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = StudioColors.Cyan.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.4f)),
+                        ) {
+                            Text(
+                                text = t(lang, "assistant_cloud_badge"),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.Cyan,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+
                     OutlinedTextField(
                         value = guideQuery,
                         onValueChange = { q ->
@@ -166,6 +186,36 @@ fun SmartAssistantScreen(
                             .testTag("assistant_guide_input"),
                     )
 
+                    val askAiInteraction = remember { MutableInteractionSource() }
+                    Button(
+                        onClick = { viewModel.askAiToolGuide(guideQuery) },
+                        enabled = guideQuery.isNotBlank() && !uiState.isLoadingAiGuide,
+                        interactionSource = askAiInteraction,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.Cyan,
+                            contentColor = StudioColors.BgTop,
+                        ),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(askAiInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                            .testTag("assistant_guide_search_button"),
+                    ) {
+                        if (uiState.isLoadingAiGuide) {
+                            CircularProgressIndicator(
+                                color = StudioColors.BgTop,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        } else {
+                            Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(t(lang, "assistant_ask_ai_btn"))
+                    }
+
                     val quickPrompts = remember(lang) {
                         if (lang == AppLanguage.EN) {
                             listOf("Remove noise", "Dragon voice", "PUBG HDR video", "Web article TTS", "Auto-ducking music")
@@ -186,6 +236,7 @@ fun SmartAssistantScreen(
                                 onClick = {
                                     guideQuery = sample
                                     viewModel.searchToolGuide(sample)
+                                    viewModel.askAiToolGuide(sample)
                                 },
                                 interactionSource = chipInteraction,
                                 label = { Text(sample) },
@@ -193,6 +244,63 @@ fun SmartAssistantScreen(
                                     .defaultMinSize(minHeight = 48.dp)
                                     .lit(chipInteraction, StudioColors.Cyan, cornerRadius = 10.dp),
                             )
+                        }
+                    }
+
+                    uiState.assistantGuideOfflineError?.let { offlineMsg ->
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = StudioColors.Amber.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, StudioColors.Amber.copy(alpha = 0.6f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("assistant_guide_offline_banner"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Icon(Icons.Rounded.WifiOff, contentDescription = null, tint = StudioColors.Amber)
+                                Text(
+                                    text = offlineMsg,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioColors.TextPrimary,
+                                )
+                            }
+                        }
+                    }
+
+                    uiState.assistantAiSummary?.let { summary ->
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = StudioColors.ElevatedSurface,
+                            border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("assistant_ai_summary_card"),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = StudioColors.Violet, modifier = Modifier.size(18.dp))
+                                    Text(
+                                        text = t(lang, "assistant_ai_reply_title"),
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                        color = StudioColors.Violet,
+                                    )
+                                }
+                                Text(
+                                    text = summary,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = StudioColors.TextPrimary,
+                                )
+                            }
                         }
                     }
 
@@ -340,6 +448,30 @@ fun SmartAssistantScreen(
                                     .defaultMinSize(minHeight = 48.dp)
                                     .lit(tInt, StudioColors.Violet, cornerRadius = 10.dp),
                             )
+                        }
+                    }
+
+                    uiState.soundSearchOfflineError?.let { offlineMsg ->
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = StudioColors.Amber.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, StudioColors.Amber.copy(alpha = 0.6f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("archive_search_offline_banner"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Icon(Icons.Rounded.WifiOff, contentDescription = null, tint = StudioColors.Amber)
+                                Text(
+                                    text = offlineMsg,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioColors.TextPrimary,
+                                )
+                            }
                         }
                     }
 

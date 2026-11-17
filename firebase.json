@@ -1,12 +1,16 @@
 {
   "emulators": {
     "firestore": {
+      "host": "127.0.0.1",
       "port": 8085
+    },
+    "ui": {
+      "enabled": false
     }
   },
   "firestore": [
     {
-      "database": "ai-studio-android-qaswra-f368630e-45bc-419f-9c35-49ccc76d50c7",
+      "database": "ai-studio-android-qaswra-189f3ff6-014b-4614-aaf4-197ca7d94841",
       "rules": "firestore.rules"
     }
   ]

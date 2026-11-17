@@ -16,6 +16,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.audio.AudioDecoder
 import com.example.audio.ExportedAudioResult
 import com.example.audio.NativeSpeechState
+import com.example.audio.NetworkUtils
 import com.example.audio.ai.OnlineSoundItem
 import com.example.audio.ai.SmartAssistantAndSearch
 import com.example.audio.ai.ToolGuideResult
@@ -107,6 +108,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -182,7 +184,11 @@ data class StudioUiState(
     val isLiveVoiceChangerActive: Boolean = false,
     val liveVoiceEffect: VoiceEffect = VoiceEffect.CHILD_NATURAL,
     val isExtractingArticle: Boolean = false,
+    val isLoadingAiGuide: Boolean = false,
+    val assistantAiSummary: String? = null,
+    val assistantGuideOfflineError: String? = null,
     val assistantGuideResults: List<ToolGuideResult> = emptyList(),
+    val soundSearchOfflineError: String? = null,
     val onlineSoundCategories: Map<String, List<OnlineSoundItem>> = emptyMap(),
     val isSearchingOnlineSounds: Boolean = false,
     val previewingOnlineUrl: String? = null,
@@ -248,8 +254,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val isCloudSyncedFlow = MutableStateFlow(false)
 
     private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
-        val uid = auth.currentUser?.uid
-        attachCloudListeners(uid)
+        val user = auth.currentUser
+        attachCloudListeners(user?.uid)
+        if (user != null) {
+            viewModelScope.launch {
+                val currentSession = repository.authSessionFlow.first()
+                if (currentSession !is AuthSession.SignedIn || currentSession.uid != user.uid) {
+                    completeGoogleSignIn(
+                        uid = user.uid,
+                        displayName = user.displayName.orEmpty(),
+                        email = user.email.orEmpty(),
+                    )
+                }
+            }
+        }
     }
 
     private val player = StudioAudioPlayer(_uiState.value.dspConfig) { telemetry ->
@@ -2026,6 +2044,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update { it.copy(ttsUiState = it.ttsUiState.copy(errorMessage = "يرجى إدخال النص أولاً.")) }
             return
         }
+        if (!NetworkUtils.isInternetAvailable(getApplication())) {
+            val offlineMsg = t(_uiState.value.language, "tts_offline_required_error")
+            stopTtsPreview()
+            _uiState.update {
+                it.copy(
+                    ttsUiState = TtsStudioUiState(
+                        isSynthesizingPreview = false,
+                        isPreviewing = false,
+                        isGenerating = false,
+                        usedFallbackEngine = false,
+                        errorMessage = offlineMsg,
+                    ),
+                )
+            }
+            postBanner(offlineMsg)
+            return
+        }
         viewModelScope.launch {
             stopTtsPreview()
             _uiState.update {
@@ -2117,6 +2152,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         appendToExisting: Boolean,
     ) {
         if (text.isBlank()) return
+        if (!NetworkUtils.isInternetAvailable(getApplication())) {
+            val offlineMsg = t(_uiState.value.language, "tts_offline_required_error")
+            stopTtsPreview()
+            _uiState.update {
+                it.copy(
+                    ttsUiState = TtsStudioUiState(
+                        isSynthesizingPreview = false,
+                        isPreviewing = false,
+                        isGenerating = false,
+                        usedFallbackEngine = false,
+                        errorMessage = offlineMsg,
+                    ),
+                )
+            }
+            postBanner(offlineMsg)
+            return
+        }
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -2307,9 +2359,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(isLiveVoiceChangerActive = false) }
     }
 
-    // Web Article Extractor for TTS Podcast
+    // Web Article Extractor for TTS Podcast (Online only)
     fun extractArticleTextForTts(url: String, onExtracted: (String) -> Unit) {
         if (url.isBlank()) return
+        if (!NetworkUtils.isInternetAvailable(getApplication())) {
+            postBanner(t(_uiState.value.language, "tts_offline_required_error"))
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(isExtractingArticle = true) }
             try {
@@ -2326,20 +2382,90 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Smart Tool Guide & Archive.org Online Sound Search
+    // Smart Tool Guide (Pollinations AI Online) & Archive.org Online Sound Search
     fun searchToolGuide(query: String) {
-        val results = SmartAssistantAndSearch.findBestToolWithTypoTolerance(query)
-        _uiState.update { it.copy(assistantGuideResults = results) }
+        if (query.isBlank()) {
+            _uiState.update {
+                it.copy(
+                    assistantGuideResults = emptyList(),
+                    assistantAiSummary = null,
+                    assistantGuideOfflineError = null,
+                )
+            }
+            return
+        }
+        val quickLocalMatches = SmartAssistantAndSearch.findBestToolWithTypoTolerance(query)
+        _uiState.update {
+            it.copy(
+                assistantGuideResults = quickLocalMatches,
+                assistantGuideOfflineError = null,
+            )
+        }
+    }
+
+    fun askAiToolGuide(query: String) {
+        val clean = query.trim()
+        if (clean.isEmpty()) return
+        val lang = _uiState.value.language
+        if (!NetworkUtils.isInternetAvailable(getApplication())) {
+            val offlineMsg = t(lang, "online_ai_offline_notice")
+            _uiState.update {
+                it.copy(
+                    isLoadingAiGuide = false,
+                    assistantAiSummary = null,
+                    assistantGuideOfflineError = offlineMsg,
+                )
+            }
+            postBanner(offlineMsg)
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isLoadingAiGuide = true,
+                    assistantGuideOfflineError = null,
+                )
+            }
+            try {
+                val response = SmartAssistantAndSearch.askPollinationsToolGuide(clean, lang)
+                _uiState.update {
+                    it.copy(
+                        assistantAiSummary = response.aiSummary,
+                        assistantGuideResults = response.tools,
+                        assistantGuideOfflineError = null,
+                    )
+                }
+            } finally {
+                _uiState.update { it.copy(isLoadingAiGuide = false) }
+            }
+        }
     }
 
     fun searchInternetSounds(query: String) {
+        val lang = _uiState.value.language
+        if (!NetworkUtils.isInternetAvailable(getApplication())) {
+            val offlineMsg = t(lang, "online_sfx_offline_notice")
+            _uiState.update {
+                it.copy(
+                    isSearchingOnlineSounds = false,
+                    soundSearchOfflineError = offlineMsg,
+                )
+            }
+            postBanner(offlineMsg)
+            return
+        }
         viewModelScope.launch {
-            _uiState.update { it.copy(isSearchingOnlineSounds = true) }
+            _uiState.update {
+                it.copy(
+                    isSearchingOnlineSounds = true,
+                    soundSearchOfflineError = null,
+                )
+            }
             try {
                 val grouped = SmartAssistantAndSearch.searchInternetSoundsOrganized(query)
                 _uiState.update { it.copy(onlineSoundCategories = grouped) }
                 if (grouped.isEmpty()) {
-                    postBanner("لم يتم العثور على نتائج حالياً — تحقق من الإنترنت أو جرب كلمة بحث أخرى")
+                    postBanner("لم يتم العثور على نتائج حالياً — جرب كلمة بحث أخرى")
                 }
             } finally {
                 _uiState.update { it.copy(isSearchingOnlineSounds = false) }
@@ -2352,10 +2478,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             stopOnlineSoundPreview()
             return
         }
+        if (!NetworkUtils.isInternetAvailable(getApplication())) {
+            val offlineMsg = t(_uiState.value.language, "online_sfx_offline_notice")
+            _uiState.update { it.copy(soundSearchOfflineError = offlineMsg) }
+            postBanner(offlineMsg)
+            return
+        }
         stopOnlineSoundPreview()
         player.pause()
         stopMixPreviewPlayer()
-        _uiState.update { it.copy(previewingOnlineUrl = item.streamUrl) }
+        _uiState.update { it.copy(previewingOnlineUrl = item.streamUrl, soundSearchOfflineError = null) }
         viewModelScope.launch(Dispatchers.IO) {
             val mp = MediaPlayer()
             val ok = runCatching {
@@ -2394,6 +2526,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun importOnlineSoundToStudio(item: OnlineSoundItem) {
+        if (!NetworkUtils.isInternetAvailable(getApplication())) {
+            val offlineMsg = t(_uiState.value.language, "online_sfx_offline_notice")
+            _uiState.update { it.copy(soundSearchOfflineError = offlineMsg) }
+            postBanner(offlineMsg)
+            return
+        }
         viewModelScope.launch {
             stopOnlineSoundPreview()
             _uiState.update { it.copy(isBusy = true, loadingOnlineSoundId = item.identifier) }

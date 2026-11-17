@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 
 enum class OperationType {
@@ -338,6 +339,7 @@ class FirestoreStudioRepository(context: Context) {
             append("\"authInfo\":{")
             append("\"userId\":\"${currentUser?.uid ?: "null"}\",")
             append("\"email\":\"${currentUser?.email ?: "null"}\",")
+            append("\"emailVerified\":${currentUser?.isEmailVerified ?: false},")
             append("\"isAnonymous\":${currentUser?.isAnonymous ?: false},")
             append("\"providers\":\"$providerIds\"")
             append("}}")
@@ -380,9 +382,18 @@ class FirestoreStudioRepository(context: Context) {
                 }
             }
             .catch { e ->
-                if (e is CancellationException) throw e
-                handleFirestoreError(e, OperationType.LIST, path)
-                emit(emptyList())
+                val firestoreEx = generateSequence(e) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreEx != null) {
+                    handleFirestoreError(firestoreEx, OperationType.LIST, path)
+                    emit(emptyList())
+                } else if (e is CancellationException) {
+                    throw e
+                } else {
+                    handleFirestoreError(e, OperationType.LIST, path)
+                    emit(emptyList())
+                }
             }
     }
 
@@ -393,7 +404,7 @@ class FirestoreStudioRepository(context: Context) {
         config: DspConfig,
     ): Result<String> {
         val db = dbOrNull()
-            ?: return Result.failure(IllegalStateException("Firebase is not configured (missing google-services.json)"))
+            ?: return Result.failure(IllegalStateException("Firebase is not initialized"))
         val cleanName = name.trim().take(80)
         if (cleanName.isEmpty()) {
             return Result.failure(IllegalArgumentException("Preset name cannot be blank"))
@@ -412,7 +423,9 @@ class FirestoreStudioRepository(context: Context) {
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp(),
             )
-            docRef.set(payload).await()
+            withTimeoutOrNull(4500L) {
+                docRef.set(payload).await()
+            }
             Result.success(docRef.id)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -423,15 +436,17 @@ class FirestoreStudioRepository(context: Context) {
 
     suspend fun deleteCustomPreset(userId: String, docId: String): Result<Unit> {
         val db = dbOrNull()
-            ?: return Result.failure(IllegalStateException("Firebase is not configured (missing google-services.json)"))
+            ?: return Result.failure(IllegalStateException("Firebase is not initialized"))
         val path = "users/$userId/custom_presets/$docId"
         return try {
-            db.collection("users")
-                .document(userId)
-                .collection("custom_presets")
-                .document(docId)
-                .delete()
-                .await()
+            withTimeoutOrNull(4500L) {
+                db.collection("users")
+                    .document(userId)
+                    .collection("custom_presets")
+                    .document(docId)
+                    .delete()
+                    .await()
+            }
             Result.success(Unit)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -475,9 +490,18 @@ class FirestoreStudioRepository(context: Context) {
                 }
             }
             .catch { e ->
-                if (e is CancellationException) throw e
-                handleFirestoreError(e, OperationType.LIST, path)
-                emit(emptyList())
+                val firestoreEx = generateSequence(e) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreEx != null) {
+                    handleFirestoreError(firestoreEx, OperationType.LIST, path)
+                    emit(emptyList())
+                } else if (e is CancellationException) {
+                    throw e
+                } else {
+                    handleFirestoreError(e, OperationType.LIST, path)
+                    emit(emptyList())
+                }
             }
     }
 
@@ -491,7 +515,7 @@ class FirestoreStudioRepository(context: Context) {
         config: DspConfig,
     ): Result<String> {
         val db = dbOrNull()
-            ?: return Result.failure(IllegalStateException("Firebase is not configured (missing google-services.json)"))
+            ?: return Result.failure(IllegalStateException("Firebase is not initialized"))
         val cleanName = name.trim().take(100)
         if (cleanName.isEmpty()) {
             return Result.failure(IllegalArgumentException("Draft name cannot be blank"))
@@ -512,7 +536,9 @@ class FirestoreStudioRepository(context: Context) {
                     "dspConfig" to DspConfigFirestoreMapper.toMap(config),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
-                targetRef.update(updates).await()
+                withTimeoutOrNull(4500L) {
+                    targetRef.update(updates).await()
+                }
             } else {
                 val payload = hashMapOf<String, Any>(
                     "userId" to userId,
@@ -524,7 +550,9 @@ class FirestoreStudioRepository(context: Context) {
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
-                targetRef.set(payload).await()
+                withTimeoutOrNull(4500L) {
+                    targetRef.set(payload).await()
+                }
             }
             Result.success(targetRef.id)
         } catch (e: Exception) {
@@ -540,15 +568,17 @@ class FirestoreStudioRepository(context: Context) {
 
     suspend fun deleteDraft(userId: String, draftId: String): Result<Unit> {
         val db = dbOrNull()
-            ?: return Result.failure(IllegalStateException("Firebase is not configured (missing google-services.json)"))
+            ?: return Result.failure(IllegalStateException("Firebase is not initialized"))
         val path = "users/$userId/drafts/$draftId"
         return try {
-            db.collection("users")
-                .document(userId)
-                .collection("drafts")
-                .document(draftId)
-                .delete()
-                .await()
+            withTimeoutOrNull(4500L) {
+                db.collection("users")
+                    .document(userId)
+                    .collection("drafts")
+                    .document(draftId)
+                    .delete()
+                    .await()
+            }
             Result.success(Unit)
         } catch (e: Exception) {
             if (e is CancellationException) throw e

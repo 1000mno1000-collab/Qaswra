@@ -10,6 +10,8 @@ import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.firestoreSettings
+import com.google.firebase.firestore.persistentCacheSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -76,7 +78,12 @@ object SonixCrashGuard {
         try {
             if (FirebaseApp.getApps(appCtx).isNotEmpty()) {
                 val dbId = appCtx.getString(R.string.firestore_database_id)
-                FirebaseFirestore.getInstance(dbId)
+                val db = FirebaseFirestore.getInstance(dbId)
+                runCatching {
+                    db.firestoreSettings = firestoreSettings {
+                        setLocalCacheSettings(persistentCacheSettings {})
+                    }
+                }
             }
         } catch (t: Throwable) {
             Log.w("SonixStartup", "FirebaseFirestore initialization skipped safely: ${t.message}")

@@ -70,6 +70,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -369,14 +370,16 @@ private fun SonixRootApp(
             if (uiState.authSession is AuthSession.SignedOut) {
                 AuthScreen(uiState = uiState, viewModel = viewModel)
             } else {
-                val navController = rememberNavController()
-                val navBackStackEntry by navController.currentBackStackEntryAsState()
-                val currentDest = navBackStackEntry?.destination
-                val isHomeTab = currentDest?.hasRoute<StudioRoute.Home>() == true
-                val isLibraryTab = currentDest?.hasRoute<StudioRoute.AudioPicker>() == true &&
-                    runCatching { navBackStackEntry?.toRoute<StudioRoute.AudioPicker>()?.target }.getOrNull() == AudioPickerTarget.LIBRARY_BROWSE
-                val isProjectsTab = currentDest?.hasRoute<StudioRoute.ProjectsExport>() == true
-                val showBottomNav = isHomeTab || isLibraryTab || isProjectsTab
+                val uidKey = (uiState.authSession as? AuthSession.SignedIn)?.uid ?: "guest"
+                key(uidKey) {
+                    val navController = rememberNavController()
+                    val navBackStackEntry by navController.currentBackStackEntryAsState()
+                    val currentDest = navBackStackEntry?.destination
+                    val isHomeTab = currentDest?.hasRoute<StudioRoute.Home>() == true
+                    val isLibraryTab = currentDest?.hasRoute<StudioRoute.AudioPicker>() == true &&
+                        runCatching { navBackStackEntry?.toRoute<StudioRoute.AudioPicker>()?.target }.getOrNull() == AudioPickerTarget.LIBRARY_BROWSE
+                    val isProjectsTab = currentDest?.hasRoute<StudioRoute.ProjectsExport>() == true
+                    val showBottomNav = isHomeTab || isLibraryTab || isProjectsTab
 
                 Scaffold(
                     containerColor = Color.Transparent,
@@ -852,14 +855,15 @@ private fun SonixRootApp(
                     }
                 }
 
-                SleepTimerDialog(
-                    open = sleepTimerDialogOpen,
-                    language = lang,
-                    selectedOption = uiState.sleepTimerOption,
-                    remainingSec = uiState.sleepTimerRemainingSec,
-                    onSelect = { viewModel.setSleepTimer(it) },
-                    onDismiss = { sleepTimerDialogOpen = false },
-                )
+                    SleepTimerDialog(
+                        open = sleepTimerDialogOpen,
+                        language = lang,
+                        selectedOption = uiState.sleepTimerOption,
+                        remainingSec = uiState.sleepTimerRemainingSec,
+                        onSelect = { viewModel.setSleepTimer(it) },
+                        onDismiss = { sleepTimerDialogOpen = false },
+                    )
+                }
             }
 
             SonixLuxuryLaunchOverlay(

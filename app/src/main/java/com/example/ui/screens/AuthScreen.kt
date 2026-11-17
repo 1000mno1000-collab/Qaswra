@@ -47,6 +47,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,6 +87,7 @@ import com.example.ui.theme.SonixTheme
 import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.Firebase
@@ -122,6 +124,67 @@ fun AuthScreen(
     var isGoogleLoading by remember { mutableStateOf(false) }
     var langDialogOpen by remember { mutableStateOf(false) }
 
+    LaunchedEffect(isPreview, defaultWebClientId) {
+        if (isPreview) return@LaunchedEffect
+        runCatching {
+            if (FirebaseApp.getApps(context).isEmpty()) {
+                FirebaseApp.initializeApp(context.applicationContext)
+            }
+        }
+        val existingUser = runCatching { Firebase.auth.currentUser }.getOrNull()
+        if (existingUser != null) {
+            viewModel.completeGoogleSignIn(
+                uid = existingUser.uid,
+                displayName = existingUser.displayName.orEmpty(),
+                email = existingUser.email.orEmpty(),
+            )
+            return@LaunchedEffect
+        }
+        if (defaultWebClientId.isBlank() || defaultWebClientId == "default_client_id") {
+            return@LaunchedEffect
+        }
+        val activity = context.findActivity() ?: return@LaunchedEffect
+        try {
+            val credentialManager = CredentialManager.create(activity)
+            val autoSignInOption = GetGoogleIdOption.Builder()
+                .setFilterByAuthorizedAccounts(true)
+                .setServerClientId(defaultWebClientId)
+                .setAutoSelectEnabled(true)
+                .build()
+            val request = GetCredentialRequest.Builder()
+                .addCredentialOption(autoSignInOption)
+                .build()
+            val result = credentialManager.getCredential(
+                context = activity,
+                request = request,
+            )
+            val credential = result.credential
+            if (credential is CustomCredential &&
+                credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
+            ) {
+                val googleCred = GoogleIdTokenCredential.createFrom(credential.data)
+                val firebaseCredential = GoogleAuthProvider.getCredential(googleCred.idToken, null)
+                val authResult = Firebase.auth.signInWithCredential(firebaseCredential).await()
+                val user = authResult.user
+                if (user != null) {
+                    viewModel.completeGoogleSignIn(
+                        uid = user.uid,
+                        displayName = user.displayName ?: googleCred.displayName.orEmpty(),
+                        email = user.email ?: googleCred.id,
+                    )
+                }
+            }
+        } catch (_: NoCredentialException) {
+            // Expected when no prior authorized Google account is saved silently
+        } catch (_: GetCredentialCancellationException) {
+            // User dismissed silent prompt
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("Auth", "Silent Google sign-in skipped: ${e.message}")
+        }
+    }
+
     AuthScreenContent(
         lang = lang,
         isSignUp = isSignUp,
@@ -141,14 +204,16 @@ fun AuthScreen(
         onPasswordChange = { password = it },
         onGoogleSignIn = {
             if (isSubmitting || isGoogleLoading) return@AuthScreenContent
-            if (defaultWebClientId.isBlank() ||
-                defaultWebClientId == "default_client_id" ||
-                FirebaseApp.getApps(context).isEmpty()
-            ) {
+            runCatching {
+                if (FirebaseApp.getApps(context).isEmpty()) {
+                    FirebaseApp.initializeApp(context.applicationContext)
+                }
+            }
+            if (defaultWebClientId.isBlank() || defaultWebClientId == "default_client_id") {
                 errorMsg = if (lang == AppLanguage.EN) {
-                    "Google Sign-In requires Firebase configuration (google-services.json). Use email sign-in or continue as guest."
+                    "Google Web Client ID is unavailable. Please continue as guest or retry."
                 } else {
-                    "يتطلب تسجيل الدخول عبر Google ملف إعداد Firebase (google-services.json). يمكنك استخدام البريد الإلكتروني أو المتابعة كضيف."
+                    "معرّف عميل Google غير متاح حالياً. يمكنك المتابعة كضيف أو المحاولة مجدداً."
                 }
                 return@AuthScreenContent
             }

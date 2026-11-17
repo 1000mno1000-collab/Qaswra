@@ -1,26 +1,19 @@
-import { readFileSync } from 'node:fs';
-import { describe, it, before, after, beforeEach } from 'node:test';
-import {
+const {
   initializeTestEnvironment,
   assertFails,
   assertSucceeds,
-} from '@firebase/rules-unit-testing';
-import {
-  doc,
-  getDoc,
-  getDocs,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  collection,
-  query,
-  orderBy,
-  serverTimestamp,
-  Timestamp,
-} from 'firebase/firestore';
+} = require('@firebase/rules-unit-testing');
+const { test, before, after, beforeEach } = require('node:test');
+const fs = require('node:fs');
 
-const PROJECT_ID = 'sonix-rules-test';
-const DATABASE_ID = 'ai-studio-android-qaswra-f368630e-45bc-419f-9c35-49ccc76d50c7';
+const PROJECT_ID = process.env.GCP_PROJECT || 'demo-no-project';
+const ALICE_UID = 'alice_123';
+const BOB_UID = 'bob_456';
+
+const [emulatorHost, emulatorPortStr] = (
+  process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8085'
+).split(':');
+const emulatorPort = parseInt(emulatorPortStr, 10);
 
 let testEnv;
 
@@ -42,19 +35,21 @@ function validDspMap() {
   };
 }
 
-function validPresetPayload(userId) {
+function validPresetPayload(userId, nowOffsetMs = -10000) {
+  const ts = new Date(Date.now() + nowOffsetMs);
   return {
     userId,
     localId: 1001,
     name: 'Warm Broadcast Rack',
     description: 'Clean studio vocal chain',
     dspConfig: validDspMap(),
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+    createdAt: ts,
+    updatedAt: ts,
   };
 }
 
-function validDraftPayload(userId) {
+function validDraftPayload(userId, nowOffsetMs = -10000) {
+  const ts = new Date(Date.now() + nowOffsetMs);
   return {
     userId,
     name: 'Episode 12 Vocal Draft',
@@ -62,91 +57,119 @@ function validDraftPayload(userId) {
     durationMs: 42000,
     sampleRate: 44100,
     dspConfig: validDspMap(),
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+    createdAt: ts,
+    updatedAt: ts,
   };
 }
 
-describe('Sonix Firestore Security Rules', () => {
-  before(async () => {
-    const rules = readFileSync('firestore.rules', 'utf8');
-    testEnv = await initializeTestEnvironment({
-      projectId: PROJECT_ID,
-      firestore: {
-        rules,
-        host: '127.0.0.1',
-        port: 8085,
-        databaseId: DATABASE_ID,
-      },
-    });
+before(async () => {
+  const rules = fs.readFileSync('./firestore.rules', 'utf8');
+  testEnv = await initializeTestEnvironment({
+    projectId: PROJECT_ID,
+    firestore: {
+      rules,
+      host: emulatorHost,
+      port: emulatorPort,
+    },
   });
+});
 
-  after(async () => {
+after(async () => {
+  if (testEnv) {
     await testEnv.cleanup();
-  });
+  }
+});
 
-  beforeEach(async () => {
+beforeEach(async () => {
+  if (testEnv) {
     await testEnv.clearFirestore();
+  }
+});
+
+test('Unauthenticated user: rejects read and write across collections', async () => {
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  await assertFails(unauthDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p1').get());
+  await assertFails(
+    unauthDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p1').set(validPresetPayload(ALICE_UID))
+  );
+  await assertFails(unauthDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').get());
+  await assertFails(
+    unauthDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').set(validDraftPayload(ALICE_UID))
+  );
+});
+
+test('Owner: creates, lists, updates, and deletes custom_presets', async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const presetRef = aliceDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p1');
+
+  await assertSucceeds(presetRef.set(validPresetPayload(ALICE_UID)));
+  await assertSucceeds(presetRef.get());
+  await assertSucceeds(
+    aliceDb.collection(`users/${ALICE_UID}/custom_presets`).orderBy('createdAt', 'desc').get()
+  );
+  await assertSucceeds(
+    presetRef.update({
+      name: 'Updated Broadcast',
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertSucceeds(presetRef.delete());
+});
+
+test('Owner: creates, lists, updates, and deletes drafts', async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const draftRef = aliceDb.collection(`users/${ALICE_UID}/drafts`).doc('d1');
+
+  await assertSucceeds(draftRef.set(validDraftPayload(ALICE_UID)));
+  await assertSucceeds(draftRef.get());
+  await assertSucceeds(
+    aliceDb.collection(`users/${ALICE_UID}/drafts`).orderBy('updatedAt', 'desc').get()
+  );
+  await assertSucceeds(
+    draftRef.update({
+      name: 'Renamed Draft',
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertSucceeds(draftRef.delete());
+});
+
+test('Cross-user access: blocks Bob from reading or modifying Alice custom_presets and drafts', async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await context.firestore().collection(`users/${ALICE_UID}/drafts`).doc('d1').set(validDraftPayload(ALICE_UID));
+    await context.firestore().collection(`users/${ALICE_UID}/custom_presets`).doc('p1').set(validPresetPayload(ALICE_UID));
   });
 
-  it('rejects unauthenticated read and write across collections', async () => {
-    const unauthDb = testEnv.unauthenticatedContext().firestore(DATABASE_ID);
-    await assertFails(getDoc(doc(unauthDb, 'users/userA/custom_presets/p1')));
-    await assertFails(setDoc(doc(unauthDb, 'users/userA/custom_presets/p1'), validPresetPayload('userA')));
-    await assertFails(getDoc(doc(unauthDb, 'users/userA/drafts/d1')));
-    await assertFails(setDoc(doc(unauthDb, 'users/userA/drafts/d1'), validDraftPayload('userA')));
-  });
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  await assertFails(bobDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').get());
+  await assertFails(bobDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').update({ name: 'Hijacked' }));
+  await assertFails(bobDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').delete());
+  await assertFails(bobDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p1').get());
+  await assertFails(
+    bobDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p2').set(validPresetPayload(ALICE_UID))
+  );
+});
 
-  it('allows owner to create, list, update, and delete custom_presets', async () => {
-    const aliceDb = testEnv.authenticatedContext('userA').firestore(DATABASE_ID);
-    const presetRef = doc(aliceDb, 'users/userA/custom_presets/p1');
+test('Validation bounds: rejects empty/oversized strings, ghost fields, future timestamps, and createdAt tampering', async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const badRef = aliceDb.collection(`users/${ALICE_UID}/drafts`).doc('dBad');
 
-    await assertSucceeds(setDoc(presetRef, validPresetPayload('userA')));
-    await assertSucceeds(getDoc(presetRef));
-    await assertSucceeds(getDocs(query(collection(aliceDb, 'users/userA/custom_presets'), orderBy('createdAt'))));
-    await assertSucceeds(updateDoc(presetRef, { name: 'Updated Broadcast', updatedAt: serverTimestamp() }));
-    await assertSucceeds(deleteDoc(presetRef));
-  });
+  await assertFails(badRef.set({ ...validDraftPayload(ALICE_UID), name: '' }));
+  await assertFails(badRef.set({ ...validDraftPayload(ALICE_UID), name: 'a'.repeat(120) }));
+  await assertFails(badRef.set({ ...validDraftPayload(ALICE_UID), extraGhostField: 42 }));
+  await assertFails(
+    badRef.set({
+      ...validDraftPayload(ALICE_UID),
+      createdAt: new Date(Date.now() + 60000),
+    })
+  );
 
-  it('allows owner to create, list, update, and delete drafts', async () => {
-    const aliceDb = testEnv.authenticatedContext('userA').firestore(DATABASE_ID);
-    const draftRef = doc(aliceDb, 'users/userA/drafts/d1');
-
-    await assertSucceeds(setDoc(draftRef, validDraftPayload('userA')));
-    await assertSucceeds(getDoc(draftRef));
-    await assertSucceeds(getDocs(query(collection(aliceDb, 'users/userA/drafts'), orderBy('updatedAt'))));
-    await assertSucceeds(updateDoc(draftRef, { name: 'Renamed Draft', updatedAt: serverTimestamp() }));
-    await assertSucceeds(deleteDoc(draftRef));
-  });
-
-  it('blocks cross-user access to custom_presets and drafts', async () => {
-    const aliceDb = testEnv.authenticatedContext('userA').firestore(DATABASE_ID);
-    const bobDb = testEnv.authenticatedContext('userB').firestore(DATABASE_ID);
-
-    await assertSucceeds(setDoc(doc(aliceDb, 'users/userA/drafts/d1'), validDraftPayload('userA')));
-    await assertFails(getDoc(doc(bobDb, 'users/userA/drafts/d1')));
-    await assertFails(updateDoc(doc(bobDb, 'users/userA/drafts/d1'), { name: 'Hijacked' }));
-    await assertFails(deleteDoc(doc(bobDb, 'users/userA/drafts/d1')));
-    await assertFails(setDoc(doc(bobDb, 'users/userA/custom_presets/p2'), validPresetPayload('userA')));
-  });
-
-  it('rejects oversized strings, ghost fields, future timestamps, and createdAt tampering', async () => {
-    const aliceDb = testEnv.authenticatedContext('userA').firestore(DATABASE_ID);
-    const draftRef = doc(aliceDb, 'users/userA/drafts/dBad');
-
-    await assertFails(setDoc(draftRef, { ...validDraftPayload('userA'), name: '' }));
-    await assertFails(setDoc(draftRef, { ...validDraftPayload('userA'), name: 'a'.repeat(120) }));
-    await assertFails(setDoc(draftRef, { ...validDraftPayload('userA'), extraGhostField: 42 }));
-    await assertFails(setDoc(draftRef, {
-      ...validDraftPayload('userA'),
-      createdAt: Timestamp.fromMillis(Date.now() + 3600_000),
-    }));
-
-    const goodRef = doc(aliceDb, 'users/userA/drafts/dGood');
-    await assertSucceeds(setDoc(goodRef, validDraftPayload('userA')));
-    await assertFails(updateDoc(goodRef, {
-      createdAt: Timestamp.fromMillis(1000),
-      updatedAt: serverTimestamp(),
-    }));
-  });
+  const goodRef = aliceDb.collection(`users/${ALICE_UID}/drafts`).doc('dGood');
+  await assertSucceeds(goodRef.set(validDraftPayload(ALICE_UID)));
+  await assertFails(
+    goodRef.update({
+      createdAt: new Date(1000),
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
 });

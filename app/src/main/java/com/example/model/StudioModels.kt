@@ -678,6 +678,17 @@ val TTS_DIALECTS: List<TtsDialect> = listOf(
         defaultRate = 0.96f,
     ),
     TtsDialect(
+        id = "standard",
+        titleKey = "tts_dialect_standard",
+        localeTag = "ar-LB",
+        fallbackLocaleTag = "ar-SA",
+        maleVoiceName = "ar-LB-RamiNeural",
+        femaleVoiceName = "ar-LB-LaylaNeural",
+        sampleText = "أهلاً بكم في استوديو Sonix ✦ المتطور، تجربة صوتية احترافية بالذكاء الاصطناعي.",
+        defaultPitch = 1.0f,
+        defaultRate = 0.96f,
+    ),
+    TtsDialect(
         id = "jordanian",
         titleKey = "tts_dialect_jordanian",
         localeTag = "ar-JO",

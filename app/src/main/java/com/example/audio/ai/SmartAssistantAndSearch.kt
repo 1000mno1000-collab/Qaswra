@@ -3,12 +3,14 @@ package com.example.audio.ai
 import android.content.Context
 import androidx.compose.runtime.Immutable
 import com.example.audio.AudioDecoder
+import com.example.model.AppLanguage
 import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -31,6 +33,13 @@ data class OnlineSoundItem(
     val category: String,
     val streamUrl: String,
     val source: String,
+)
+
+@Immutable
+data class PollinationsGuideResponse(
+    val aiSummary: String?,
+    val tools: List<ToolGuideResult>,
+    val fromCloudAi: Boolean,
 )
 
 object SmartAssistantAndSearch {
@@ -77,7 +86,7 @@ object SmartAssistantAndSearch {
             )
         }
 
-        if (q.containsAny("نص", "كتابه", "قراءه", "نطق", "تكلم", "معلق", "بشري", "عراقي", "سعودي", "مصري", "مقال", "رابط", "tts", "speech", "podcast")) {
+        if (q.containsAny("نص", "كتابه", "قراءه", "نطق", "تكلم", "معلق", "بشري", "عراقي", "سعودي", "مصري", "فصحى", "سوري", "مقال", "رابط", "tts", "speech", "podcast")) {
             results.add(
                 ToolGuideResult(
                     toolId = "human_tts",
@@ -152,6 +161,219 @@ object SmartAssistantAndSearch {
         }
 
         return results
+    }
+
+    private val VALID_TOOL_IDS = setOf(
+        "noise_reduction",
+        "voice_changer",
+        "human_tts",
+        "cinematic_video",
+        "smart_mixer",
+        "audio_editor",
+        "presets_echo",
+    )
+
+    /**
+     * Queries the free keyless Pollinations Text AI endpoint (https://text.pollinations.ai)
+     * to understand user requests even with Arabic dialects or spelling typos and guide them
+     * to the right Sonix studio tool(s). Must only be called when device has internet.
+     */
+    suspend fun askPollinationsToolGuide(
+        rawQuery: String,
+        language: AppLanguage,
+    ): PollinationsGuideResponse = withContext(Dispatchers.IO) {
+        val cleanQuery = rawQuery.trim()
+        if (cleanQuery.isEmpty()) {
+            return@withContext PollinationsGuideResponse(
+                aiSummary = null,
+                tools = emptyList(),
+                fromCloudAi = false,
+            )
+        }
+
+        val replyLangHint = when (language) {
+            AppLanguage.AR -> "Arabic"
+            AppLanguage.EN -> "English"
+            AppLanguage.FA -> "Persian"
+        }
+        val systemPrompt = buildString {
+            append("You are the smart studio guide inside Sonix Audio & Video Studio. ")
+            append("Understand user questions even with typos, slang, or Arabic dialects (Iraqi, Saudi, Egyptian, Syrian, Moroccan, Fusha). ")
+            append("Reply in $replyLangHint using strictly valid JSON with schema: ")
+            append("{\"summary\":\"short helpful advice\",\"tools\":[{\"toolId\":\"one_id\",\"toolName\":\"display name\",\"matchReason\":\"why it fits\",\"steps\":[\"step 1\",\"step 2\"]}]}. ")
+            append("Allowed toolId values ONLY: ")
+            append("noise_reduction (AI noise & hum removal), ")
+            append("voice_changer (Natural child, male/female, dragon, shadow legion, ghost, alien live & offline morphing), ")
+            append("human_tts (Cloud Neural Human TTS in 12 dialects & web article podcast extractor), ")
+            append("cinematic_video (ReShade HDR video renderer up to 120 FPS & 1080x1920 Reels audiogram creator), ")
+            append("smart_mixer (Auto-ducking music + voice mixer), ")
+            append("audio_editor (Trim, cut, merge, normalize, fade), ")
+            append("presets_echo (Pro broadcast presets & 3D spatial echo). ")
+            append("Pick 1 or 2 most relevant tools.")
+        }
+
+        val rawResponse = queryPollinationsPost(systemPrompt, cleanQuery)
+            ?: queryPollinationsGet(systemPrompt, cleanQuery)
+
+        if (!rawResponse.isNullOrBlank()) {
+            val parsed = parsePollinationsJson(rawResponse)
+            if (parsed != null && (parsed.tools.isNotEmpty() || !parsed.aiSummary.isNullOrBlank())) {
+                val mergedTools = if (parsed.tools.isNotEmpty()) {
+                    parsed.tools
+                } else {
+                    findBestToolWithTypoTolerance(cleanQuery)
+                }
+                return@withContext PollinationsGuideResponse(
+                    aiSummary = parsed.aiSummary ?: rawResponse.take(360),
+                    tools = mergedTools,
+                    fromCloudAi = true,
+                )
+            }
+
+            // Pollinations answered in natural prose rather than JSON: surface the prose + infer matching tools
+            val inferred = inferToolsFromText(rawResponse)
+                .ifEmpty { findBestToolWithTypoTolerance(cleanQuery) }
+            return@withContext PollinationsGuideResponse(
+                aiSummary = rawResponse.trim().take(480),
+                tools = inferred,
+                fromCloudAi = true,
+            )
+        }
+
+        // Only if online endpoint temporarily timed out while connected, gracefully provide fuzzy matches
+        val fallbackTools = findBestToolWithTypoTolerance(cleanQuery)
+        PollinationsGuideResponse(
+            aiSummary = null,
+            tools = fallbackTools,
+            fromCloudAi = false,
+        )
+    }
+
+    private fun queryPollinationsPost(systemPrompt: String, userQuery: String): String? {
+        var conn: HttpURLConnection? = null
+        return try {
+            val bodyJson = JSONObject().apply {
+                put(
+                    "messages",
+                    JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "system")
+                            put("content", systemPrompt)
+                        })
+                        put(JSONObject().apply {
+                            put("role", "user")
+                            put("content", userQuery)
+                        })
+                    },
+                )
+                put("model", "openai")
+                put("jsonMode", true)
+            }
+            conn = (URL("https://text.pollinations.ai/").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                setRequestProperty("Accept", "application/json, text/plain;q=0.9, */*;q=0.8")
+                setRequestProperty("User-Agent", "SonixApp/1.0")
+                connectTimeout = 7000
+                readTimeout = 11000
+            }
+            conn.outputStream.use { out ->
+                out.write(bodyJson.toString().toByteArray(Charsets.UTF_8))
+                out.flush()
+            }
+            if (conn.responseCode in 200..299) {
+                conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }.takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            runCatching { conn?.disconnect() }
+        }
+    }
+
+    private fun queryPollinationsGet(systemPrompt: String, userQuery: String): String? {
+        var conn: HttpURLConnection? = null
+        return try {
+            val encodedPrompt = URLEncoder.encode(userQuery, "UTF-8").replace("+", "%20")
+            val encodedSys = URLEncoder.encode(systemPrompt, "UTF-8")
+            val urlStr = "https://text.pollinations.ai/$encodedPrompt?model=openai&system=$encodedSys"
+            conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "SonixApp/1.0")
+                setRequestProperty("Accept", "text/plain, application/json;q=0.9")
+                connectTimeout = 7000
+                readTimeout = 11000
+            }
+            if (conn.responseCode in 200..299) {
+                conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }.takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            runCatching { conn?.disconnect() }
+        }
+    }
+
+    private fun parsePollinationsJson(raw: String): PollinationsGuideResponse? {
+        return runCatching {
+            val stripped = raw
+                .trim()
+                .removePrefix("```json")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+            val startIdx = stripped.indexOf('{')
+            val endIdx = stripped.lastIndexOf('}')
+            if (startIdx < 0 || endIdx <= startIdx) return null
+            val jsonObj = JSONObject(stripped.substring(startIdx, endIdx + 1))
+            val summary = jsonObj.optString("summary").trim().ifEmpty { null }
+            val toolsArr = jsonObj.optJSONArray("tools") ?: jsonObj.optJSONArray("recommended")
+            val parsedTools = mutableListOf<ToolGuideResult>()
+            if (toolsArr != null) {
+                for (i in 0 until toolsArr.length()) {
+                    val obj = toolsArr.optJSONObject(i) ?: continue
+                    val id = obj.optString("toolId").trim()
+                    if (id !in VALID_TOOL_IDS) continue
+                    val name = obj.optString("toolName").trim().ifBlank { id }
+                    val reason = obj.optString("matchReason").ifBlank { obj.optString("reason") }.trim()
+                    val stepsArr = obj.optJSONArray("steps") ?: obj.optJSONArray("howToUseSteps")
+                    val steps = mutableListOf<String>()
+                    if (stepsArr != null) {
+                        for (s in 0 until stepsArr.length()) {
+                            val line = stepsArr.optString(s).trim()
+                            if (line.isNotEmpty()) steps.add(line)
+                        }
+                    }
+                    parsedTools.add(
+                        ToolGuideResult(
+                            toolId = id,
+                            toolName = name,
+                            matchReason = reason,
+                            howToUseSteps = steps,
+                        ),
+                    )
+                }
+            }
+            PollinationsGuideResponse(
+                aiSummary = summary,
+                tools = parsedTools,
+                fromCloudAi = true,
+            )
+        }.getOrNull()
+    }
+
+    private fun inferToolsFromText(text: String): List<ToolGuideResult> {
+        val matchedIds = VALID_TOOL_IDS.filter { id -> text.contains(id, ignoreCase = true) }
+        val baseCatalog = findBestToolWithTypoTolerance(
+            "ضوضاء تغيير صوت نص فيديو موسيقى قص صدى",
+        ).associateBy { it.toolId }
+        return matchedIds.mapNotNull { baseCatalog[it] }
     }
 
     /**

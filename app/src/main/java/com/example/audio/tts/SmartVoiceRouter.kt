@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.audio.AudioDecoder
 import com.example.audio.EdgeTtsClient
 import com.example.audio.EdgeTtsSynthResult
+import com.example.audio.NetworkUtils
 import com.example.audio.applyPitchAndSpeedOffline
 import com.example.audio.clamp
 import com.example.audio.fx.AudioSkillsPresets
@@ -76,6 +77,7 @@ class SmartVoiceRouter {
     ): EdgeTtsSynthResult? = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return@withContext null
+        if (!NetworkUtils.isInternetAvailable(context)) return@withContext null
 
         // Primary neural WebSocket synthesis (supports dialects, rate, pitch & SSML)
         val edgeResult = EdgeTtsClient.synthesize(
