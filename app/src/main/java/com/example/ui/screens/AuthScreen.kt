@@ -54,6 +54,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
@@ -302,14 +304,27 @@ private fun AuthScreenContent(
                 )
             }
 
-            Image(
-                painter = painterResource(R.drawable.voice_pro_icon),
-                contentDescription = t(lang, "app_name"),
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .size(88.dp)
-                    .clip(RoundedCornerShape(24.dp)),
-            )
+            Surface(
+                shape = RoundedCornerShape(26.dp),
+                color = Color(0xFFFFFFFE),
+                border = BorderStroke(
+                    width = 1.8.dp,
+                    brush = Brush.linearGradient(
+                        colors = listOf(StudioColors.Cyan, StudioColors.Violet),
+                    ),
+                ),
+                shadowElevation = 14.dp,
+                modifier = Modifier.size(92.dp),
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.sonix_primary_logo),
+                    contentDescription = t(lang, "app_name"),
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(24.dp)),
+                )
+            }
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,

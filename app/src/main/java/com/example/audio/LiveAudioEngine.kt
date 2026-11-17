@@ -477,37 +477,42 @@ class AndroidTtsEngine(private val context: Context) {
     private val synthWaiters = mutableMapOf<String, CompletableDeferred<Boolean>>()
 
     init {
-        tts = TextToSpeech(context.applicationContext) { status ->
-            initReady = status == TextToSpeech.SUCCESS
-            if (!initDeferred.isCompleted) initDeferred.complete(initReady)
+        runCatching {
+            tts = TextToSpeech(context.applicationContext) { status ->
+                initReady = status == TextToSpeech.SUCCESS
+                if (!initDeferred.isCompleted) initDeferred.complete(initReady)
+            }
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+                override fun onDone(utteranceId: String?) {
+                    if (utteranceId == "preview") {
+                        previewDoneCallback?.invoke()
+                    } else if (utteranceId != null) {
+                        synthWaiters.remove(utteranceId)?.complete(true)
+                    }
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    if (utteranceId == "preview") {
+                        previewDoneCallback?.invoke()
+                    } else if (utteranceId != null) {
+                        synthWaiters.remove(utteranceId)?.complete(false)
+                    }
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    if (utteranceId == "preview") {
+                        previewDoneCallback?.invoke()
+                    } else if (utteranceId != null) {
+                        synthWaiters.remove(utteranceId)?.complete(false)
+                    }
+                }
+            })
+        }.onFailure {
+            initReady = false
+            if (!initDeferred.isCompleted) initDeferred.complete(false)
         }
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) = Unit
-            override fun onDone(utteranceId: String?) {
-                if (utteranceId == "preview") {
-                    previewDoneCallback?.invoke()
-                } else if (utteranceId != null) {
-                    synthWaiters.remove(utteranceId)?.complete(true)
-                }
-            }
-
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                if (utteranceId == "preview") {
-                    previewDoneCallback?.invoke()
-                } else if (utteranceId != null) {
-                    synthWaiters.remove(utteranceId)?.complete(false)
-                }
-            }
-
-            override fun onError(utteranceId: String?, errorCode: Int) {
-                if (utteranceId == "preview") {
-                    previewDoneCallback?.invoke()
-                } else if (utteranceId != null) {
-                    synthWaiters.remove(utteranceId)?.complete(false)
-                }
-            }
-        })
     }
 
     private fun resolveLocale(engine: TextToSpeech, dialect: TtsDialect) {

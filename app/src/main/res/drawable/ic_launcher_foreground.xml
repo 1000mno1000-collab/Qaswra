@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/voice_pro_icon"
+        android:drawable="@drawable/sonix_primary_logo"
         android:gravity="center" />
 </layer-list>

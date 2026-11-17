@@ -63,9 +63,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -327,28 +329,42 @@ fun HomeScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(172.dp)
+                        .height(176.dp)
                         .clip(RoundedCornerShape(22.dp))
-                        .background(StudioColors.CardSurface),
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    StudioColors.BgTop,
+                                    StudioColors.CardSurface,
+                                    Color(0xFF151E3B),
+                                ),
+                            ),
+                        ),
                 ) {
-                    Image(
-                        painter = painterResource(R.drawable.img_studio_aura),
-                        contentDescription = t(lang, "app_name"),
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-
+                    // Ambient glowing cyan-violet studio backdrop + watermark of the primary logo silhouette
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(
-                                Brush.verticalGradient(
+                                Brush.radialGradient(
                                     colors = listOf(
-                                        StudioColors.BgTop.copy(alpha = 0.50f),
-                                        StudioColors.BgTop.copy(alpha = 0.88f),
+                                        StudioColors.Cyan.copy(alpha = 0.16f),
+                                        StudioColors.Violet.copy(alpha = 0.10f),
+                                        Color.Transparent,
                                     ),
                                 ),
                             ),
+                    )
+                    Image(
+                        painter = painterResource(R.drawable.ic_splash_vector),
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        colorFilter = ColorFilter.tint(StudioColors.Cyan.copy(alpha = 0.12f)),
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 18.dp)
+                            .size(132.dp)
+                            .alpha(0.85f),
                     )
 
                     Column(
@@ -359,25 +375,53 @@ fun HomeScreen(
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.Top,
+                            verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                         ) {
-                            Column(
+                            Row(
                                 modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                Text(
-                                    text = t(lang, "app_name"),
-                                    style = MaterialTheme.typography.displaySmall,
-                                    color = StudioColors.TextPrimary,
-                                )
-                                Text(
-                                    text = t(lang, "studio_tagline"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = StudioColors.Cyan,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = Color(0xFFFFFFFE),
+                                    border = BorderStroke(
+                                        width = 1.5.dp,
+                                        brush = Brush.linearGradient(
+                                            colors = listOf(StudioColors.Cyan, StudioColors.Violet),
+                                        ),
+                                    ),
+                                    shadowElevation = 8.dp,
+                                    modifier = Modifier.size(52.dp),
+                                ) {
+                                    Image(
+                                        painter = painterResource(R.drawable.sonix_primary_logo),
+                                        contentDescription = t(lang, "app_name"),
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(15.dp)),
+                                    )
+                                }
+
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        text = t(lang, "app_name"),
+                                        style = MaterialTheme.typography.displaySmall,
+                                        color = StudioColors.TextPrimary,
+                                    )
+                                    Text(
+                                        text = t(lang, "studio_tagline"),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = StudioColors.Cyan,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
 
                             Row(

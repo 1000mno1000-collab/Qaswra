@@ -2,6 +2,8 @@ package com.example
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,6 +11,7 @@ import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -17,31 +20,48 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -51,19 +71,26 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -77,6 +104,7 @@ import com.example.model.AuthSession
 import com.example.model.StudioRoute
 import com.example.ui.components.PersistentTransportBar
 import com.example.ui.components.SleepTimerDialog
+import com.example.ui.components.SonixLuxuryLaunchOverlay
 import com.example.ui.screens.AiStudioScreen
 import com.example.ui.screens.AiToolDetailScreen
 import com.example.ui.screens.AudioEditorScreen
@@ -111,6 +139,7 @@ import com.example.ui.theme.SonixTheme
 import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioSideEffect
 import com.example.viewmodel.StudioViewModel
+import com.google.firebase.FirebaseApp
 
 private class CreateTypedDocumentContract : ActivityResultContract<Pair<String, String>, Uri?>() {
     override fun createIntent(context: Context, input: Pair<String, String>): Intent {
@@ -130,30 +159,134 @@ private class CreateTypedDocumentContract : ActivityResultContract<Pair<String, 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            splashScreen.setOnExitAnimationListener { splashView ->
-                splashView.animate()
-                    .alpha(0f)
-                    .setDuration(240L)
-                    .withEndAction { splashView.remove() }
-                    .start()
+
+        try {
+            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                SonixCrashGuard.handleUncaughtException(applicationContext, thread, throwable)
+            }
+        } catch (t: Throwable) {
+            Log.e("MainActivity", "Failed to register uncaught exception handler", t)
+        }
+
+        try {
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                FirebaseApp.initializeApp(this)
+            }
+            SonixCrashGuard.safeInitializeFirebase(this)
+        } catch (t: Throwable) {
+            Log.w("MainActivity", "Firebase startup initialization skipped safely: ${t.message}")
+        }
+
+        try {
+            val crashMsg = intent?.getStringExtra(SonixCrashGuard.EXTRA_CRASH_MESSAGE)
+            if (!crashMsg.isNullOrBlank()) {
+                SonixCrashGuard.reportError(
+                    StartupErrorReport(
+                        threadName = intent.getStringExtra(SonixCrashGuard.EXTRA_CRASH_THREAD) ?: "main",
+                        message = crashMsg,
+                        stackTrace = intent.getStringExtra(SonixCrashGuard.EXTRA_CRASH_TRACE) ?: crashMsg,
+                    ),
+                )
+            }
+        } catch (t: Throwable) {
+            Log.w("MainActivity", "Failed reading crash intent extras", t)
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                splashScreen.setOnExitAnimationListener { splashView ->
+                    runCatching {
+                        splashView.animate()
+                            .alpha(0f)
+                            .setDuration(240L)
+                            .withEndAction { splashView.remove() }
+                            .start()
+                    }.onFailure {
+                        runCatching { splashView.remove() }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w("MainActivity", "Splash exit animation skipped safely: ${t.message}")
+        }
+
+        try {
+            enableEdgeToEdge()
+        } catch (t: Throwable) {
+            Log.w("MainActivity", "enableEdgeToEdge failed safely: ${t.message}")
+        }
+
+        val studioViewModel: StudioViewModel? = try {
+            ViewModelProvider(this)[StudioViewModel::class.java]
+        } catch (t: Throwable) {
+            Log.e("MainActivity", "StudioViewModel startup initialization failed", t)
+            SonixCrashGuard.reportError(Thread.currentThread().name, t)
+            null
+        }
+
+        try {
+            setContent {
+                SonixTheme {
+                    val activeCrash by SonixCrashGuard.uncaughtError.collectAsStateWithLifecycle()
+                    val errorReport = activeCrash
+                    if (errorReport != null || studioViewModel == null) {
+                        StartupErrorScreen(
+                            report = errorReport ?: StartupErrorReport(
+                                threadName = "main",
+                                message = "Unable to initialize Sonix Studio components.",
+                                stackTrace = "StudioViewModel initialization returned null.",
+                            ),
+                            onRetry = {
+                                SonixCrashGuard.clearError()
+                                val restartIntent = Intent(this, MainActivity::class.java).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                                }
+                                startActivity(restartIntent)
+                                finish()
+                            },
+                        )
+                    } else {
+                        SonixRootApp(viewModel = studioViewModel)
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e("MainActivity", "setContent failed during startup", t)
+            SonixCrashGuard.reportError(Thread.currentThread().name, t)
+            runCatching {
+                setContent {
+                    SonixTheme {
+                        StartupErrorScreen(
+                            report = StartupErrorReport(
+                                threadName = Thread.currentThread().name,
+                                message = t.localizedMessage ?: t::class.java.simpleName,
+                                stackTrace = Log.getStackTraceString(t),
+                            ),
+                            onRetry = {
+                                SonixCrashGuard.clearError()
+                                recreate()
+                            },
+                        )
+                    }
+                }
             }
         }
-        enableEdgeToEdge()
-        setContent {
-            SonixTheme {
-                SonixRootApp()
+
+        try {
+            window.decorView.post {
+                runCatching {
+                    window.setBackgroundDrawable(ColorDrawable(0xFF070B14.toInt()))
+                }
             }
-        }
-        window.decorView.post {
-            window.setBackgroundDrawable(ColorDrawable(0xFF070B14.toInt()))
+        } catch (t: Throwable) {
+            Log.w("MainActivity", "Background drawable post skipped safely: ${t.message}")
         }
     }
 }
 
 @Composable
 private fun SonixRootApp(
-    viewModel: StudioViewModel = viewModel(),
+    viewModel: StudioViewModel,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -165,6 +298,7 @@ private fun SonixRootApp(
     val homeListState = rememberLazyListState()
     var sleepTimerDialogOpen by remember { mutableStateOf(false) }
     var askedNotificationOnce by remember { mutableStateOf(false) }
+    var showLuxuryLaunch by rememberSaveable { mutableStateOf(true) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -670,6 +804,201 @@ private fun SonixRootApp(
                     onDismiss = { sleepTimerDialogOpen = false },
                 )
             }
+
+            SonixLuxuryLaunchOverlay(
+                visible = showLuxuryLaunch,
+                language = lang,
+                onFinished = { showLuxuryLaunch = false },
+            )
         }
     }
 }
+
+@Composable
+private fun StartupErrorScreen(
+    report: StartupErrorReport,
+    onRetry: () -> Unit,
+) {
+    val context = LocalContext.current
+    var copied by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        StudioColors.BgTop,
+                        StudioColors.BgMid,
+                        StudioColors.BgTop,
+                    ),
+                ),
+            )
+            .systemBarsPadding(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 560.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = Color(0xFFFFFFFE),
+                border = BorderStroke(
+                    width = 1.5.dp,
+                    brush = Brush.linearGradient(listOf(StudioColors.Cyan, StudioColors.Violet)),
+                ),
+                shadowElevation = 10.dp,
+                modifier = Modifier.size(72.dp),
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.sonix_primary_logo),
+                    contentDescription = "Sonix ✦",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(20.dp)),
+                )
+            }
+
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                border = BorderStroke(1.dp, StudioColors.Rose.copy(alpha = 0.45f)),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.ErrorOutline,
+                        contentDescription = null,
+                        tint = StudioColors.RoseBright,
+                        modifier = Modifier.size(36.dp),
+                    )
+                    Text(
+                        text = "Sonix ✦ Safe Recovery",
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        color = StudioColors.TextPrimary,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        text = "An unexpected startup or runtime error was intercepted so the studio did not crash. Local audio tools remain safe to retry.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = StudioColors.TextSecondary,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        text = "تم اعتراض خطأ غير متوقع بأمان لمنع توقف التطبيق. يمكنك إعادة تشغيل الاستوديو أو نسخ تفاصيل الخطأ.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.TextSecondary,
+                        textAlign = TextAlign.Center,
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = StudioColors.BgTop,
+                        border = BorderStroke(1.dp, StudioColors.Border),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 90.dp, max = 220.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState())
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                text = "[${report.threadName}] ${report.message}",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = StudioColors.RoseBright,
+                            )
+                            Text(
+                                text = report.stackTrace,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = StudioColors.TextMuted,
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                runCatching {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    cm?.setPrimaryClip(
+                                        ClipData.newPlainText(
+                                            "Sonix Error",
+                                            "[${report.threadName}] ${report.message}\n\n${report.stackTrace}",
+                                        ),
+                                    )
+                                    copied = true
+                                }
+                            },
+                            border = BorderStroke(1.dp, StudioColors.BorderBright),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("error_copy_button"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ContentCopy,
+                                contentDescription = null,
+                                tint = StudioColors.Cyan,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = if (copied) "Copied" else "Copy Details",
+                                color = StudioColors.TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+
+                        Button(
+                            onClick = onRetry,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = StudioColors.Cyan,
+                                contentColor = StudioColors.BgTop,
+                            ),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("error_retry_button"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "Retry Launch",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
