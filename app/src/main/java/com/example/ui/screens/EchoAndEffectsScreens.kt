@@ -1,0 +1,1185 @@
+package com.example.ui.screens
+
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.BlurOn
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.Waves
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.i18n.t
+import com.example.model.AppLanguage
+import com.example.model.DistortionMode
+import com.example.model.EchoDetailGroup
+import com.example.model.EchoPadAxisMode
+import com.example.model.EffectType
+import com.example.ui.components.StudioFocusTopBar
+import com.example.ui.components.StudioParamSlider
+import com.example.ui.components.StudioScrollColumn
+import com.example.ui.components.StudioSectionCard
+import com.example.ui.theme.StudioColors
+import com.example.ui.theme.TelemetryTextStyle
+import com.example.viewmodel.StudioUiState
+import com.example.viewmodel.StudioViewModel
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
+
+@Composable
+fun EchoReverbScreen(
+    uiState: StudioUiState,
+    viewModel: StudioViewModel,
+    onOpenDetail: (EchoDetailGroup) -> Unit,
+    onBack: () -> Unit,
+) {
+    val lang = uiState.language
+    val echo = uiState.dspConfig.echoReverb
+    val enabled = uiState.dspConfig.isEnabled(EffectType.ECHO_REVERB)
+    val (padX, padY) = viewModel.getEchoPadAxes()
+
+    val trailPoints = remember { mutableStateListOf<Offset>() }
+    val rippleTransition = rememberInfiniteTransition(label = "echoRipple")
+    val ripplePhase by rippleTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "ripplePhase",
+    )
+
+    StudioScrollColumn {
+        StudioFocusTopBar(
+            title = t(lang, "section_echo_title"),
+            subtitle = t(lang, "section_echo_subtitle"),
+            language = lang,
+            onBack = onBack,
+            trailing = {
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { viewModel.toggleEffectEnabled(EffectType.ECHO_REVERB, it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = StudioColors.BgTop,
+                        checkedTrackColor = StudioColors.Cyan,
+                    ),
+                    modifier = Modifier.testTag("echo_enable_switch"),
+                )
+            },
+        )
+
+        // Simple / Pro Toggle
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Surface(
+                onClick = { viewModel.setSimpleEchoMode(true) },
+                shape = RoundedCornerShape(14.dp),
+                color = if (uiState.isSimpleEchoMode) StudioColors.Cyan else StudioColors.CardSurface,
+                border = BorderStroke(1.dp, if (uiState.isSimpleEchoMode) StudioColors.Cyan else StudioColors.Border),
+                modifier = Modifier
+                    .weight(1f)
+                    .defaultMinSize(minHeight = 48.dp)
+                    .testTag("echo_mode_simple"),
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        text = t(lang, "mode_simple"),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (uiState.isSimpleEchoMode) StudioColors.BgTop else StudioColors.TextSecondary,
+                    )
+                }
+            }
+            Surface(
+                onClick = { viewModel.setSimpleEchoMode(false) },
+                shape = RoundedCornerShape(14.dp),
+                color = if (!uiState.isSimpleEchoMode) StudioColors.Violet else StudioColors.CardSurface,
+                border = BorderStroke(1.dp, if (!uiState.isSimpleEchoMode) StudioColors.Violet else StudioColors.Border),
+                modifier = Modifier
+                    .weight(1f)
+                    .defaultMinSize(minHeight = 48.dp)
+                    .testTag("echo_mode_pro"),
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        text = t(lang, "mode_pro"),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (!uiState.isSimpleEchoMode) StudioColors.BgTop else StudioColors.TextSecondary,
+                    )
+                }
+            }
+        }
+
+        // 4 Axis Mode Chips
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            EchoPadAxisMode.entries.forEach { mode ->
+                val selected = mode == uiState.echoPadAxisMode
+                val label = when (mode) {
+                    EchoPadAxisMode.SPACE -> if (lang == AppLanguage.EN) "Space & Depth" else "العمق والمساحة"
+                    EchoPadAxisMode.DELAY -> if (lang == AppLanguage.EN) "Delay & Feedback" else "الزمن والتكرار"
+                    EchoPadAxisMode.WIDTH -> if (lang == AppLanguage.EN) "Width & Diffusion" else "الاتساع والانتشار"
+                    EchoPadAxisMode.DAMPING -> if (lang == AppLanguage.EN) "Damping & Pre" else "التخميد والتمهيد"
+                }
+                FilterChip(
+                    selected = selected,
+                    onClick = { viewModel.setEchoPadAxisMode(mode) },
+                    label = { Text(label, maxLines = 1) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.2f),
+                        selectedLabelColor = StudioColors.Cyan,
+                        containerColor = StudioColors.CardSurface,
+                        labelColor = StudioColors.TextSecondary,
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = selected,
+                        borderColor = StudioColors.Border,
+                        selectedBorderColor = StudioColors.Cyan,
+                    ),
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("echo_axis_${mode.name.lowercase()}"),
+                )
+            }
+        }
+
+        // 2D Interactive Spatial Pad
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = t(lang, "echo_pad_hint"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = StudioColors.TextSecondary,
+                )
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(260.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(StudioColors.BgTop)
+                        .border(1.dp, StudioColors.BorderBright.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
+                        .pointerInput(uiState.echoPadAxisMode) {
+                            detectTapGestures { offset ->
+                                val nx = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                val ny = (1f - offset.y / size.height.toFloat()).coerceIn(0f, 1f)
+                                trailPoints.add(Offset(nx, ny))
+                                if (trailPoints.size > 16) trailPoints.removeAt(0)
+                                viewModel.updateEchoReverbFromPad(nx, ny)
+                            }
+                        }
+                        .pointerInput(uiState.echoPadAxisMode) {
+                            detectDragGestures { change, _ ->
+                                change.consume()
+                                val nx = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                val ny = (1f - change.position.y / size.height.toFloat()).coerceIn(0f, 1f)
+                                trailPoints.add(Offset(nx, ny))
+                                if (trailPoints.size > 16) trailPoints.removeAt(0)
+                                viewModel.updateEchoReverbFromPad(nx, ny)
+                            }
+                        }
+                        .testTag("echo_spatial_pad"),
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val orbPos = Offset(padX * size.width, (1f - padY) * size.height)
+
+                        // Radial glow centered on orb
+                        drawCircle(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    StudioColors.Cyan.copy(alpha = 0.28f),
+                                    StudioColors.Violet.copy(alpha = 0.1f),
+                                    Color.Transparent,
+                                ),
+                                center = orbPos,
+                                radius = size.minDimension * 0.55f,
+                            ),
+                            center = orbPos,
+                            radius = size.minDimension * 0.55f,
+                        )
+
+                        // 4x4 grid crosshairs
+                        for (i in 1..3) {
+                            val gx = size.width * (i / 4f)
+                            val gy = size.height * (i / 4f)
+                            drawLine(
+                                color = StudioColors.Border.copy(alpha = 0.5f),
+                                start = Offset(gx, 0f),
+                                end = Offset(gx, size.height),
+                                strokeWidth = 1.dp.toPx(),
+                            )
+                            drawLine(
+                                color = StudioColors.Border.copy(alpha = 0.5f),
+                                start = Offset(0f, gy),
+                                end = Offset(size.width, gy),
+                                strokeWidth = 1.dp.toPx(),
+                            )
+                        }
+
+                        // 3 animated concentric ripple rings
+                        for (ringIdx in 0..2) {
+                            val phase = (ripplePhase + ringIdx / 3f) % 1f
+                            val radius = (18.dp.toPx() + phase * size.minDimension * 0.42f)
+                            val alpha = (1f - phase) * 0.55f
+                            drawCircle(
+                                color = StudioColors.Cyan.copy(alpha = alpha),
+                                radius = radius,
+                                center = orbPos,
+                                style = Stroke(width = 1.5.dp.toPx()),
+                            )
+                        }
+
+                        // Drag trail
+                        if (trailPoints.size > 1) {
+                            for (i in 1 until trailPoints.size) {
+                                val p0 = Offset(trailPoints[i - 1].x * size.width, (1f - trailPoints[i - 1].y) * size.height)
+                                val p1 = Offset(trailPoints[i].x * size.width, (1f - trailPoints[i].y) * size.height)
+                                val frac = i.toFloat() / trailPoints.size
+                                drawLine(
+                                    color = StudioColors.Cyan.copy(alpha = frac * 0.6f),
+                                    start = p0,
+                                    end = p1,
+                                    strokeWidth = 2.5.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                )
+                            }
+                        }
+
+                        // 4 orbiting purple satellites proportional to stereoWidth
+                        val orbitRadius = (18f + echo.stereoWidth * 36f).dp.toPx()
+                        for (sat in 0..3) {
+                            val angle = ripplePhase * 2f * PI.toFloat() + sat * (PI.toFloat() / 2f)
+                            val satPos = Offset(
+                                x = orbPos.x + cos(angle) * orbitRadius,
+                                y = orbPos.y + sin(angle) * orbitRadius * 0.65f,
+                            )
+                            drawCircle(
+                                color = StudioColors.Violet.copy(alpha = 0.85f),
+                                radius = 4.dp.toPx(),
+                                center = satPos,
+                            )
+                        }
+
+                        // Center cyan glowing orb
+                        drawCircle(
+                            color = StudioColors.Cyan.copy(alpha = 0.35f),
+                            radius = 18.dp.toPx(),
+                            center = orbPos,
+                        )
+                        drawCircle(
+                            color = StudioColors.Cyan,
+                            radius = 9.dp.toPx(),
+                            center = orbPos,
+                        )
+                        drawCircle(
+                            color = StudioColors.TextPrimary,
+                            radius = 3.5.dp.toPx(),
+                            center = orbPos,
+                        )
+                    }
+                }
+
+                // 3 Telemetry Badges
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    TelemetryBadge(
+                        label = t(lang, "param_echo_strength"),
+                        value = "${(echo.echoStrength * 100f).roundToInt()}%",
+                        color = StudioColors.Cyan,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TelemetryBadge(
+                        label = t(lang, "param_delay_time"),
+                        value = "${echo.delayTimeMs.roundToInt()} ms",
+                        color = StudioColors.Violet,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TelemetryBadge(
+                        label = t(lang, "param_wet_dry"),
+                        value = "${(echo.wetDryMix * 100f).roundToInt()}%",
+                        color = StudioColors.Emerald,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                StudioParamSlider(
+                    label = t(lang, "param_wet_dry"),
+                    value = echo.wetDryMix,
+                    min = 0f,
+                    max = 1f,
+                    formattedValue = "${(echo.wetDryMix * 100f).roundToInt()}%",
+                    accentColor = StudioColors.Cyan,
+                    testTag = "echo_wet_dry_slider",
+                    onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(wetDryMix = v) } },
+                )
+
+                StudioParamSlider(
+                    label = t(lang, "param_delay_time"),
+                    value = echo.delayTimeMs,
+                    min = 40f,
+                    max = 1000f,
+                    formattedValue = "${echo.delayTimeMs.roundToInt()} ms",
+                    accentColor = StudioColors.Violet,
+                    testTag = "echo_delay_time_slider",
+                    onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(delayTimeMs = v) } },
+                )
+            }
+        }
+
+        if (!uiState.isSimpleEchoMode) {
+            StudioSectionCard(
+                title = t(lang, "echo_node_core"),
+                subtitle = "${t(lang, "param_echo_strength")}, ${t(lang, "param_echo_depth")}, ${t(lang, "param_feedback")}",
+                icon = Icons.Rounded.GraphicEq,
+                accentColor = StudioColors.Cyan,
+                testTag = "echo_group_core",
+                onClick = { onOpenDetail(EchoDetailGroup.CORE) },
+            )
+            StudioSectionCard(
+                title = t(lang, "echo_node_reflections"),
+                subtitle = "${t(lang, "param_early_reflections")}, ${t(lang, "param_late_reflections")}, ${t(lang, "param_diffusion")}",
+                icon = Icons.Rounded.BlurOn,
+                accentColor = StudioColors.Violet,
+                testTag = "echo_group_reflections",
+                onClick = { onOpenDetail(EchoDetailGroup.REFLECTIONS) },
+            )
+            StudioSectionCard(
+                title = t(lang, "echo_node_space"),
+                subtitle = "${t(lang, "param_reverb_size")}, ${t(lang, "param_reverb_decay")}, ${t(lang, "param_stereo_width")}",
+                icon = Icons.Rounded.Waves,
+                accentColor = StudioColors.Emerald,
+                testTag = "echo_group_space",
+                onClick = { onOpenDetail(EchoDetailGroup.SPACE) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun TelemetryBadge(
+    label: String,
+    value: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = StudioColors.BgMid,
+        border = BorderStroke(1.dp, StudioColors.Border),
+        modifier = modifier,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = StudioColors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = value,
+                style = TelemetryTextStyle,
+                color = color,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+fun EchoDetailScreen(
+    group: EchoDetailGroup,
+    uiState: StudioUiState,
+    viewModel: StudioViewModel,
+    onBack: () -> Unit,
+) {
+    val lang = uiState.language
+    val echo = uiState.dspConfig.echoReverb
+    val title = when (group) {
+        EchoDetailGroup.CORE -> t(lang, "echo_node_core")
+        EchoDetailGroup.REFLECTIONS -> t(lang, "echo_node_reflections")
+        EchoDetailGroup.SPACE -> t(lang, "echo_node_space")
+    }
+
+    StudioScrollColumn {
+        StudioFocusTopBar(title = title, language = lang, onBack = onBack)
+
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                when (group) {
+                    EchoDetailGroup.CORE -> {
+                        StudioParamSlider(
+                            label = t(lang, "param_echo_strength"),
+                            value = echo.echoStrength,
+                            min = 0f,
+                            max = 1f,
+                            formattedValue = "${(echo.echoStrength * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Cyan,
+                            testTag = "echo_detail_strength",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(echoStrength = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_echo_depth"),
+                            value = echo.echoDepth,
+                            min = 0f,
+                            max = 1f,
+                            formattedValue = "${(echo.echoDepth * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Cyan,
+                            testTag = "echo_detail_depth",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(echoDepth = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_delay_time"),
+                            value = echo.delayTimeMs,
+                            min = 40f,
+                            max = 1000f,
+                            formattedValue = "${echo.delayTimeMs.roundToInt()} ms",
+                            accentColor = StudioColors.Violet,
+                            testTag = "echo_detail_delay",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(delayTimeMs = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_feedback"),
+                            value = echo.feedback,
+                            min = 0f,
+                            max = 0.88f,
+                            formattedValue = "${(echo.feedback * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Amber,
+                            testTag = "echo_detail_feedback",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(feedback = v) } },
+                        )
+                    }
+                    EchoDetailGroup.REFLECTIONS -> {
+                        StudioParamSlider(
+                            label = t(lang, "param_early_reflections"),
+                            value = echo.earlyReflections,
+                            min = 0f,
+                            max = 1f,
+                            formattedValue = "${(echo.earlyReflections * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Violet,
+                            testTag = "echo_detail_early",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(earlyReflections = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_late_reflections"),
+                            value = echo.lateReflections,
+                            min = 0f,
+                            max = 1f,
+                            formattedValue = "${(echo.lateReflections * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Violet,
+                            testTag = "echo_detail_late",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(lateReflections = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_pre_delay"),
+                            value = echo.preDelayMs,
+                            min = 0f,
+                            max = 150f,
+                            formattedValue = "${echo.preDelayMs.roundToInt()} ms",
+                            accentColor = StudioColors.Cyan,
+                            testTag = "echo_detail_predelay",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(preDelayMs = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_diffusion"),
+                            value = echo.diffusion,
+                            min = 0f,
+                            max = 1f,
+                            formattedValue = "${(echo.diffusion * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Emerald,
+                            testTag = "echo_detail_diffusion",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(diffusion = v) } },
+                        )
+                    }
+                    EchoDetailGroup.SPACE -> {
+                        StudioParamSlider(
+                            label = t(lang, "param_reverb_size"),
+                            value = echo.reverbSize,
+                            min = 0.1f,
+                            max = 1f,
+                            formattedValue = "${(echo.reverbSize * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Emerald,
+                            testTag = "echo_detail_size",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(reverbSize = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_reverb_decay"),
+                            value = echo.reverbDecay,
+                            min = 0.1f,
+                            max = 0.96f,
+                            formattedValue = "${(echo.reverbDecay * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Emerald,
+                            testTag = "echo_detail_decay",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(reverbDecay = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_stereo_width"),
+                            value = echo.stereoWidth,
+                            min = 0f,
+                            max = 1f,
+                            formattedValue = "${(echo.stereoWidth * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Cyan,
+                            testTag = "echo_detail_width",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(stereoWidth = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_damping"),
+                            value = echo.damping,
+                            min = 0f,
+                            max = 1f,
+                            formattedValue = "${(echo.damping * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Amber,
+                            testTag = "echo_detail_damping",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(damping = v) } },
+                        )
+                        StudioParamSlider(
+                            label = t(lang, "param_wet_dry"),
+                            value = echo.wetDryMix,
+                            min = 0f,
+                            max = 1f,
+                            formattedValue = "${(echo.wetDryMix * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Cyan,
+                            testTag = "echo_detail_wetdry",
+                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(wetDryMix = v) } },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EffectsChainScreen(
+    uiState: StudioUiState,
+    viewModel: StudioViewModel,
+    onOpenEffect: (EffectType) -> Unit,
+    onBack: () -> Unit,
+) {
+    val lang = uiState.language
+    val chain = uiState.dspConfig.chain
+
+    StudioScrollColumn {
+        StudioFocusTopBar(
+            title = t(lang, "section_chain_title"),
+            subtitle = t(lang, "chain_order_hint"),
+            language = lang,
+            onBack = onBack,
+        )
+
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                StudioParamSlider(
+                    label = if (lang == AppLanguage.EN) "Master Output Gain" else "كسب الخرج الرئيسي (Master Gain)",
+                    value = uiState.dspConfig.masterGainDb,
+                    min = -18f,
+                    max = 12f,
+                    formattedValue = "${if (uiState.dspConfig.masterGainDb >= 0f) "+" else ""}${"%.1f".format(uiState.dspConfig.masterGainDb)} dB",
+                    accentColor = StudioColors.Cyan,
+                    testTag = "chain_master_gain_slider",
+                    onValueChange = { v -> viewModel.updateDspConfig { it.copy(masterGainDb = v) } },
+                )
+
+                OutlinedButton(
+                    onClick = { viewModel.resetAllEffects() },
+                    border = BorderStroke(1.dp, StudioColors.Rose.copy(alpha = 0.6f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("chain_reset_all_button"),
+                ) {
+                    Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (lang == AppLanguage.EN) "Reset All Effects" else "إعادة تعيين كافة المؤثرات")
+                }
+            }
+        }
+
+        chain.forEachIndexed { idx, slot ->
+            Card(
+                onClick = { onOpenEffect(slot.type) },
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (slot.enabled) StudioColors.ElevatedSurface else StudioColors.CardSurface,
+                ),
+                border = BorderStroke(
+                    1.dp,
+                    if (slot.enabled) StudioColors.Cyan.copy(alpha = 0.55f) else StudioColors.Border,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("chain_slot_${slot.type.name.lowercase()}"),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(if (slot.enabled) StudioColors.Cyan else StudioColors.BgMid),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "${idx + 1}",
+                            style = TelemetryTextStyle,
+                            color = if (slot.enabled) StudioColors.BgTop else StudioColors.TextSecondary,
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = t(lang, slot.type.titleKey),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = StudioColors.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = if (slot.enabled) {
+                                if (lang == AppLanguage.EN) "Active • Tap to adjust" else "مفعّل • اضغط للتعديل"
+                            } else {
+                                if (lang == AppLanguage.EN) "Bypassed • Tap to adjust" else "متجاوز • اضغط للتعديل"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (slot.enabled) StudioColors.Cyan else StudioColors.TextMuted,
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { viewModel.moveEffectInChain(idx, idx - 1) },
+                        enabled = idx > 0,
+                        colors = IconButtonDefaults.iconButtonColors(
+                            contentColor = StudioColors.TextSecondary,
+                            disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
+                        ),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("chain_up_${slot.type.name.lowercase()}"),
+                    ) {
+                        Icon(Icons.Rounded.ArrowUpward, contentDescription = t(lang, "move_up"), modifier = Modifier.size(18.dp))
+                    }
+
+                    IconButton(
+                        onClick = { viewModel.moveEffectInChain(idx, idx + 1) },
+                        enabled = idx < chain.lastIndex,
+                        colors = IconButtonDefaults.iconButtonColors(
+                            contentColor = StudioColors.TextSecondary,
+                            disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
+                        ),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("chain_down_${slot.type.name.lowercase()}"),
+                    ) {
+                        Icon(Icons.Rounded.ArrowDownward, contentDescription = t(lang, "move_down"), modifier = Modifier.size(18.dp))
+                    }
+
+                    Switch(
+                        checked = slot.enabled,
+                        onCheckedChange = { viewModel.toggleEffectEnabled(slot.type, it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = StudioColors.BgTop,
+                            checkedTrackColor = StudioColors.Cyan,
+                        ),
+                        modifier = Modifier.testTag("chain_toggle_${slot.type.name.lowercase()}"),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EffectDetailScreen(
+    effect: EffectType,
+    uiState: StudioUiState,
+    viewModel: StudioViewModel,
+    onOpenEchoDetail: (EchoDetailGroup) -> Unit,
+    onBack: () -> Unit,
+) {
+    if (effect == EffectType.ECHO_REVERB) {
+        EchoReverbScreen(
+            uiState = uiState,
+            viewModel = viewModel,
+            onOpenDetail = onOpenEchoDetail,
+            onBack = onBack,
+        )
+        return
+    }
+
+    val lang = uiState.language
+    val cfg = uiState.dspConfig
+    val enabled = cfg.isEnabled(effect)
+
+    StudioScrollColumn {
+        StudioFocusTopBar(
+            title = t(lang, effect.titleKey),
+            subtitle = if (enabled) {
+                if (lang == AppLanguage.EN) "Processor Active" else "المعالج مفعّل بالمسار"
+            } else {
+                if (lang == AppLanguage.EN) "Processor Bypassed" else "المعالج متجاوز حالياً"
+            },
+            language = lang,
+            onBack = onBack,
+            trailing = {
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { viewModel.toggleEffectEnabled(effect, it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = StudioColors.BgTop,
+                        checkedTrackColor = StudioColors.Cyan,
+                    ),
+                    modifier = Modifier.testTag("effect_detail_enable_switch"),
+                )
+            },
+        )
+
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                when (effect) {
+                    EffectType.EQUALIZER -> {
+                        val eq = cfg.equalizer
+                        val bands = listOf(
+                            eq.band60HzDb,
+                            eq.band230HzDb,
+                            eq.band910HzDb,
+                            eq.band3600HzDb,
+                            eq.band14000HzDb,
+                        )
+                        // 5-band frequency response curve Canvas
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(110.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(StudioColors.BgTop)
+                                .border(1.dp, StudioColors.Border, RoundedCornerShape(14.dp))
+                                .padding(12.dp),
+                        ) {
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val midY = size.height / 2f
+                                drawLine(
+                                    color = StudioColors.BorderBright.copy(alpha = 0.5f),
+                                    start = Offset(0f, midY),
+                                    end = Offset(size.width, midY),
+                                    strokeWidth = 1.dp.toPx(),
+                                )
+                                val path = Path()
+                                val pts = bands.mapIndexed { idx, db ->
+                                    val x = if (bands.size <= 1) 0f else size.width * (idx.toFloat() / (bands.size - 1))
+                                    val y = midY - (db / 12f) * (size.height * 0.42f)
+                                    Offset(x, y)
+                                }
+                                pts.forEachIndexed { idx, p ->
+                                    if (idx == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
+                                }
+                                drawPath(
+                                    path = path,
+                                    color = StudioColors.Cyan,
+                                    style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+                                )
+                                pts.forEach { p ->
+                                    drawCircle(color = StudioColors.Violet, radius = 5.dp.toPx(), center = p)
+                                    drawCircle(color = StudioColors.TextPrimary, radius = 2.dp.toPx(), center = p)
+                                }
+                            }
+                        }
+
+                        StudioParamSlider("60 Hz", eq.band60HzDb, -12f, 12f, "${"%.1f".format(eq.band60HzDb)} dB", StudioColors.Cyan, testTag = "eq_60") { v ->
+                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band60HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                        }
+                        StudioParamSlider("230 Hz", eq.band230HzDb, -12f, 12f, "${"%.1f".format(eq.band230HzDb)} dB", StudioColors.Cyan, testTag = "eq_230") { v ->
+                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band230HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                        }
+                        StudioParamSlider("910 Hz", eq.band910HzDb, -12f, 12f, "${"%.1f".format(eq.band910HzDb)} dB", StudioColors.Violet, testTag = "eq_910") { v ->
+                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band910HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                        }
+                        StudioParamSlider("3.6 kHz", eq.band3600HzDb, -12f, 12f, "${"%.1f".format(eq.band3600HzDb)} dB", StudioColors.Emerald, testTag = "eq_3600") { v ->
+                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band3600HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                        }
+                        StudioParamSlider("14 kHz", eq.band14000HzDb, -12f, 12f, "${"%.1f".format(eq.band14000HzDb)} dB", StudioColors.Amber, testTag = "eq_14000") { v ->
+                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band14000HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                        }
+                    }
+
+                    EffectType.BASS_BOOST -> {
+                        val b = cfg.bassBoost
+                        StudioParamSlider(
+                            label = if (lang == AppLanguage.EN) "Bass Gain" else "شدة تعزيز الجهير",
+                            value = b.gainDb,
+                            min = 0f,
+                            max = 12f,
+                            formattedValue = "+${"%.1f".format(b.gainDb)} dB",
+                            accentColor = StudioColors.Amber,
+                            testTag = "bass_gain_slider",
+                        ) { v ->
+                            viewModel.updateDspConfig { it.copy(bassBoost = it.bassBoost.copy(gainDb = v)).withSlotEnabled(EffectType.BASS_BOOST, true) }
+                        }
+                        StudioParamSlider(
+                            label = if (lang == AppLanguage.EN) "Cutoff Frequency" else "تردد القطع",
+                            value = b.frequencyHz,
+                            min = 50f,
+                            max = 220f,
+                            formattedValue = "${b.frequencyHz.roundToInt()} Hz",
+                            accentColor = StudioColors.Cyan,
+                            testTag = "bass_freq_slider",
+                        ) { v ->
+                            viewModel.updateDspConfig { it.copy(bassBoost = it.bassBoost.copy(frequencyHz = v)).withSlotEnabled(EffectType.BASS_BOOST, true) }
+                        }
+                    }
+
+                    EffectType.TREBLE -> {
+                        val tr = cfg.treble
+                        StudioParamSlider(
+                            label = if (lang == AppLanguage.EN) "Treble Gain" else "شدة الترددات العالية",
+                            value = tr.gainDb,
+                            min = -10f,
+                            max = 12f,
+                            formattedValue = "${"%.1f".format(tr.gainDb)} dB",
+                            accentColor = StudioColors.Cyan,
+                            testTag = "treble_gain_slider",
+                        ) { v ->
+                            viewModel.updateDspConfig { it.copy(treble = it.treble.copy(gainDb = v)).withSlotEnabled(EffectType.TREBLE, true) }
+                        }
+                        StudioParamSlider(
+                            label = if (lang == AppLanguage.EN) "Shelf Frequency" else "تردد الحدة",
+                            value = tr.frequencyHz,
+                            min = 2500f,
+                            max = 12000f,
+                            formattedValue = "${tr.frequencyHz.roundToInt()} Hz",
+                            accentColor = StudioColors.Violet,
+                            testTag = "treble_freq_slider",
+                        ) { v ->
+                            viewModel.updateDspConfig { it.copy(treble = it.treble.copy(frequencyHz = v)).withSlotEnabled(EffectType.TREBLE, true) }
+                        }
+                    }
+
+                    EffectType.PITCH_SHIFT -> {
+                        val ps = cfg.pitchShift
+                        StudioParamSlider(
+                            label = if (lang == AppLanguage.EN) "Pitch Semitones" else "إزاحة الطبقة (Semitones)",
+                            value = ps.semitones,
+                            min = -12f,
+                            max = 12f,
+                            formattedValue = "${if (ps.semitones >= 0f) "+" else ""}${"%.1f".format(ps.semitones)} st",
+                            accentColor = StudioColors.Violet,
+                            testTag = "pitch_semitones_slider",
+                        ) { v ->
+                            viewModel.updateDspConfig { it.copy(pitchShift = it.pitchShift.copy(semitones = v)).withSlotEnabled(EffectType.PITCH_SHIFT, true) }
+                        }
+                        StudioParamSlider(
+                            label = if (lang == AppLanguage.EN) "Wet Mix" else "نسبة المزج",
+                            value = ps.wetMix,
+                            min = 0f,
+                            max = 1f,
+                            formattedValue = "${(ps.wetMix * 100f).roundToInt()}%",
+                            accentColor = StudioColors.Cyan,
+                            testTag = "pitch_mix_slider",
+                        ) { v ->
+                            viewModel.updateDspConfig { it.copy(pitchShift = it.pitchShift.copy(wetMix = v)).withSlotEnabled(EffectType.PITCH_SHIFT, true) }
+                        }
+                    }
+
+                    EffectType.TIME_STRETCH -> {
+                        val ts = cfg.timeStretch
+                        StudioParamSlider(
+                            label = if (lang == AppLanguage.EN) "Tempo Ratio" else "سرعة التشغيل",
+                            value = ts.tempoRatio,
+                            min = 0.5f,
+                            max = 2f,
+                            formattedValue = "${"%.2f".format(ts.tempoRatio)}x",
+                            accentColor = StudioColors.Amber,
+                            testTag = "tempo_ratio_slider",
+                        ) { v ->
+                            viewModel.updateDspConfig { it.copy(timeStretch = it.timeStretch.copy(tempoRatio = v)).withSlotEnabled(EffectType.TIME_STRETCH, true) }
+                        }
+                    }
+
+                    EffectType.CHORUS -> {
+                        val ch = cfg.chorus
+                        StudioParamSlider("Rate", ch.rateHz, 0.1f, 5f, "${"%.2f".format(ch.rateHz)} Hz", StudioColors.Cyan, testTag = "chorus_rate") { v ->
+                            viewModel.updateDspConfig { it.copy(chorus = it.chorus.copy(rateHz = v)).withSlotEnabled(EffectType.CHORUS, true) }
+                        }
+                        StudioParamSlider("Depth", ch.depthMs, 1f, 18f, "${"%.1f".format(ch.depthMs)} ms", StudioColors.Violet, testTag = "chorus_depth") { v ->
+                            viewModel.updateDspConfig { it.copy(chorus = it.chorus.copy(depthMs = v)).withSlotEnabled(EffectType.CHORUS, true) }
+                        }
+                        StudioParamSlider("Mix", ch.mix, 0f, 1f, "${(ch.mix * 100f).roundToInt()}%", StudioColors.Emerald, testTag = "chorus_mix") { v ->
+                            viewModel.updateDspConfig { it.copy(chorus = it.chorus.copy(mix = v)).withSlotEnabled(EffectType.CHORUS, true) }
+                        }
+                    }
+
+                    EffectType.FLANGER -> {
+                        val fl = cfg.flanger
+                        StudioParamSlider("Rate", fl.rateHz, 0.05f, 3f, "${"%.2f".format(fl.rateHz)} Hz", StudioColors.Cyan, testTag = "flanger_rate") { v ->
+                            viewModel.updateDspConfig { it.copy(flanger = it.flanger.copy(rateHz = v)).withSlotEnabled(EffectType.FLANGER, true) }
+                        }
+                        StudioParamSlider("Depth", fl.depthMs, 0.5f, 8f, "${"%.1f".format(fl.depthMs)} ms", StudioColors.Violet, testTag = "flanger_depth") { v ->
+                            viewModel.updateDspConfig { it.copy(flanger = it.flanger.copy(depthMs = v)).withSlotEnabled(EffectType.FLANGER, true) }
+                        }
+                        StudioParamSlider("Feedback", fl.feedback, 0f, 0.85f, "${(fl.feedback * 100f).roundToInt()}%", StudioColors.Amber, testTag = "flanger_feedback") { v ->
+                            viewModel.updateDspConfig { it.copy(flanger = it.flanger.copy(feedback = v)).withSlotEnabled(EffectType.FLANGER, true) }
+                        }
+                        StudioParamSlider("Mix", fl.mix, 0f, 1f, "${(fl.mix * 100f).roundToInt()}%", StudioColors.Emerald, testTag = "flanger_mix") { v ->
+                            viewModel.updateDspConfig { it.copy(flanger = it.flanger.copy(mix = v)).withSlotEnabled(EffectType.FLANGER, true) }
+                        }
+                    }
+
+                    EffectType.PHASER -> {
+                        val ph = cfg.phaser
+                        StudioParamSlider("Rate", ph.rateHz, 0.1f, 4f, "${"%.2f".format(ph.rateHz)} Hz", StudioColors.Cyan, testTag = "phaser_rate") { v ->
+                            viewModel.updateDspConfig { it.copy(phaser = it.phaser.copy(rateHz = v)).withSlotEnabled(EffectType.PHASER, true) }
+                        }
+                        StudioParamSlider("Depth", ph.depth, 0f, 1f, "${(ph.depth * 100f).roundToInt()}%", StudioColors.Violet, testTag = "phaser_depth") { v ->
+                            viewModel.updateDspConfig { it.copy(phaser = it.phaser.copy(depth = v)).withSlotEnabled(EffectType.PHASER, true) }
+                        }
+                        StudioParamSlider("Feedback", ph.feedback, 0f, 0.85f, "${(ph.feedback * 100f).roundToInt()}%", StudioColors.Amber, testTag = "phaser_feedback") { v ->
+                            viewModel.updateDspConfig { it.copy(phaser = it.phaser.copy(feedback = v)).withSlotEnabled(EffectType.PHASER, true) }
+                        }
+                        StudioParamSlider("Mix", ph.mix, 0f, 1f, "${(ph.mix * 100f).roundToInt()}%", StudioColors.Emerald, testTag = "phaser_mix") { v ->
+                            viewModel.updateDspConfig { it.copy(phaser = it.phaser.copy(mix = v)).withSlotEnabled(EffectType.PHASER, true) }
+                        }
+                    }
+
+                    EffectType.DISTORTION -> {
+                        val d = cfg.distortion
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            DistortionMode.entries.forEach { mode ->
+                                val selected = mode == d.mode
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        viewModel.updateDspConfig {
+                                            it.copy(distortion = it.distortion.copy(mode = mode)).withSlotEnabled(EffectType.DISTORTION, true)
+                                        }
+                                    },
+                                    label = { Text(mode.name.replace('_', ' '), maxLines = 1) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .testTag("distortion_mode_${mode.name.lowercase()}"),
+                                )
+                            }
+                        }
+                        StudioParamSlider("Drive", d.drive, 1f, 12f, "${"%.1f".format(d.drive)}x", StudioColors.Rose, testTag = "dist_drive") { v ->
+                            viewModel.updateDspConfig { it.copy(distortion = it.distortion.copy(drive = v)).withSlotEnabled(EffectType.DISTORTION, true) }
+                        }
+                        StudioParamSlider("Tone Cutoff", d.toneHz, 800f, 12000f, "${d.toneHz.roundToInt()} Hz", StudioColors.Amber, testTag = "dist_tone") { v ->
+                            viewModel.updateDspConfig { it.copy(distortion = it.distortion.copy(toneHz = v)).withSlotEnabled(EffectType.DISTORTION, true) }
+                        }
+                        StudioParamSlider("Mix", d.mix, 0f, 1f, "${(d.mix * 100f).roundToInt()}%", StudioColors.Cyan, testTag = "dist_mix") { v ->
+                            viewModel.updateDspConfig { it.copy(distortion = it.distortion.copy(mix = v)).withSlotEnabled(EffectType.DISTORTION, true) }
+                        }
+                    }
+
+                    EffectType.COMPRESSOR -> {
+                        val comp = cfg.compressor
+                        val grNorm = (uiState.playback.gainReductionDb / 24f).coerceIn(0f, 1f)
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    text = if (lang == AppLanguage.EN) "Gain Reduction" else "خفض القمم (GR)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = StudioColors.TextSecondary,
+                                )
+                                Text(
+                                    text = "-${"%.1f".format(uiState.playback.gainReductionDb)} dB",
+                                    style = TelemetryTextStyle,
+                                    color = StudioColors.Amber,
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(CircleShape)
+                                    .background(StudioColors.BgTop),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(grNorm.coerceAtLeast(0.02f))
+                                        .height(8.dp)
+                                        .clip(CircleShape)
+                                        .background(StudioColors.Amber),
+                                )
+                            }
+                        }
+
+                        StudioParamSlider("Threshold", comp.thresholdDb, -42f, -2f, "${comp.thresholdDb.roundToInt()} dB", StudioColors.Cyan, testTag = "comp_thresh") { v ->
+                            viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(thresholdDb = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                        }
+                        StudioParamSlider("Ratio", comp.ratio, 1.2f, 12f, "${"%.1f".format(comp.ratio)}:1", StudioColors.Violet, testTag = "comp_ratio") { v ->
+                            viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(ratio = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                        }
+                        StudioParamSlider("Attack", comp.attackMs, 1f, 80f, "${comp.attackMs.roundToInt()} ms", StudioColors.Emerald, testTag = "comp_attack") { v ->
+                            viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(attackMs = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                        }
+                        StudioParamSlider("Release", comp.releaseMs, 20f, 500f, "${comp.releaseMs.roundToInt()} ms", StudioColors.Emerald, testTag = "comp_release") { v ->
+                            viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(releaseMs = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                        }
+                        StudioParamSlider("Makeup Gain", comp.makeupGainDb, -6f, 12f, "+${"%.1f".format(comp.makeupGainDb)} dB", StudioColors.Amber, testTag = "comp_makeup") { v ->
+                            viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(makeupGainDb = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                        }
+                    }
+
+                    EffectType.LIMITER -> {
+                        val lim = cfg.limiter
+                        StudioParamSlider("Ceiling", lim.ceilingDb, -6f, -0.1f, "${"%.1f".format(lim.ceilingDb)} dB", StudioColors.Rose, testTag = "limiter_ceiling") { v ->
+                            viewModel.updateDspConfig { it.copy(limiter = it.limiter.copy(ceilingDb = v)).withSlotEnabled(EffectType.LIMITER, true) }
+                        }
+                        StudioParamSlider("Release", lim.releaseMs, 10f, 300f, "${lim.releaseMs.roundToInt()} ms", StudioColors.Cyan, testTag = "limiter_release") { v ->
+                            viewModel.updateDspConfig { it.copy(limiter = it.limiter.copy(releaseMs = v)).withSlotEnabled(EffectType.LIMITER, true) }
+                        }
+                    }
+
+                    EffectType.NOISE_REDUCTION -> {
+                        val nr = cfg.noiseReduction
+                        StudioParamSlider("Spectral Strength", nr.spectralStrength, 0f, 1f, "${(nr.spectralStrength * 100f).roundToInt()}%", StudioColors.Emerald, testTag = "nr_strength") { v ->
+                            viewModel.updateDspConfig { it.copy(noiseReduction = it.noiseReduction.copy(spectralStrength = v)).withSlotEnabled(EffectType.NOISE_REDUCTION, true) }
+                        }
+                        StudioParamSlider("Gate Threshold", nr.thresholdDb, -70f, -18f, "${nr.thresholdDb.roundToInt()} dB", StudioColors.Cyan, testTag = "nr_thresh") { v ->
+                            viewModel.updateDspConfig { it.copy(noiseReduction = it.noiseReduction.copy(thresholdDb = v)).withSlotEnabled(EffectType.NOISE_REDUCTION, true) }
+                        }
+                        StudioParamSlider("Reduction Depth", nr.reductionDb, 0f, 36f, "${nr.reductionDb.roundToInt()} dB", StudioColors.Violet, testTag = "nr_depth") { v ->
+                            viewModel.updateDspConfig { it.copy(noiseReduction = it.noiseReduction.copy(reductionDb = v)).withSlotEnabled(EffectType.NOISE_REDUCTION, true) }
+                        }
+                        StudioParamSlider("High-Pass Cutoff", nr.highPassHz, 20f, 260f, "${nr.highPassHz.roundToInt()} Hz", StudioColors.Amber, testTag = "nr_hp") { v ->
+                            viewModel.updateDspConfig { it.copy(noiseReduction = it.noiseReduction.copy(highPassHz = v)).withSlotEnabled(EffectType.NOISE_REDUCTION, true) }
+                        }
+                    }
+
+                    EffectType.ECHO_REVERB -> Unit
+                }
+            }
+        }
+    }
+}

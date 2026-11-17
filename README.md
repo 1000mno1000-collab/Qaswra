@@ -1,20 +1,20 @@
-# Voice Pro (Sonix ✦)
+# Voice Pro — Sonix ✦ (Android)
 
-Advanced Web Audio Engineering Studio built with React, TypeScript, Tailwind CSS, Web Audio API DSP, and server-side Gemini AI.
+Advanced Android Audio Engineering Studio built with **Kotlin**, **Jetpack Compose**, **Material 3**, **Room**, **DataStore**, and an on-device **44.1 kHz Stereo DSP Engine**.
 
-## Features
-- **Recording Studio & Archive**: Real-time microphone recording (pause/resume/finish), live input meter & waveform monitor, audio file import (WAV/MP3/M4A/OGG/FLAC), and IndexedDB recordings archive.
-- **Voice Purifier & Denoise**: 512-pt STFT Wiener spectral denoiser, high-pass rumble filter, hum notch, dynamic de-esser, vocal clarity boost, 4 presets, and deep offline purification.
-- **Echo & Reverb Spatial Pad**: Interactive 2D acoustic field pad controlling modulated ping-pong echo, 6-tap early reflections, 4-channel Hadamard FDN, Schroeder combs, and stereo width, with Simple & Pro modes.
-- **13-Slot Reorderable Effects Chain**: Noise Reduction, 5-Band EQ (with frequency curve), Bass Boost, Treble, Pitch Shift, Time Stretch (WSOLA), Chorus, Flanger, Phaser, Distortion, Compressor (with live gain-reduction meter), Echo/Reverb, and Peak Limiter.
-- **Audio Editor & Mixing**: Draggable waveform selection, Keep/Cut/Normalize, Fade In/Out, Dual-Track Mix, Clip Gain, sequential clip merge, 12-step Undo/Redo, and Multi-format Export (MP3, WAV, M4A, OGG, FLAC).
-- **Audio AI Studio**: Streaming Audio Transcription (`gemini-3.5-transcribe`), Smart Auto-Master offline analyzer, and Google Search grounded Audio Engineering Assistant (`gemini-4-hydrogen`).
-- **Text-to-Speech Studio (10 Dialects) & Offline Formant Voice Transformer**: Dialect preview & studio synthesis (`gemini-3.8-flash-lite-tts`), plus offline WSOLA + 1024-pt STFT cepstral formant voice character transformation.
-- **Trilingual UI**: Instant RTL/LTR switching between Arabic (`ar`), English (`en`), and Persian (`fa`).
+## Architecture & Tech Stack
+- **UI**: Jetpack Compose + Material 3 (`VoiceProTheme`), edge-to-edge layout (`enableEdgeToEdge()`), dynamic RTL/LTR switching (`ar`, `en`, `fa`), custom interactive `Canvas` components (real-time waveform visualizer, 2D Echo/Reverb spatial pad, 5-band EQ curve, draggable trim/cut editor), and type-safe `@Serializable` Navigation Compose.
+- **Audio & DSP Engine (`com.example.audio`)**:
+  - Live `AudioRecord` microphone capture (`RECORD_AUDIO` runtime permission) and `AudioTrack` (`ENCODING_PCM_FLOAT`, `MODE_STREAM`) real-time DSP playback with A/B tap-and-hold bypass.
+  - 512-pt STFT Wiener spectral denoiser, high-pass filter, de-esser, and clarity boost (`VoicePurifier`).
+  - Modulated ping-pong echo, 6-tap early reflections, 4-channel Hadamard FDN, Schroeder combs, and stereo width (`EchoReverbProcessor`).
+  - 13-slot reorderable effects chain (`NOISE_REDUCTION`, `EQUALIZER`, `BASS_BOOST`, `TREBLE`, `PITCH_SHIFT`, `TIME_STRETCH`, `CHORUS`, `FLANGER`, `PHASER`, `DISTORTION`, `COMPRESSOR`, `ECHO_REVERB`, `LIMITER`) plus offline WSOLA time-stretch + 1024-pt STFT cepstral formant voice character transformer (`FormantTransformer`).
+  - `MediaExtractor` / `MediaCodec` audio import (`ActivityResultContracts.OpenDocument`), pure-Kotlin FLAC / WAV / `MediaMuxer` M4A-AAC export (`ActivityResultContracts.CreateDocument`), and `FileProvider` share sheet.
+  - Android `TextToSpeech` engine (`AndroidTtsEngine`) supporting 10 dialects/languages with live preview and file synthesis into the studio timeline.
+  - On-device `SmartAutoMaster` spectral & dynamics analyzer.
+- **Persistence (`com.example.data`)**: Room database (`projects`, `recordings`, `custom_presets`, `local_accounts`), Preferences DataStore, and internal WAV file storage.
+- **Cloud AI (`com.example.data.ai`)**: `AiRepository` interface with `FirebaseUnprovisionedAiRepository` placeholder; cloud transcription and web-grounded AI search require provisioning **Firebase AI Logic (`ai_logic`)** with `google-services.json` and signing SHA certificates.
 
-## Running
-```bash
-npm install
-npm run dev
-```
-The server listens on `http://0.0.0.0:3000`.
+## Build Configuration
+- `compileSdk = 36`, `targetSdk = 36`, `minSdk = 26`, JDK 21
+- Gradle Kotlin DSL (`build.gradle.kts`) with Version Catalog (`gradle/libs.versions.toml`)
