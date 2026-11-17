@@ -104,10 +104,17 @@ fun AuthScreen(
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
     val scope = rememberCoroutineScope()
-    val defaultWebClientId = if (isPreview) {
-        ""
-    } else {
-        stringResource(R.string.default_web_client_id).trim()
+    val defaultWebClientId = remember(context, isPreview) {
+        if (isPreview) {
+            ""
+        } else {
+            val resId = context.resources.getIdentifier(
+                "default_web_client_id",
+                "string",
+                context.packageName,
+            )
+            if (resId != 0) context.getString(resId).trim() else ""
+        }
     }
 
     var isSignUp by remember { mutableStateOf(false) }
