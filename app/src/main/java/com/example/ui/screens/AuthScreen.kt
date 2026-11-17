@@ -3,7 +3,10 @@ package com.example.ui.screens
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
+import java.security.MessageDigest
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -117,6 +120,42 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is ContextWrapper -> baseContext.findActivity()
     else -> null
 }
+
+private fun isTechnicalAuthRejection(detail: String?): Boolean {
+    if (detail.isNullOrBlank()) return false
+    val lower = detail.lowercase()
+    return lower.contains("reauth") ||
+        lower.contains("[16]") ||
+        lower.contains("16:") ||
+        lower.contains("blocked") ||
+        lower.contains("developer") ||
+        lower.contains("28444") ||
+        lower.contains("signature") ||
+        lower.contains("mismatch") ||
+        lower.contains("cannot find") ||
+        lower.contains("network") ||
+        lower.contains("internal error")
+}
+
+private fun getAppSigningSha1(context: Context): String? = runCatching {
+    val pm = context.packageManager
+    val pkgName = context.packageName
+    val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val info = pm.getPackageInfo(pkgName, PackageManager.GET_SIGNING_CERTIFICATES)
+        val signingInfo = info.signingInfo
+        if (signingInfo?.hasMultipleSigners() == true) {
+            signingInfo.apkContentsSigners
+        } else {
+            signingInfo?.signingCertificateHistory
+        }
+    } else {
+        @Suppress("DEPRECATION")
+        pm.getPackageInfo(pkgName, PackageManager.GET_SIGNATURES).signatures
+    }
+    val certBytes = signatures?.firstOrNull()?.toByteArray() ?: return@runCatching null
+    val digest = MessageDigest.getInstance("SHA-1").digest(certBytes)
+    digest.joinToString(":") { "%02X".format(it) }
+}.getOrNull()
 
 @Composable
 fun AuthScreen(
@@ -319,11 +358,18 @@ fun AuthScreen(
                             .addCredentialOption(googleIdOption)
                             .build()
                         cm.getCredential(activity, request)
-                    } catch (noCred: NoCredentialException) {
+                    } catch (firstErr: GetCredentialException) {
+                        val firstDetail =
+                            firstErr.errorMessage?.toString() ?: firstErr.localizedMessage ?: firstErr.message
+                        val shouldRetryWithFullGoogleFlow =
+                            firstErr is NoCredentialException || isTechnicalAuthRejection(firstDetail)
+                        if (!shouldRetryWithFullGoogleFlow) {
+                            throw firstErr
+                        }
                         Log.w(
                             "Auth",
-                            "GetGoogleIdOption found no cached credentials; retrying with GetSignInWithGoogleOption",
-                            noCred,
+                            "GetGoogleIdOption failed ($firstDetail); retrying with GetSignInWithGoogleOption",
+                            firstErr,
                         )
                         val signInWithGoogleOption =
                             GetSignInWithGoogleOption.Builder(GOOGLE_WEB_CLIENT_ID).build()
@@ -364,18 +410,45 @@ fun AuthScreen(
                 } catch (e: GetCredentialCancellationException) {
                     val cancelDetail = (e.errorMessage?.toString() ?: e.localizedMessage ?: e.message)
                         ?.takeIf { it.isNotBlank() }
-                    Log.w("Auth", "Google Sign-In cancelled: $cancelDetail", e)
+                    val technicalRejection = isTechnicalAuthRejection(cancelDetail)
+                    val sha1 = if (technicalRejection) getAppSigningSha1(activity) else null
+                    val causeText = buildString {
+                        append(cancelDetail ?: e.javaClass.simpleName)
+                        if (!sha1.isNullOrBlank()) {
+                            append(" | App SHA-1: ")
+                            append(sha1)
+                        }
+                    }
+                    Log.w("Auth", "Google Sign-In stopped: $causeText", e)
                     AppDiagnosticLog.logRecoverable(
                         toolName = "GoogleSignIn",
-                        titleAr = "إلغاء أو تعليق نافذة تسجيل الدخول بجوجل",
-                        titleEn = "Google Sign-In Cancelled",
-                        causeAr = cancelDetail ?: e.javaClass.simpleName,
-                        causeEn = cancelDetail ?: e.javaClass.simpleName,
+                        titleAr = if (technicalRejection) {
+                            "رفض التحقق من حساب جوجل في Google Play"
+                        } else {
+                            "إلغاء نافذة تسجيل الدخول بجوجل"
+                        },
+                        titleEn = if (technicalRejection) {
+                            "Google Play Account Reauth Failed"
+                        } else {
+                            "Google Sign-In Cancelled"
+                        },
+                        causeAr = causeText,
+                        causeEn = causeText,
                         errorCode = e.type,
                         throwable = e,
                     )
                     isGoogleLoading = false
-                    errorMsg = if (isEn) {
+                    errorMsg = if (technicalRejection) {
+                        if (isEn) {
+                            "Google Play failed account verification ($cancelDetail)." +
+                                (sha1?.let { "\nAdd this app SHA-1 in Firebase Console (${activity.packageName}):\n$it" } ?: "") +
+                                "\nAlso ensure device screen lock is enabled and Google Play Services is updated."
+                        } else {
+                            "فشل التحقق من الحساب في Google Play ($cancelDetail)." +
+                                (sha1?.let { "\nتأكد من إضافة بصمة SHA-1 التالية في Firebase Console لحزمة ${activity.packageName}:\n$it" } ?: "") +
+                                "\nوتأكد أيضاً من تفعيل قفل شاشة الجهاز وتحديث خدمات Google Play."
+                        }
+                    } else if (isEn) {
                         if (cancelDetail != null) {
                             "Sign-in was cancelled ($cancelDetail). Please select a Google account to continue."
                         } else {
