@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "71794555883",
+    "project_id": "gen-lang-client-0021883952",
+    "storage_bucket": "gen-lang-client-0021883952.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:71794555883:android:c698f4c34ad5c3e63b37ae",
+        "android_client_info": {
+          "package_name": "com.aistudio.voicepro.krmzxq"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:71794555883:android:4c65036e94f7e36e3b37ae",
+        "android_client_info": {
+          "package_name": "com.aistudio.voicepro.sonixk"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
