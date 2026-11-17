@@ -58,6 +58,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -568,6 +569,65 @@ private fun SonixRootApp(
                                                 modifier = Modifier.size(18.dp),
                                             )
                                         }
+                                    }
+                                }
+                            }
+                        }
+
+                        uiState.importProgress?.let { progress ->
+                            val pct = (progress.coerceIn(0f, 1f) * 100f).toInt()
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = StudioColors.CardSurface,
+                                    border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.55f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .widthIn(max = 640.dp)
+                                        .testTag("global_import_progress_card"),
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                text = "${t(lang, "importing_file_progress")} $pct%",
+                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                color = StudioColors.Cyan,
+                                            )
+                                            uiState.importLabel?.let { label ->
+                                                Text(
+                                                    text = label,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = StudioColors.TextSecondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.widthIn(max = 180.dp),
+                                                )
+                                            }
+                                        }
+                                        LinearProgressIndicator(
+                                            progress = { progress.coerceIn(0f, 1f) },
+                                            color = StudioColors.Cyan,
+                                            trackColor = StudioColors.BgTop,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(7.dp)
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .testTag("global_import_progress_bar"),
+                                        )
                                     }
                                 }
                             }

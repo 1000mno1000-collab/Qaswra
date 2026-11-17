@@ -22,10 +22,61 @@ import java.net.URLEncoder
 import java.util.UUID
 import kotlin.math.abs
 
+sealed interface VoiceRouteOutcome {
+    data class Success(val result: EdgeTtsSynthResult) : VoiceRouteOutcome
+    data object MissingApiKey : VoiceRouteOutcome
+    data object Offline : VoiceRouteOutcome
+    data class ProviderError(val message: String) : VoiceRouteOutcome
+}
+
 class SmartVoiceRouter {
 
     /**
-     * يوجّه النص تلقائياً لأقوى مزود صوتي طبيعي سحابي متاح بدون أي مفتاح API
+     * يوجّه النص لمحرك ElevenLabs السحابي ذو المشاعر الحقيقية (model: eleven_multilingual_v2)
+     * باستخدام مفتاح المستخدم الشخصي المحفوظ محلياً، ولا يعود أبداً إلى الصوت الآلي الروبوتي المحلي.
+     */
+    suspend fun synthesizeStudioVoiceWithStatus(
+        context: Context,
+        text: String,
+        dialect: TtsDialect,
+        gender: TtsGender,
+        style: TtsDeliveryStyle,
+        speechRate: Float,
+        pitch: Float,
+        stability: Float = ElevenLabsClient.getSavedStability(context),
+        similarity: Float = ElevenLabsClient.getSavedSimilarity(context),
+    ): VoiceRouteOutcome = withContext(Dispatchers.IO) {
+        val cleanText = text.trim()
+        if (cleanText.isEmpty()) return@withContext VoiceRouteOutcome.ProviderError("النص فارغ")
+        if (!NetworkUtils.isInternetAvailable(context)) return@withContext VoiceRouteOutcome.Offline
+
+        val elevenKey = ElevenLabsClient.getSavedApiKey(context)
+        if (elevenKey.isBlank()) {
+            return@withContext VoiceRouteOutcome.MissingApiKey
+        }
+
+        when (
+            val elOutcome = ElevenLabsClient.synthesize(
+                context = context,
+                text = cleanText,
+                dialect = dialect,
+                gender = gender,
+                style = style,
+                speechRate = speechRate,
+                pitch = pitch,
+                stability = stability,
+                similarityBoost = similarity,
+            )
+        ) {
+            is ElevenLabsOutcome.Success -> VoiceRouteOutcome.Success(elOutcome.result)
+            ElevenLabsOutcome.MissingApiKey -> VoiceRouteOutcome.MissingApiKey
+            ElevenLabsOutcome.Offline -> VoiceRouteOutcome.Offline
+            is ElevenLabsOutcome.ApiError -> VoiceRouteOutcome.ProviderError(elOutcome.detail)
+        }
+    }
+
+    /**
+     * يوجّه النص تلقائياً لمزود الصوت الطبيعي المتاح عند استدعائه مباشرة
      * ولا يعود أبداً إلى الصوت الآلي الروبوتي المحلي.
      */
     suspend fun generateNaturalVoice(
@@ -38,7 +89,6 @@ class SmartVoiceRouter {
 
         outputFile.parentFile?.mkdirs()
 
-        // 1. المحاولة الأولى: محرك النطق العصبي Microsoft Edge Neural
         val localeTag = voiceCode.split("-").take(2).joinToString("-").ifBlank { "ar-IQ" }
         val edgeBytes = EdgeTtsClient.synthesizeRawMp3(
             text = cleanText,
@@ -53,19 +103,13 @@ class SmartVoiceRouter {
             if (wrote) return@withContext true
         }
 
-        // 2. المحاولة الثانية: محرك StreamElements العصبي عالي الجودة
         val primarySuccess = tryStreamElementsNeural(cleanText, voiceCode, outputFile)
         if (primarySuccess && outputFile.length() > 512L) return@withContext true
 
-        // 3. المحاولة الثالثة (البديل السحابي عالي الوضوح): محرك Google Translate HD TTS
         val lang = voiceCode.substringBefore("-").lowercase().ifBlank { "ar" }
         return@withContext tryGoogleFallbackTts(cleanText, lang, outputFile)
     }
 
-    /**
-     * يولّد الصوت البشري السحابي بأعلى جودة ممكنة مع تطبيق مهارة [AudioSkillsPresets.STUDIO_VOCAL_MASTERING]
-     * لإخراج دفء استوديو احترافي. يعيد null عند عدم توفر أي مزود سحابي طبيعي (دون أي رجوع لصوت آلي).
-     */
     suspend fun synthesizeStudioVoice(
         context: Context,
         text: String,
@@ -75,78 +119,20 @@ class SmartVoiceRouter {
         speechRate: Float,
         pitch: Float,
     ): EdgeTtsSynthResult? = withContext(Dispatchers.IO) {
-        val cleanText = text.trim()
-        if (cleanText.isEmpty()) return@withContext null
-        if (!NetworkUtils.isInternetAvailable(context)) return@withContext null
-
-        // Primary neural WebSocket synthesis (supports dialects, rate, pitch & SSML)
-        val edgeResult = EdgeTtsClient.synthesize(
-            context = context,
-            text = cleanText,
-            dialect = dialect,
-            gender = gender,
-            style = style,
-            speechRate = speechRate,
-            pitch = pitch,
-        )
-        if (edgeResult != null) {
-            val masteredWav = File(context.cacheDir, "edge_tts/tts_mastered_${UUID.randomUUID()}.wav").apply {
-                parentFile?.mkdirs()
-            }
-            val wavSaved = runCatching {
-                writeStereoWavFile(masteredWav, edgeResult.buffer)
-                masteredWav.exists() && masteredWav.length() > 44L
-            }.getOrDefault(false)
-            return@withContext if (wavSaved) {
-                edgeResult.mp3File.delete()
-                EdgeTtsSynthResult(buffer = edgeResult.buffer, mp3File = masteredWav)
-            } else {
-                masteredWav.delete()
-                edgeResult
-            }
+        when (
+            val outcome = synthesizeStudioVoiceWithStatus(
+                context = context,
+                text = text,
+                dialect = dialect,
+                gender = gender,
+                style = style,
+                speechRate = speechRate,
+                pitch = pitch,
+            )
+        ) {
+            is VoiceRouteOutcome.Success -> outcome.result
+            else -> null
         }
-
-        // Backup natural cloud providers (StreamElements Neural / Google HD TTS) -> no offline robotic TTS
-        val voiceName = if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
-        val cacheDir = File(context.cacheDir, "edge_tts").apply { mkdirs() }
-        val backupMp3 = File(cacheDir, "router_${UUID.randomUUID()}.mp3")
-        val ok = generateNaturalVoice(
-            text = cleanText,
-            voiceCode = voiceName,
-            outputFile = backupMp3,
-        )
-        if (!ok || !backupMp3.exists() || backupMp3.length() <= 512L) {
-            backupMp3.delete()
-            return@withContext null
-        }
-
-        val decoded = AudioDecoder.decodeFile(backupMp3)
-        backupMp3.delete()
-        if (decoded == null || decoded.frameCount <= 0) return@withContext null
-
-        val targetTempo = clamp(speechRate * style.rateFactor, 0.65f, 1.6f)
-        val semitones = clamp((pitch - 1.0f) * 6f, -5f, 5f)
-        val prosodyAdjusted = if (abs(targetTempo - 1f) > 0.04f || abs(semitones) > 0.15f) {
-            applyPitchAndSpeedOffline(decoded, semitones = semitones, tempoRatio = targetTempo)
-        } else {
-            decoded
-        }
-
-        val mastered = AudioSkillsPresets.applyStudioVocalMastering(
-            buffer = prosodyAdjusted,
-            extraWarmthDb = (style.warmthDb - 2.0f).coerceAtLeast(0f),
-            extraPresenceDb = if (style == TtsDeliveryStyle.RADIO_ANCHOR) 1.6f else 0.8f,
-        )
-        val previewWav = File(cacheDir, "router_mastered_${UUID.randomUUID()}.wav")
-        val saved = runCatching {
-            writeStereoWavFile(previewWav, mastered)
-            previewWav.exists() && previewWav.length() > 44L
-        }.getOrDefault(false)
-        if (!saved) {
-            previewWav.delete()
-            return@withContext null
-        }
-        EdgeTtsSynthResult(buffer = mastered, mp3File = previewWav)
     }
 
     private fun tryStreamElementsNeural(text: String, voiceCode: String, out: File): Boolean {

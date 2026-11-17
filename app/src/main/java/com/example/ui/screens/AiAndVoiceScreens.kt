@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.OpenInNew
@@ -37,6 +38,8 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SpatialAudioOff
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -62,16 +65,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.audio.fx.VoiceEffect
@@ -556,15 +563,21 @@ fun TextToSpeechStudioScreen(
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
+    val context = LocalContext.current
     var selectedDialect by remember { mutableStateOf(TTS_DIALECTS.first()) }
     var selectedGender by remember { mutableStateOf(TtsGender.MALE) }
     var selectedStyle by remember { mutableStateOf(TtsDeliveryStyle.NATURAL_WARM) }
-    var textInput by remember { mutableStateOf(TTS_DIALECTS.first().sampleText) }
+    var textInput by rememberSaveable { mutableStateOf(TTS_DIALECTS.first().sampleText) }
     var speechRate by remember { mutableFloatStateOf(TTS_DIALECTS.first().defaultRate) }
     var speechPitch by remember { mutableFloatStateOf(TTS_DIALECTS.first().defaultPitch) }
     var appendToExisting by remember { mutableStateOf(false) }
-    var articleUrl by remember { mutableStateOf("") }
+    var articleUrl by rememberSaveable { mutableStateOf("") }
     var infoOpen by remember { mutableStateOf(false) }
+    var apiKeyDraft by remember(uiState.elevenLabsApiKey) { mutableStateOf(uiState.elevenLabsApiKey) }
+    var showApiKey by remember { mutableStateOf(false) }
+    val hasInternet = remember(uiState.ttsUiState.isOffline, uiState.ttsUiState.isSynthesizingPreview) {
+        com.example.audio.NetworkUtils.isInternetAvailable(context)
+    }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -581,6 +594,131 @@ fun TextToSpeechStudioScreen(
                 )
             },
         )
+
+        // Personal ElevenLabs API Key & Voice Emotional Settings Card (saved locally via SharedPreferences)
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(
+                1.dp,
+                if (uiState.elevenLabsApiKey.isNotBlank()) StudioColors.Emerald.copy(alpha = 0.5f) else StudioColors.Amber.copy(alpha = 0.6f),
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Key,
+                        contentDescription = null,
+                        tint = StudioColors.Amber,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(
+                        text = t(lang, "elevenlabs_key_title"),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = StudioColors.TextPrimary,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                OutlinedTextField(
+                    value = apiKeyDraft,
+                    onValueChange = { apiKeyDraft = it },
+                    placeholder = {
+                        Text(
+                            text = t(lang, "elevenlabs_key_hint"),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    singleLine = true,
+                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showApiKey = !showApiKey }) {
+                            Icon(
+                                imageVector = if (showApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                contentDescription = null,
+                                tint = StudioColors.TextSecondary,
+                            )
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = StudioColors.Amber,
+                        unfocusedBorderColor = StudioColors.Border,
+                        focusedTextColor = StudioColors.TextPrimary,
+                        unfocusedTextColor = StudioColors.TextPrimary,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("elevenlabs_api_key_input"),
+                )
+
+                val saveKeyInteraction = remember { MutableInteractionSource() }
+                Button(
+                    onClick = { viewModel.saveElevenLabsApiKey(apiKeyDraft) },
+                    enabled = apiKeyDraft.trim() != uiState.elevenLabsApiKey || uiState.elevenLabsApiKey.isBlank(),
+                    interactionSource = saveKeyInteraction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.Amber,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .lit(saveKeyInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
+                        .testTag("elevenlabs_save_key_button"),
+                ) {
+                    Text(t(lang, "elevenlabs_key_save"), style = MaterialTheme.typography.labelLarge)
+                }
+
+                StudioParamSlider(
+                    label = t(lang, "elevenlabs_stability"),
+                    value = uiState.elevenLabsStability,
+                    min = 0.05f,
+                    max = 0.98f,
+                    formattedValue = "${(uiState.elevenLabsStability * 100f).roundToInt()}%",
+                    accentColor = StudioColors.Cyan,
+                    testTag = "elevenlabs_stability_slider",
+                    onValueChange = { viewModel.updateElevenLabsStability(it) },
+                )
+
+                StudioParamSlider(
+                    label = t(lang, "elevenlabs_similarity"),
+                    value = uiState.elevenLabsSimilarity,
+                    min = 0.05f,
+                    max = 1.0f,
+                    formattedValue = "${(uiState.elevenLabsSimilarity * 100f).roundToInt()}%",
+                    accentColor = StudioColors.Violet,
+                    testTag = "elevenlabs_similarity_slider",
+                    onValueChange = { viewModel.updateElevenLabsSimilarity(it) },
+                )
+
+                if (uiState.elevenLabsApiKey.isBlank() || !hasInternet) {
+                    AiStatusCard(
+                        message = when {
+                            uiState.elevenLabsApiKey.isBlank() && !hasInternet ->
+                                t(lang, "elevenlabs_missing_or_offline_banner")
+                            !hasInternet ->
+                                t(lang, "elevenlabs_offline_banner")
+                            else ->
+                                t(lang, "elevenlabs_missing_key_banner")
+                        },
+                        isAmber = true,
+                    )
+                }
+            }
+        }
 
         LiquidAudioWavePreview(
             amplitude = if (uiState.ttsUiState.isPreviewing || uiState.playback.isPlaying) {
@@ -664,7 +802,11 @@ fun TextToSpeechStudioScreen(
                     }
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = t(lang, "tts_web_article_fetch"),
+                        text = if (uiState.isExtractingArticle) {
+                            t(lang, "tts_web_article_fetching")
+                        } else {
+                            t(lang, "tts_web_article_fetch")
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

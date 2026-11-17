@@ -306,7 +306,7 @@ fun InAppAudioPickerScreen(
                 OutlinedButton(
                     onClick = {
                         stopPreview()
-                        externalDocLauncher.launch(arrayOf("audio/*"))
+                        externalDocLauncher.launch(arrayOf("audio/*", "application/ogg"))
                     },
                     interactionSource = externalInteraction,
                     border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.7f)),

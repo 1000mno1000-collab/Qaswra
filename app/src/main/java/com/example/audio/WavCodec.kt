@@ -64,13 +64,15 @@ fun decodeWavBytes(bytes: ByteArray): StereoAudioBuffer? {
     while (bb.remaining() >= 8) {
         val chunkId = ByteArray(4)
         bb.get(chunkId)
-        val chunkSize = bb.int
-        if (chunkSize < 0 || chunkSize > bb.remaining()) break
+        val rawChunkSize = bb.int
+        if (rawChunkSize < 0) break
+        val available = bb.remaining()
         val idStr = String(chunkId, Charsets.US_ASCII)
         when (idStr) {
             "fmt " -> {
+                val safeSize = minOf(rawChunkSize, available)
                 val chunkStart = bb.position()
-                if (chunkSize >= 16) {
+                if (safeSize >= 16) {
                     audioFormat = bb.short.toInt() and 0xFFFF
                     channels = bb.short.toInt() and 0xFFFF
                     sampleRate = bb.int
@@ -78,15 +80,19 @@ fun decodeWavBytes(bytes: ByteArray): StereoAudioBuffer? {
                     bb.short // blockAlign
                     bitsPerSample = bb.short.toInt() and 0xFFFF
                 }
-                bb.position(chunkStart + chunkSize)
+                val padded = rawChunkSize + (rawChunkSize and 1)
+                val nextPos = minOf(bb.limit(), chunkStart + padded)
+                bb.position(nextPos)
             }
             "data" -> {
                 dataOffset = bb.position()
-                dataSize = chunkSize
+                dataSize = if (rawChunkSize == 0 || rawChunkSize > available) available else rawChunkSize
                 break
             }
             else -> {
-                bb.position(bb.position() + chunkSize)
+                val padded = rawChunkSize + (rawChunkSize and 1)
+                if (padded > available) break
+                bb.position(bb.position() + padded)
             }
         }
     }

@@ -76,6 +76,7 @@ import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
 import com.example.i18n.t
@@ -87,6 +88,7 @@ import com.example.ui.theme.SonixTheme
 import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import com.google.android.gms.common.api.ApiException
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -274,19 +276,35 @@ fun AuthScreen(
                     Log.w("Auth", "Google Sign-In cancelled or dismissed: ${e.message}", e)
                 } catch (e: NoCredentialException) {
                     Log.w("Auth", "No Google credentials found on device: ${e.message}", e)
-                    errorMsg = if (lang == AppLanguage.EN) {
-                        "No Google account is signed in on this device."
+                    errorMsg = t(lang, "auth_sha1_hint")
+                } catch (e: ApiException) {
+                    Log.w("Auth", "Google ApiException status=${e.statusCode}: ${e.message}", e)
+                    errorMsg = t(lang, "auth_sha1_hint")
+                } catch (e: GetCredentialException) {
+                    val raw = e.errorMessage?.toString().orEmpty().lowercase()
+                    Log.w("Auth", "GetCredentialException (${e.type}): $raw", e)
+                    val isShaOrConfig = raw.contains("10") ||
+                        raw.contains("28444") ||
+                        raw.contains("developer") ||
+                        raw.contains("sha") ||
+                        raw.contains("caller") ||
+                        raw.contains("config") ||
+                        raw.contains("not set up") ||
+                        raw.contains("cannot find")
+                    errorMsg = if (isShaOrConfig) {
+                        t(lang, "auth_sha1_hint")
                     } else {
-                        "لا يوجد حساب Google مسجّل على هذا الجهاز."
+                        t(lang, "auth_sha1_hint")
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.e("Auth", "Google Sign-In failed", e)
-                    errorMsg = e.localizedMessage ?: if (lang == AppLanguage.EN) {
-                        "Google Sign-In failed. Please try again."
+                    val msg = e.localizedMessage.orEmpty().lowercase()
+                    errorMsg = if (msg.contains("10") || msg.contains("sha") || msg.contains("developer")) {
+                        t(lang, "auth_sha1_hint")
                     } else {
-                        "فشل تسجيل الدخول بحساب Google، يرجى المحاولة مرة أخرى."
+                        e.localizedMessage ?: t(lang, "auth_sha1_hint")
                     }
                 } finally {
                     isGoogleLoading = false
@@ -650,7 +668,7 @@ private fun AuthScreenContent(
                     val guestInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = onContinueAsGuest,
-                        enabled = !isSubmitting && !isGoogleLoading,
+                        enabled = true,
                         interactionSource = guestInteraction,
                         border = BorderStroke(1.dp, StudioColors.Emerald.copy(alpha = 0.7f)),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Emerald),

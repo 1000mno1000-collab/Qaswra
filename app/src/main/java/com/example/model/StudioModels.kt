@@ -613,11 +613,15 @@ enum class TtsDeliveryStyle(
     val rateFactor: Float,
     val pitchOffsetHz: Int,
     val warmthDb: Float,
+    val elevenLabsStyle: Float,
+    val elevenLabsStabilityDelta: Float,
 ) {
-    NATURAL_WARM("tts_style_natural", 1.0f, 0, 2.5f),
-    RADIO_ANCHOR("tts_style_radio", 0.96f, -6, 4.0f),
-    STORYTELLING("tts_style_story", 0.92f, -2, 3.0f),
-    ENERGETIC("tts_style_energetic", 1.08f, 6, 1.5f),
+    NATURAL_WARM("tts_style_natural", 1.0f, 0, 2.5f, 0.28f, 0.0f),
+    ENERGETIC("tts_style_energetic", 1.08f, 6, 1.5f, 0.58f, -0.06f),
+    DRAMATIC("tts_style_dramatic", 0.94f, -4, 3.5f, 0.72f, -0.14f),
+    SAD("tts_style_sad", 0.88f, -5, 3.2f, 0.35f, 0.14f),
+    RADIO_ANCHOR("tts_style_radio", 0.96f, -6, 4.0f, 0.40f, 0.08f),
+    STORYTELLING("tts_style_story", 0.92f, -2, 3.0f, 0.48f, 0.02f),
 }
 
 data class TtsDialect(
@@ -803,6 +807,8 @@ data class TtsStudioUiState(
     val isPreviewing: Boolean = false,
     val isGenerating: Boolean = false,
     val usedFallbackEngine: Boolean = false,
+    val missingApiKey: Boolean = false,
+    val isOffline: Boolean = false,
     val errorMessage: String? = null,
 )
 
