@@ -37,7 +37,7 @@ import kotlin.math.sin
 import kotlin.math.tanh
 
 /**
- * Adds ElevenLabs-grade studio vocal mastering warmth, compression, 8kHz air, and gentle loudness normalization.
+ * Adds studio-grade vocal mastering warmth, compression, 8kHz air, and gentle loudness normalization.
  */
 fun applyStudioWarmth(
     buffer: StereoAudioBuffer,

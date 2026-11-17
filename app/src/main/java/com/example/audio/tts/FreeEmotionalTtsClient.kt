@@ -6,7 +6,9 @@ import com.example.audio.EdgeTtsClient
 import com.example.audio.EdgeTtsSynthResult
 import com.example.audio.OnlineGuard
 import com.example.audio.clamp
-import com.example.audio.fx.AudioSkillsPresets
+import com.example.audio.fx.StudioLuxuryAudioFilter
+import com.example.audio.normalizeAudio
+import com.example.audio.writeStereoWavFile
 import com.example.model.AppLanguage
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
@@ -28,8 +30,25 @@ sealed interface FreeEmotionalTtsOutcome {
  * Supports Iraqi Arabic (`ar-IQ-BasselNeural` & `ar-IQ-RanaNeural`), Arabic dialects, and global voices
  * with SSML human emotion shaping (Natural, Happy/Excited, Sad/Calm, Angry/Sharp, Dramatic Cinematic)
  * and natural breathing pauses (`<break time='...'/>`).
+ *
+ * When [studioLuxuryEnhancement] is enabled, automatically routes the output through
+ * [StudioLuxuryAudioFilter] (`equalizer` + `acompressor`) for warm, deep studio-grade sound.
  */
 object FreeEmotionalTtsClient {
+    private const val PREFS_NAME = "sonix_free_tts_prefs"
+    private const val KEY_LUXURY_ENHANCEMENT = "studio_luxury_enhancement"
+
+    fun getSavedStudioLuxuryEnhancement(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_LUXURY_ENHANCEMENT, true)
+    }
+
+    fun saveStudioLuxuryEnhancement(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_LUXURY_ENHANCEMENT, enabled)
+            .apply()
+    }
 
     suspend fun synthesize(
         context: Context,
@@ -40,6 +59,7 @@ object FreeEmotionalTtsClient {
         speechRate: Float,
         pitch: Float,
         language: AppLanguage = AppLanguage.AR,
+        studioLuxuryEnhancement: Boolean = getSavedStudioLuxuryEnhancement(context),
     ): FreeEmotionalTtsOutcome = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) {
@@ -110,33 +130,43 @@ object FreeEmotionalTtsClient {
         }
 
         val cacheDir = File(context.cacheDir, "free_emotional_tts").apply { mkdirs() }
-        val mp3File = File(cacheDir, "neural_${UUID.randomUUID()}.mp3")
-        mp3File.writeBytes(mp3Bytes)
+        val rawMp3File = File(cacheDir, "neural_raw_${UUID.randomUUID()}.mp3")
+        rawMp3File.writeBytes(mp3Bytes)
 
-        val decoded = AudioDecoder.decodeFile(mp3File)
+        val decoded = AudioDecoder.decodeFile(rawMp3File)
         if (decoded == null || decoded.frameCount <= 0) {
-            mp3File.delete()
+            rawMp3File.delete()
             return@withContext FreeEmotionalTtsOutcome.Error("تعذر فك ترميز الصوت البشري الناتج")
         }
 
-        val extraPresence = when (style) {
-            TtsDeliveryStyle.ANGRY -> 1.8f
-            TtsDeliveryStyle.RADIO_ANCHOR -> 1.6f
-            TtsDeliveryStyle.DRAMATIC -> 1.2f
-            TtsDeliveryStyle.ENERGETIC -> 1.3f
-            TtsDeliveryStyle.SAD -> 0.4f
-            else -> 0.8f
+        val finalBuffer = if (studioLuxuryEnhancement) {
+            StudioLuxuryAudioFilter.applyLuxuryStudioEnhancement(
+                context = context,
+                inputAudioFile = rawMp3File,
+                decodedBuffer = decoded,
+                style = style,
+            )
+        } else {
+            normalizeAudio(decoded, -2.0f)
         }
-        val mastered = AudioSkillsPresets.applyStudioVocalMastering(
-            buffer = decoded,
-            extraWarmthDb = (style.warmthDb - 1.8f).coerceAtLeast(0f),
-            extraPresenceDb = extraPresence,
-        )
+
+        rawMp3File.delete()
+
+        val previewWav = File(cacheDir, "neural_out_${UUID.randomUUID()}.wav")
+        val wroteWav = runCatching {
+            writeStereoWavFile(previewWav, finalBuffer)
+            previewWav.exists() && previewWav.length() > 44L
+        }.getOrDefault(false)
+
+        if (!wroteWav) {
+            previewWav.delete()
+            return@withContext FreeEmotionalTtsOutcome.Error("فشل تجهيز ملف المعاينة الصوتي.")
+        }
 
         FreeEmotionalTtsOutcome.Success(
             EdgeTtsSynthResult(
-                buffer = mastered,
-                mp3File = mp3File,
+                buffer = finalBuffer,
+                mp3File = previewWav,
             ),
         )
     }

@@ -8,7 +8,7 @@ import com.example.model.AppLanguage
 
 /**
  * Strict online connectivity guard for all 100% cloud features
- * (Neural TTS, ElevenLabs, Jina article reader, Pollinations AI, Gemini/Archive.org).
+ * (Free Emotional Neural TTS, Jina article reader, Pollinations AI, Gemini/Archive.org).
  * Requires BOTH [NetworkCapabilities.NET_CAPABILITY_INTERNET] and
  * [NetworkCapabilities.NET_CAPABILITY_VALIDATED] so dead/captive/offline networks
  * fail fast instead of hanging or falling back to offline robotic engines.

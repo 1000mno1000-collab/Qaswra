@@ -23,7 +23,7 @@ import com.example.audio.ai.SmartAssistantAndSearch
 import com.example.audio.ai.ToolGuideResult
 import com.example.audio.fx.VoiceEffect
 import com.example.audio.fx.VoiceProcessor
-import com.example.audio.tts.ElevenLabsClient
+import com.example.audio.tts.FreeEmotionalTtsClient
 import com.example.audio.tts.SmartVoiceRouter
 import com.example.audio.tts.VoiceRouteOutcome
 import com.example.audio.unity.UnityExporter
@@ -189,9 +189,7 @@ data class StudioUiState(
     val exportProgress: Float? = null,
     val purifyProgress: Float? = null,
     val ttsEngineMode: TtsEngineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL,
-    val elevenLabsApiKey: String = "",
-    val elevenLabsStability: Float = 0.45f,
-    val elevenLabsSimilarity: Float = 0.78f,
+    val studioLuxuryEnhancement: Boolean = true,
     val homeScrollIndex: Int = 0,
     val homeScrollOffset: Int = 0,
     val speechState: NativeSpeechState = NativeSpeechState(),
@@ -321,9 +319,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val appCtx = getApplication<Application>()
         _uiState.update {
             it.copy(
-                elevenLabsApiKey = ElevenLabsClient.getSavedApiKey(appCtx),
-                elevenLabsStability = ElevenLabsClient.getSavedStability(appCtx),
-                elevenLabsSimilarity = ElevenLabsClient.getSavedSimilarity(appCtx),
+                studioLuxuryEnhancement = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(appCtx),
             )
         }
 
@@ -2303,47 +2299,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // TTS Studio (100% Online Cloud-Only: Free Unlimited Emotional Neural TTS + Optional ElevenLabs v2)
-    fun setTtsEngineMode(mode: TtsEngineMode) {
-        _uiState.update { cur ->
-            cur.copy(
-                ttsEngineMode = mode,
-                ttsUiState = cur.ttsUiState.copy(
-                    selectedEngine = mode,
-                    missingApiKey = if (mode == TtsEngineMode.ELEVENLABS_PERSONAL) cur.elevenLabsApiKey.isBlank() else false,
-                    errorMessage = null,
-                ),
-            )
-        }
-    }
-
-    fun saveElevenLabsApiKey(rawKey: String) {
-        val clean = rawKey.trim()
-        ElevenLabsClient.saveApiKey(getApplication(), clean)
-        _uiState.update {
-            it.copy(
-                elevenLabsApiKey = clean,
-                ttsUiState = it.ttsUiState.copy(
-                    missingApiKey = if (it.ttsEngineMode == TtsEngineMode.ELEVENLABS_PERSONAL) clean.isBlank() else false,
-                    errorMessage = if (clean.isNotBlank()) null else it.ttsUiState.errorMessage,
-                ),
-            )
-        }
-        if (clean.isNotBlank()) {
-            postBanner(t(_uiState.value.language, "elevenlabs_key_saved"))
-        }
-    }
-
-    fun updateElevenLabsStability(stability: Float) {
-        val clamped = clamp(stability, 0.05f, 0.98f)
-        ElevenLabsClient.saveStability(getApplication(), clamped)
-        _uiState.update { it.copy(elevenLabsStability = clamped) }
-    }
-
-    fun updateElevenLabsSimilarity(similarity: Float) {
-        val clamped = clamp(similarity, 0.05f, 1.0f)
-        ElevenLabsClient.saveSimilarity(getApplication(), clamped)
-        _uiState.update { it.copy(elevenLabsSimilarity = clamped) }
+    // TTS Studio (100% Online Cloud-Only: Free Unlimited Open Neural TTS + Studio Luxury FFmpeg Filter)
+    fun setStudioLuxuryEnhancement(enabled: Boolean) {
+        FreeEmotionalTtsClient.saveStudioLuxuryEnhancement(getApplication(), enabled)
+        _uiState.update { it.copy(studioLuxuryEnhancement = enabled) }
     }
 
     private fun releaseTtsPreviewPlayer() {
@@ -2367,7 +2326,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         val lang = _uiState.value.language
-        val engineMode = _uiState.value.ttsEngineMode
+        val engineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL
         val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
         if (offlineMsg != null) {
             stopTtsPreview()
@@ -2383,21 +2342,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             postBanner(offlineMsg)
             return
         }
-        if (engineMode == TtsEngineMode.ELEVENLABS_PERSONAL && ElevenLabsClient.getSavedApiKey(getApplication()).isBlank()) {
-            val keyMsg = t(lang, "elevenlabs_missing_key_banner")
-            stopTtsPreview()
-            _uiState.update {
-                it.copy(
-                    ttsUiState = TtsStudioUiState(
-                        selectedEngine = engineMode,
-                        missingApiKey = true,
-                        errorMessage = keyMsg,
-                    ),
-                )
-            }
-            postBanner(keyMsg)
-            return
-        }
         viewModelScope.launch {
             stopTtsPreview()
             _uiState.update {
@@ -2408,7 +2352,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         isPreviewing = false,
                         isGenerating = false,
                         usedFallbackEngine = false,
-                        missingApiKey = false,
                         isOffline = false,
                         errorMessage = null,
                     ),
@@ -2423,10 +2366,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 style = style,
                 speechRate = speechRate,
                 pitch = pitch,
-                stability = cur.elevenLabsStability,
-                similarity = cur.elevenLabsSimilarity,
-                engineMode = engineMode,
                 language = lang,
+                studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
             )
             when (outcome) {
                 is VoiceRouteOutcome.Success -> {
@@ -2469,19 +2410,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             )
                         }
                     }
-                }
-                VoiceRouteOutcome.MissingApiKey -> {
-                    val keyMsg = t(lang, "elevenlabs_missing_key_banner")
-                    _uiState.update {
-                        it.copy(
-                            ttsUiState = TtsStudioUiState(
-                                selectedEngine = engineMode,
-                                missingApiKey = true,
-                                errorMessage = keyMsg,
-                            ),
-                        )
-                    }
-                    postBanner(keyMsg)
                 }
                 VoiceRouteOutcome.Offline -> {
                     val err = OnlineGuard.offlineErrorMessage(lang)
@@ -2533,7 +2461,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         if (text.isBlank()) return
         val lang = _uiState.value.language
-        val engineMode = _uiState.value.ttsEngineMode
+        val engineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL
         val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
         if (offlineMsg != null) {
             stopTtsPreview()
@@ -2547,21 +2475,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             postBanner(offlineMsg)
-            return
-        }
-        if (engineMode == TtsEngineMode.ELEVENLABS_PERSONAL && ElevenLabsClient.getSavedApiKey(getApplication()).isBlank()) {
-            val keyMsg = t(lang, "elevenlabs_missing_key_banner")
-            stopTtsPreview()
-            _uiState.update {
-                it.copy(
-                    ttsUiState = TtsStudioUiState(
-                        selectedEngine = engineMode,
-                        missingApiKey = true,
-                        errorMessage = keyMsg,
-                    ),
-                )
-            }
-            postBanner(keyMsg)
             return
         }
         viewModelScope.launch {
@@ -2586,10 +2499,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     style = style,
                     speechRate = speechRate,
                     pitch = pitch,
-                    stability = cur.elevenLabsStability,
-                    similarity = cur.elevenLabsSimilarity,
-                    engineMode = engineMode,
                     language = lang,
+                    studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -2614,13 +2525,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         } else {
                             rawBuf
                         }
-                        setActiveBuffer(finalBuf, recordUndo = isAppend, resetDspOnNewEntry = !isAppend)
+                        setActiveBuffer(
+                            buf = finalBuf,
+                            recordUndo = existing != null,
+                            resetDspOnNewEntry = existing == null && !isAppend,
+                        )
                         val dialectLabel = t(lang, dialect.titleKey)
-                        val engineTag = if (outcome.engineUsed == TtsEngineMode.ELEVENLABS_PERSONAL) {
-                            "ElevenLabs"
-                        } else {
-                            "Sonix Neural"
-                        }
+                        val engineTag = if (cur.studioLuxuryEnhancement) "Sonix Neural • Studio" else "Sonix Neural"
                         repository.indexAudioRecording("$engineTag • $dialectLabel", rawBuf, RecordingSourceType.TTS)
                         _uiState.update {
                             it.copy(
@@ -2632,19 +2543,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             )
                         }
                         postBanner("تم توليد وإدراج الصوت البشري ذو المشاعر ($dialectLabel) إلى الاستوديو")
-                    }
-                    VoiceRouteOutcome.MissingApiKey -> {
-                        val keyMsg = t(lang, "elevenlabs_missing_key_banner")
-                        _uiState.update {
-                            it.copy(
-                                ttsUiState = TtsStudioUiState(
-                                    selectedEngine = engineMode,
-                                    missingApiKey = true,
-                                    errorMessage = keyMsg,
-                                ),
-                            )
-                        }
-                        postBanner(keyMsg)
                     }
                     VoiceRouteOutcome.Offline -> {
                         val err = OnlineGuard.offlineErrorMessage(lang)

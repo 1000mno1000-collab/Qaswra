@@ -610,7 +610,6 @@ enum class TtsGender {
 
 enum class TtsEngineMode {
     FREE_EMOTIONAL_NEURAL,
-    ELEVENLABS_PERSONAL,
 }
 
 enum class TtsDeliveryStyle(
@@ -618,20 +617,18 @@ enum class TtsDeliveryStyle(
     val rateFactor: Float,
     val pitchOffsetHz: Int,
     val warmthDb: Float,
-    val elevenLabsStyle: Float,
-    val elevenLabsStabilityDelta: Float,
     val ssmlExpressAsStyle: String? = null,
     val ssmlStyleDegree: Float = 1.0f,
     val volumeDeltaPercent: Int = 0,
     val breathPauseMs: Int = 210,
 ) {
-    NATURAL_WARM("tts_style_natural", 1.0f, 0, 2.5f, 0.28f, 0.0f, null, 1.0f, 0, 210),
-    ENERGETIC("tts_style_energetic", 1.09f, 8, 1.6f, 0.58f, -0.06f, "cheerful", 1.35f, 4, 150),
-    SAD("tts_style_sad", 0.86f, -7, 3.4f, 0.35f, 0.14f, "sad", 1.25f, -6, 360),
-    ANGRY("tts_style_angry", 1.12f, 6, 1.2f, 0.78f, -0.18f, "angry", 1.4f, 10, 130),
-    DRAMATIC("tts_style_dramatic", 0.91f, -6, 3.8f, 0.72f, -0.14f, "dramatic", 1.35f, 2, 380),
-    RADIO_ANCHOR("tts_style_radio", 0.96f, -6, 4.0f, 0.40f, 0.08f, "newscast", 1.1f, 2, 190),
-    STORYTELLING("tts_style_story", 0.92f, -2, 3.0f, 0.48f, 0.02f, "narration-relaxed", 1.15f, 0, 290),
+    NATURAL_WARM("tts_style_natural", 1.0f, 0, 2.5f, null, 1.0f, 0, 210),
+    ENERGETIC("tts_style_energetic", 1.09f, 8, 1.6f, "cheerful", 1.35f, 4, 150),
+    SAD("tts_style_sad", 0.86f, -7, 3.4f, "sad", 1.25f, -6, 360),
+    ANGRY("tts_style_angry", 1.12f, 6, 1.2f, "angry", 1.4f, 10, 130),
+    DRAMATIC("tts_style_dramatic", 0.91f, -6, 3.8f, "dramatic", 1.35f, 2, 380),
+    RADIO_ANCHOR("tts_style_radio", 0.96f, -6, 4.0f, "newscast", 1.1f, 2, 190),
+    STORYTELLING("tts_style_story", 0.92f, -2, 3.0f, "narration-relaxed", 1.15f, 0, 290),
 }
 
 data class TtsDialect(
@@ -819,7 +816,6 @@ data class TtsStudioUiState(
     val isPreviewing: Boolean = false,
     val isGenerating: Boolean = false,
     val usedFallbackEngine: Boolean = false,
-    val missingApiKey: Boolean = false,
     val isOffline: Boolean = false,
     val errorMessage: String? = null,
 )

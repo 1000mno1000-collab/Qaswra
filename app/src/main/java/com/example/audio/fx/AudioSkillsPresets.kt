@@ -24,7 +24,7 @@ import kotlin.math.tanh
 
 object AudioSkillsPresets {
 
-    // 1. مهارة تحويل الصوت البشري إلى جودة استوديو دافئة (موازي لـ ElevenLabs)
+    // 1. مهارة تحويل الصوت البشري إلى جودة استوديو دافئة احترافية
     const val STUDIO_VOCAL_MASTERING =
         "highpass=f=75,equalizer=f=180:width_type=h:width=120:g=3,equalizer=f=8000:width_type=h:width=2000:g=2,acompressor=threshold=-20dB:ratio=3:attack=10:release=80,aecho=0.8:0.88:18:0.12,loudnorm=I=-16:TP=-1.5:LRA=11"
 

@@ -19,7 +19,6 @@ import java.net.URLEncoder
 
 sealed interface VoiceRouteOutcome {
     data class Success(val result: EdgeTtsSynthResult, val engineUsed: TtsEngineMode) : VoiceRouteOutcome
-    data object MissingApiKey : VoiceRouteOutcome
     data object Offline : VoiceRouteOutcome
     data class ProviderError(val message: String) : VoiceRouteOutcome
 }
@@ -27,9 +26,8 @@ sealed interface VoiceRouteOutcome {
 class SmartVoiceRouter {
 
     /**
-     * يوجّه النص إلى محرك الصوت البشري السحابي المختار (100% أونلاين، بدون صوت روبوتي أوفلاين):
-     * - [TtsEngineMode.FREE_EMOTIONAL_NEURAL]: المحرك المجاني بلا حدود عبر Edge-TTS WebSocket + SSML بالمشاعر.
-     * - [TtsEngineMode.ELEVENLABS_PERSONAL]: محرك ElevenLabs (eleven_multilingual_v2) بمفتاح المستخدم الشخصي.
+     * يوجّه النص مباشرة إلى محرك الصوت البشري السحابي المجاني المفتوح (100% أونلاين، بدون مفتاح API):
+     * [TtsEngineMode.FREE_EMOTIONAL_NEURAL]: Edge-TTS WebSocket + SSML بالمشاعر مع تحسين الفخامة الاستوديو.
      */
     suspend fun synthesizeStudioVoiceWithStatus(
         context: Context,
@@ -39,64 +37,32 @@ class SmartVoiceRouter {
         style: TtsDeliveryStyle,
         speechRate: Float,
         pitch: Float,
-        engineMode: TtsEngineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL,
         language: AppLanguage = AppLanguage.AR,
-        stability: Float = ElevenLabsClient.getSavedStability(context),
-        similarity: Float = ElevenLabsClient.getSavedSimilarity(context),
+        studioLuxuryEnhancement: Boolean = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(context),
     ): VoiceRouteOutcome = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return@withContext VoiceRouteOutcome.ProviderError("النص فارغ")
         if (!OnlineGuard.isOnline(context)) return@withContext VoiceRouteOutcome.Offline
 
-        when (engineMode) {
-            TtsEngineMode.FREE_EMOTIONAL_NEURAL -> {
-                when (
-                    val freeOutcome = FreeEmotionalTtsClient.synthesize(
-                        context = context,
-                        text = cleanText,
-                        dialect = dialect,
-                        gender = gender,
-                        style = style,
-                        speechRate = speechRate,
-                        pitch = pitch,
-                        language = language,
-                    )
-                ) {
-                    is FreeEmotionalTtsOutcome.Success -> VoiceRouteOutcome.Success(
-                        result = freeOutcome.result,
-                        engineUsed = TtsEngineMode.FREE_EMOTIONAL_NEURAL,
-                    )
-                    is FreeEmotionalTtsOutcome.Offline -> VoiceRouteOutcome.Offline
-                    is FreeEmotionalTtsOutcome.Error -> VoiceRouteOutcome.ProviderError(freeOutcome.message)
-                }
-            }
-            TtsEngineMode.ELEVENLABS_PERSONAL -> {
-                val elevenKey = ElevenLabsClient.getSavedApiKey(context)
-                if (elevenKey.isBlank()) {
-                    return@withContext VoiceRouteOutcome.MissingApiKey
-                }
-                when (
-                    val elOutcome = ElevenLabsClient.synthesize(
-                        context = context,
-                        text = cleanText,
-                        dialect = dialect,
-                        gender = gender,
-                        style = style,
-                        speechRate = speechRate,
-                        pitch = pitch,
-                        stability = stability,
-                        similarityBoost = similarity,
-                    )
-                ) {
-                    is ElevenLabsOutcome.Success -> VoiceRouteOutcome.Success(
-                        result = elOutcome.result,
-                        engineUsed = TtsEngineMode.ELEVENLABS_PERSONAL,
-                    )
-                    ElevenLabsOutcome.MissingApiKey -> VoiceRouteOutcome.MissingApiKey
-                    ElevenLabsOutcome.Offline -> VoiceRouteOutcome.Offline
-                    is ElevenLabsOutcome.ApiError -> VoiceRouteOutcome.ProviderError(elOutcome.detail)
-                }
-            }
+        when (
+            val freeOutcome = FreeEmotionalTtsClient.synthesize(
+                context = context,
+                text = cleanText,
+                dialect = dialect,
+                gender = gender,
+                style = style,
+                speechRate = speechRate,
+                pitch = pitch,
+                language = language,
+                studioLuxuryEnhancement = studioLuxuryEnhancement,
+            )
+        ) {
+            is FreeEmotionalTtsOutcome.Success -> VoiceRouteOutcome.Success(
+                result = freeOutcome.result,
+                engineUsed = TtsEngineMode.FREE_EMOTIONAL_NEURAL,
+            )
+            is FreeEmotionalTtsOutcome.Offline -> VoiceRouteOutcome.Offline
+            is FreeEmotionalTtsOutcome.Error -> VoiceRouteOutcome.ProviderError(freeOutcome.message)
         }
     }
 
@@ -257,7 +223,7 @@ class SmartVoiceRouter {
             lower.startsWith("ar") -> if (isFemale) listOf("Zeina", "Hala") else listOf("Zayd", "Zeina")
             lower.startsWith("en") -> if (isFemale) listOf("Joanna", "Amy") else listOf("Matthew", "Brian")
             lower.startsWith("tr") -> listOf("Filiz")
-            lower.startsWith("fa") -> emptyList() // Use Google HD fa-IR directly instead of mispronounced non-Persian voice
+            lower.startsWith("fa") -> emptyList()
             else -> listOf("Brian")
         }
     }
