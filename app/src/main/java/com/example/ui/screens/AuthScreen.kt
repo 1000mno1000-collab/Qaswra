@@ -83,6 +83,7 @@ import com.example.viewmodel.StudioViewModel
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
@@ -134,11 +135,14 @@ fun AuthScreen(
         onPasswordChange = { password = it },
         onGoogleSignIn = {
             if (isSubmitting || isGoogleLoading) return@AuthScreenContent
-            if (defaultWebClientId.isBlank()) {
+            if (defaultWebClientId.isBlank() ||
+                defaultWebClientId == "default_client_id" ||
+                FirebaseApp.getApps(context).isEmpty()
+            ) {
                 errorMsg = if (lang == AppLanguage.EN) {
-                    "Google Sign-In client configuration is unavailable."
+                    "Google Sign-In requires Firebase configuration (google-services.json). Use email sign-in or continue as guest."
                 } else {
-                    "معرّف عميل Google غير متوفر."
+                    "يتطلب تسجيل الدخول عبر Google ملف إعداد Firebase (google-services.json). يمكنك استخدام البريد الإلكتروني أو المتابعة كضيف."
                 }
                 return@AuthScreenContent
             }

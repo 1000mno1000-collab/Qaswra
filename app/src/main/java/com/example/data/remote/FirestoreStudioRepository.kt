@@ -24,6 +24,7 @@ import com.example.model.StudioPreset
 import com.example.model.TimeStretchParams
 import com.example.model.TrebleParams
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.DocumentSnapshot
@@ -36,6 +37,7 @@ import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlin.math.abs
@@ -312,16 +314,21 @@ object DspConfigFirestoreMapper {
 }
 
 class FirestoreStudioRepository(context: Context) {
-    private val db: FirebaseFirestore = FirebaseFirestore.getInstance(
-        context.applicationContext.getString(R.string.firestore_database_id),
-    )
+    private val appContext = context.applicationContext
+
+    private fun dbOrNull(): FirebaseFirestore? {
+        if (FirebaseApp.getApps(appContext).isEmpty()) return null
+        return runCatching {
+            FirebaseFirestore.getInstance(appContext.getString(R.string.firestore_database_id))
+        }.getOrNull()
+    }
 
     private fun handleFirestoreError(
         exception: Throwable,
         operationType: OperationType,
         path: String,
     ) {
-        val currentUser = Firebase.auth.currentUser
+        val currentUser = runCatching { Firebase.auth.currentUser }.getOrNull()
         val providerIds = currentUser?.providerData?.map { it.providerId }?.joinToString(",") ?: "none"
         val errJson = buildString {
             append("{")
@@ -344,6 +351,7 @@ class FirestoreStudioRepository(context: Context) {
     }
 
     fun observeCustomPresets(userId: String): Flow<List<StudioPreset>> {
+        val db = dbOrNull() ?: return flowOf(emptyList())
         val path = "users/$userId/custom_presets"
         return db.collection("users")
             .document(userId)
@@ -384,6 +392,8 @@ class FirestoreStudioRepository(context: Context) {
         description: String,
         config: DspConfig,
     ): Result<String> {
+        val db = dbOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase is not configured (missing google-services.json)"))
         val cleanName = name.trim().take(80)
         if (cleanName.isEmpty()) {
             return Result.failure(IllegalArgumentException("Preset name cannot be blank"))
@@ -412,6 +422,8 @@ class FirestoreStudioRepository(context: Context) {
     }
 
     suspend fun deleteCustomPreset(userId: String, docId: String): Result<Unit> {
+        val db = dbOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase is not configured (missing google-services.json)"))
         val path = "users/$userId/custom_presets/$docId"
         return try {
             db.collection("users")
@@ -429,6 +441,7 @@ class FirestoreStudioRepository(context: Context) {
     }
 
     fun observeDrafts(userId: String): Flow<List<CloudDraft>> {
+        val db = dbOrNull() ?: return flowOf(emptyList())
         val path = "users/$userId/drafts"
         return db.collection("users")
             .document(userId)
@@ -477,6 +490,8 @@ class FirestoreStudioRepository(context: Context) {
         sampleRate: Int,
         config: DspConfig,
     ): Result<String> {
+        val db = dbOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase is not configured (missing google-services.json)"))
         val cleanName = name.trim().take(100)
         if (cleanName.isEmpty()) {
             return Result.failure(IllegalArgumentException("Draft name cannot be blank"))
@@ -524,6 +539,8 @@ class FirestoreStudioRepository(context: Context) {
     }
 
     suspend fun deleteDraft(userId: String, draftId: String): Result<Unit> {
+        val db = dbOrNull()
+            ?: return Result.failure(IllegalStateException("Firebase is not configured (missing google-services.json)"))
         val path = "users/$userId/drafts/$draftId"
         return try {
             db.collection("users")
