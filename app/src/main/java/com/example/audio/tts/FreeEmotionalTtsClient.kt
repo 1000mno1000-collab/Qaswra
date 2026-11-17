@@ -109,6 +109,7 @@ object FreeEmotionalTtsClient {
 
         val collectedErrors = mutableListOf<String>()
         var result = synthesizeViaPollinationsAudio(
+            context = context,
             cacheDir = cacheDir,
             text = cleanText,
             dialect = dialect,
@@ -119,6 +120,7 @@ object FreeEmotionalTtsClient {
 
         if (result.buffer == null || result.buffer.frameCount <= 0) {
             result = synthesizeViaPollinationsAudio(
+                context = context,
                 cacheDir = cacheDir,
                 text = cleanText,
                 dialect = dialect,
@@ -205,6 +207,7 @@ object FreeEmotionalTtsClient {
     }
 
     private suspend fun synthesizeViaPollinationsAudio(
+        context: Context,
         cacheDir: File,
         text: String,
         dialect: TtsDialect,
@@ -239,6 +242,7 @@ object FreeEmotionalTtsClient {
 
             val outcome = NetworkImmunityManager.fetchAudioWithFallback(
                 urls = listOf(primaryUrl, mirrorUrl),
+                context = context,
                 headers = mapOf("Referer" to "https://pollinations.ai/"),
                 timeoutMs = 30_000L,
                 providerLabel = "Pollinations($voice)",

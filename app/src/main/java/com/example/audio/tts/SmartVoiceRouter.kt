@@ -74,13 +74,15 @@ class SmartVoiceRouter {
         text: String,
         voiceCode: String = "ar-IQ-BasselNeural",
         outputFile: File,
+        context: Context? = null,
     ): Boolean = withContext(Dispatchers.IO) {
         val cleanText = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim())
         if (cleanText.isEmpty()) return@withContext false
+        if (!NetworkImmunityManager.pingReachable(context)) return@withContext false
 
         outputFile.parentFile?.mkdirs()
 
-        if (tryPollinationsOpenAiAudio(cleanText, voiceCode, outputFile) && outputFile.length() > 512L) {
+        if (tryPollinationsOpenAiAudio(cleanText, voiceCode, outputFile, context) && outputFile.length() > 512L) {
             return@withContext true
         }
 
@@ -90,7 +92,7 @@ class SmartVoiceRouter {
             voiceName = voiceCode,
             localeTag = localeTag,
         )
-        if (edgeBytes != null && isLikelyAudioPayload(edgeBytes)) {
+        if (edgeBytes != null && NetworkImmunityManager.isValidAudioPayload(edgeBytes, "audio/mpeg")) {
             val wrote = runCatching {
                 outputFile.writeBytes(edgeBytes)
                 outputFile.length() > 512L
@@ -98,7 +100,7 @@ class SmartVoiceRouter {
             if (wrote) return@withContext true
         }
 
-        val streamOk = tryStreamElementsNeural(cleanText, voiceCode, outputFile)
+        val streamOk = tryStreamElementsNeural(cleanText, voiceCode, outputFile, context)
         streamOk && outputFile.length() > 512L
     }
 
@@ -127,7 +129,12 @@ class SmartVoiceRouter {
         }
     }
 
-    private suspend fun tryPollinationsOpenAiAudio(text: String, voiceCode: String, out: File): Boolean {
+    private suspend fun tryPollinationsOpenAiAudio(
+        text: String,
+        voiceCode: String,
+        out: File,
+        context: Context? = null,
+    ): Boolean {
         val lower = voiceCode.lowercase()
         val isFemale = lower.contains("rana") || lower.contains("zariyah") ||
             lower.contains("salma") || lower.contains("amany") ||
@@ -142,6 +149,7 @@ class SmartVoiceRouter {
         val fallbackUrl = "https://text.pollinations.ai/$encoded?model=openai-audio&voice=alloy"
         val outcome = NetworkImmunityManager.fetchAudioWithFallback(
             urls = listOf(primaryUrl, fallbackUrl),
+            context = context,
             headers = mapOf("Referer" to "https://pollinations.ai/"),
             providerLabel = "SmartVoiceRouter.Pollinations",
         )
@@ -152,7 +160,12 @@ class SmartVoiceRouter {
         }.getOrDefault(false)
     }
 
-    private suspend fun tryStreamElementsNeural(text: String, voiceCode: String, out: File): Boolean {
+    private suspend fun tryStreamElementsNeural(
+        text: String,
+        voiceCode: String,
+        out: File,
+        context: Context? = null,
+    ): Boolean {
         val seVoices = resolveStreamElementsVoices(voiceCode)
         if (seVoices.isEmpty()) return false
 
@@ -165,6 +178,7 @@ class SmartVoiceRouter {
                 val apiUrl = "https://api.streamelements.com/kappa/v2/speech?voice=$seVoice&text=$encoded"
                 val outcome = NetworkImmunityManager.fetchAudioWithFallback(
                     urls = listOf(apiUrl),
+                    context = context,
                     providerLabel = "StreamElements($seVoice)",
                 )
                 val chunkBytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes

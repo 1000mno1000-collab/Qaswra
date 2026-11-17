@@ -938,6 +938,14 @@ fun HomeScreen(
                 }
             }
 
+            item(key = "support_updates_qa_section", contentType = "support_updates_qa_section") {
+                SupportUpdatesQaSection(
+                    uiState = uiState,
+                    viewModel = viewModel,
+                    onOpenFullLab = { onNavigate(StudioRoute.SmartQaLab) },
+                )
+            }
+
             item(key = "home_bottom_spacer", contentType = "spacer") {
                 Spacer(Modifier.height(10.dp))
             }

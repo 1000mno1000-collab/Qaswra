@@ -30,6 +30,7 @@ import com.example.audio.ai.SmartAssistantAndSearch
 import com.example.audio.ai.ToolGuideResult
 import com.example.audio.fx.VoiceEffect
 import com.example.audio.fx.VoiceProcessor
+import com.example.audio.network.NetworkImmunityManager
 import com.example.audio.processReelsAudioTemplate
 import com.example.audio.tts.FreeEmotionalTtsClient
 import com.example.audio.tts.SmartVoiceRouter
@@ -2297,9 +2298,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // AI Studio (100% Online Only — guarded by OnlineGuard)
+    // AI Studio (100% Online Only — guarded by OnlineGuard & 6-Layer NetworkImmunityManager)
     fun transcribeActiveAudio() {
-        val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), _uiState.value.language)
+        val lang = _uiState.value.language
+        val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), lang)
         if (offlineErr != null) {
             _uiState.update {
                 it.copy(
@@ -2324,25 +2326,53 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
             return
         }
-        viewModelScope.launch {
+        activeOnlineJob?.cancel()
+        activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             _uiState.update {
-                it.copy(transcriptionState = AiStreamState(isLoading = true))
+                it.copy(
+                    isOnlineTaskRunning = true,
+                    onlineTaskLabel = "AI Transcription",
+                    transcriptionState = AiStreamState(isLoading = true),
+                )
             }
-            when (val res = aiRepository.transcribeAudio(src, _uiState.value.language)) {
-                is AiResponse.Success -> _uiState.update {
-                    it.copy(
-                        transcriptionState = AiStreamState(
-                            isLoading = false,
-                            outputText = res.text,
-                        ),
-                    )
+            try {
+                if (!NetworkImmunityManager.pingReachable(getApplication())) {
+                    val netErr = OnlineGuard.offlineErrorMessage(lang)
+                    _uiState.update {
+                        it.copy(
+                            transcriptionState = AiStreamState(
+                                isLoading = false,
+                                errorMessage = netErr,
+                            ),
+                        )
+                    }
+                    postBanner(netErr)
+                    return@launch
                 }
-                is AiResponse.NeedsCloudProvisioning -> _uiState.update {
+                when (val res = aiRepository.transcribeAudio(src, lang)) {
+                    is AiResponse.Success -> _uiState.update {
+                        it.copy(
+                            transcriptionState = AiStreamState(
+                                isLoading = false,
+                                outputText = res.text,
+                            ),
+                        )
+                    }
+                    is AiResponse.NeedsCloudProvisioning -> _uiState.update {
+                        it.copy(
+                            transcriptionState = AiStreamState(
+                                isLoading = false,
+                                errorMessage = res.message,
+                            ),
+                        )
+                    }
+                }
+            } finally {
+                _uiState.update {
                     it.copy(
-                        transcriptionState = AiStreamState(
-                            isLoading = false,
-                            errorMessage = res.message,
-                        ),
+                        isOnlineTaskRunning = false,
+                        onlineTaskLabel = "",
+                        transcriptionState = it.transcriptionState.copy(isLoading = false),
                     )
                 }
             }
@@ -2391,7 +2421,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun askSearchAssistant(query: String) {
         if (query.isBlank()) return
-        val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), _uiState.value.language)
+        val lang = _uiState.value.language
+        val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), lang)
         if (offlineErr != null) {
             _uiState.update {
                 it.copy(
@@ -2404,27 +2435,55 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             postBanner(offlineErr)
             return
         }
-        viewModelScope.launch {
+        activeOnlineJob?.cancel()
+        activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             _uiState.update {
-                it.copy(searchAssistantState = AiStreamState(isLoading = true))
+                it.copy(
+                    isOnlineTaskRunning = true,
+                    onlineTaskLabel = "AI Knowledge Search",
+                    searchAssistantState = AiStreamState(isLoading = true),
+                )
             }
-            when (val res = aiRepository.askSearchAssistant(query.trim(), _uiState.value.language)) {
-                is AiResponse.Success -> _uiState.update {
-                    it.copy(
-                        searchAssistantState = AiStreamState(
-                            isLoading = false,
-                            outputText = res.text,
-                            searchQueries = res.searchQueries,
-                            sources = res.sources,
-                        ),
-                    )
+            try {
+                if (!NetworkImmunityManager.pingReachable(getApplication())) {
+                    val netErr = OnlineGuard.offlineErrorMessage(lang)
+                    _uiState.update {
+                        it.copy(
+                            searchAssistantState = AiStreamState(
+                                isLoading = false,
+                                errorMessage = netErr,
+                            ),
+                        )
+                    }
+                    postBanner(netErr)
+                    return@launch
                 }
-                is AiResponse.NeedsCloudProvisioning -> _uiState.update {
+                when (val res = aiRepository.askSearchAssistant(query.trim(), lang)) {
+                    is AiResponse.Success -> _uiState.update {
+                        it.copy(
+                            searchAssistantState = AiStreamState(
+                                isLoading = false,
+                                outputText = res.text,
+                                searchQueries = res.searchQueries,
+                                sources = res.sources,
+                            ),
+                        )
+                    }
+                    is AiResponse.NeedsCloudProvisioning -> _uiState.update {
+                        it.copy(
+                            searchAssistantState = AiStreamState(
+                                isLoading = false,
+                                errorMessage = res.message,
+                            ),
+                        )
+                    }
+                }
+            } finally {
+                _uiState.update {
                     it.copy(
-                        searchAssistantState = AiStreamState(
-                            isLoading = false,
-                            errorMessage = res.message,
-                        ),
+                        isOnlineTaskRunning = false,
+                        onlineTaskLabel = "",
+                        searchAssistantState = it.searchAssistantState.copy(isLoading = false),
                     )
                 }
             }
@@ -3599,7 +3658,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             try {
-                val turn = SmartAssistantAndSearch.askPollinationsChat(historyBefore, clean, lang)
+                if (!NetworkImmunityManager.pingReachable(getApplication())) {
+                    val pingOffline = OnlineGuard.offlineErrorMessage(lang)
+                    _uiState.update { it.copy(assistantGuideOfflineError = pingOffline) }
+                    postBanner(pingOffline)
+                    return@launch
+                }
+                val turn = SmartAssistantAndSearch.askPollinationsChat(
+                    history = historyBefore,
+                    userMessage = clean,
+                    language = lang,
+                    context = getApplication(),
+                )
                 val botMsg = AssistantChatMessage(
                     id = "a_${UUID.randomUUID()}",
                     isUser = false,
@@ -3678,7 +3748,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             try {
-                val grouped = SmartAssistantAndSearch.searchOnlineCatalog(query, cat)
+                if (!NetworkImmunityManager.pingReachable(getApplication())) {
+                    val pingOffline = OnlineGuard.offlineErrorMessage(lang)
+                    _uiState.update { it.copy(soundSearchOfflineError = pingOffline) }
+                    postBanner(pingOffline)
+                    return@launch
+                }
+                val grouped = SmartAssistantAndSearch.searchOnlineCatalog(
+                    query = query,
+                    category = cat,
+                    context = getApplication(),
+                )
                 _uiState.update { it.copy(onlineSoundCategories = grouped) }
                 if (grouped.isEmpty()) {
                     postBanner("لم يتم العثور على نتائج حالياً — جرب كلمة بحث أخرى")
@@ -3700,7 +3780,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             stopOnlineSoundPreview()
             return
         }
-        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), _uiState.value.language)
+        val lang = _uiState.value.language
+        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
         if (offlineMsg != null) {
             _uiState.update { it.copy(soundSearchOfflineError = offlineMsg) }
             postBanner(offlineMsg)
@@ -3711,9 +3792,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         stopMixPreviewPlayer()
         _uiState.update { it.copy(previewingOnlineUrl = item.streamUrl, soundSearchOfflineError = null) }
         viewModelScope.launch(Dispatchers.IO) {
+            if (!NetworkImmunityManager.pingReachable(getApplication())) {
+                val pingOffline = OnlineGuard.offlineErrorMessage(lang)
+                _uiState.update { it.copy(soundSearchOfflineError = pingOffline) }
+                stopOnlineSoundPreview()
+                postBanner(pingOffline)
+                return@launch
+            }
+            val safeUrl = NetworkImmunityManager.enforceHttps(item.streamUrl)
             val mp = MediaPlayer()
             val ok = runCatching {
-                mp.setDataSource(item.streamUrl)
+                mp.setDataSource(safeUrl)
                 mp.setOnPreparedListener { startedMp ->
                     if (_uiState.value.previewingOnlineUrl == item.streamUrl) {
                         startedMp.start()
@@ -3748,16 +3837,32 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun importOnlineSoundToStudio(item: OnlineSoundItem) {
-        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), _uiState.value.language)
+        val lang = _uiState.value.language
+        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
         if (offlineMsg != null) {
             _uiState.update { it.copy(soundSearchOfflineError = offlineMsg) }
             postBanner(offlineMsg)
             return
         }
-        viewModelScope.launch {
+        activeOnlineJob?.cancel()
+        activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             stopOnlineSoundPreview()
-            _uiState.update { it.copy(isBusy = true, loadingOnlineSoundId = item.identifier) }
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    isOnlineTaskRunning = true,
+                    onlineTaskLabel = "Archive Audio Download",
+                    loadingOnlineSoundId = item.identifier,
+                    soundSearchOfflineError = null,
+                )
+            }
             try {
+                if (!NetworkImmunityManager.pingReachable(getApplication())) {
+                    val pingOffline = OnlineGuard.offlineErrorMessage(lang)
+                    _uiState.update { it.copy(soundSearchOfflineError = pingOffline) }
+                    postBanner(pingOffline)
+                    return@launch
+                }
                 val buf = SmartAssistantAndSearch.downloadSoundToStudioBuffer(getApplication(), item)
                 if (buf == null || buf.frameCount == 0) {
                     postBanner("تعذر تحميل الصوت من Archive.org — حاول مقطعاً آخر")
@@ -3768,7 +3873,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 repository.indexAudioRecording(item.title.take(40), buf, RecordingSourceType.IMPORTED)
                 postBanner("تمت إضافة \"${item.title.take(28)}\" بالصوت النقي إلى الاستوديو")
             } finally {
-                _uiState.update { it.copy(isBusy = false, loadingOnlineSoundId = null) }
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isOnlineTaskRunning = false,
+                        onlineTaskLabel = "",
+                        loadingOnlineSoundId = null,
+                    )
+                }
             }
         }
     }
@@ -3776,6 +3888,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun cancelActiveOnlineRequest() {
         activeOnlineJob?.cancel()
         activeOnlineJob = null
+        stopOnlineSoundPreview()
+        releaseTtsPreviewPlayer()
         _uiState.update {
             it.copy(
                 isBusy = false,
@@ -3784,9 +3898,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 isExtractingArticle = false,
                 isLoadingAiGuide = false,
                 isSearchingOnlineSounds = false,
+                loadingOnlineSoundId = null,
                 updateCheckLoading = false,
+                transcriptionState = it.transcriptionState.copy(isLoading = false),
+                searchAssistantState = it.searchAssistantState.copy(isLoading = false),
                 ttsUiState = it.ttsUiState.copy(
                     isSynthesizingPreview = false,
+                    isPreviewing = false,
                     isGenerating = false,
                 ),
             )

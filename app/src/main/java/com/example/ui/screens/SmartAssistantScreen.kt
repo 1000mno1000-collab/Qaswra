@@ -40,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -302,18 +303,40 @@ fun SmartAssistantScreen(
                                     .fillMaxWidth()
                                     .padding(vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
                             ) {
-                                CircularProgressIndicator(
-                                    color = StudioColors.Cyan,
-                                    strokeWidth = 2.dp,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Text(
-                                    text = if (lang == AppLanguage.EN) "Thinking..." else "جاري التحليل...",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = StudioColors.Cyan,
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    CircularProgressIndicator(
+                                        color = StudioColors.Cyan,
+                                        strokeWidth = 2.dp,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Text(
+                                        text = if (lang == AppLanguage.EN) "Thinking..." else "جاري التحليل...",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = StudioColors.Cyan,
+                                    )
+                                }
+
+                                val cancelGuideInt = remember { MutableInteractionSource() }
+                                OutlinedButton(
+                                    onClick = { viewModel.cancelActiveOnlineRequest() },
+                                    interactionSource = cancelGuideInt,
+                                    border = BorderStroke(1.dp, StudioColors.RoseBright),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .lit(cancelGuideInt, StudioColors.RoseBright, cornerRadius = 10.dp)
+                                        .testTag("assistant_guide_cancel_button"),
+                                ) {
+                                    Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(t(lang, "cancel_request"), style = MaterialTheme.typography.labelMedium)
+                                }
                             }
                         }
                     }
@@ -510,6 +533,26 @@ fun SmartAssistantScreen(
                             } else {
                                 Icon(Icons.Rounded.Search, contentDescription = t(lang, "assistant_search_btn"), modifier = Modifier.size(20.dp))
                             }
+                        }
+                    }
+
+                    if (uiState.isSearchingOnlineSounds || uiState.loadingOnlineSoundId != null) {
+                        val cancelSearchInt = remember { MutableInteractionSource() }
+                        OutlinedButton(
+                            onClick = { viewModel.cancelActiveOnlineRequest() },
+                            interactionSource = cancelSearchInt,
+                            border = BorderStroke(1.dp, StudioColors.RoseBright),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                                .lit(cancelSearchInt, StudioColors.RoseBright, cornerRadius = 12.dp)
+                                .testTag("archive_search_cancel_button"),
+                        ) {
+                            Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(t(lang, "cancel_request"))
                         }
                     }
 

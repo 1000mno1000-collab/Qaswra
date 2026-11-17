@@ -12,6 +12,7 @@ import com.example.model.AppLanguage
 import com.example.model.AssistantChatMessage
 import com.example.model.OnlineSearchCategory
 import com.example.model.StereoAudioBuffer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -266,11 +267,20 @@ object SmartAssistantAndSearch {
         history: List<AssistantChatMessage>,
         userMessage: String,
         language: AppLanguage,
+        context: Context? = null,
     ): PollinationsChatTurn = withContext(Dispatchers.IO) {
         val clean = userMessage.trim()
         if (clean.isEmpty()) {
             return@withContext PollinationsChatTurn(
                 replyText = "",
+                recommendedToolId = null,
+                recommendedToolLabel = null,
+                fromCloudAi = false,
+            )
+        }
+        if (context != null && !NetworkImmunityManager.pingReachable(context)) {
+            return@withContext PollinationsChatTurn(
+                replyText = com.example.audio.OnlineGuard.offlineErrorMessage(language),
                 recommendedToolId = null,
                 recommendedToolLabel = null,
                 fromCloudAi = false,
@@ -318,8 +328,8 @@ object SmartAssistantAndSearch {
             })
         }
 
-        val rawResponse = queryPollinationsPostMessages(messagesArray)
-            ?: queryPollinationsGet(systemPrompt, clean)
+        val rawResponse = queryPollinationsPostMessages(messagesArray, context)
+            ?: queryPollinationsGet(systemPrompt, clean, context)
 
         if (!rawResponse.isNullOrBlank()) {
             val parsedTurn = parsePollinationsChatJson(rawResponse, clean, language)
@@ -377,14 +387,21 @@ object SmartAssistantAndSearch {
         )
     }
 
-    private suspend fun queryPollinationsPostMessages(messages: JSONArray): String? {
+    private suspend fun queryPollinationsPostMessages(
+        messages: JSONArray,
+        context: Context? = null,
+    ): String? {
         val bodyJson = JSONObject().apply {
             put("messages", messages)
             put("model", "openai")
             put("jsonMode", true)
         }
         val outcome = NetworkImmunityManager.fetchTextWithFallback(
-            urls = listOf("https://text.pollinations.ai/"),
+            urls = listOf(
+                "https://text.pollinations.ai/",
+                "https://text.pollinations.ai/openai",
+            ),
+            context = context,
             headers = mapOf("Accept" to "application/json, text/plain;q=0.9, */*;q=0.8"),
             postJsonBody = bodyJson.toString(),
             timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
@@ -393,12 +410,18 @@ object SmartAssistantAndSearch {
         return (outcome as? NetworkFetchOutcome.Success)?.value?.body?.takeIf { it.isNotBlank() }
     }
 
-    private suspend fun queryPollinationsGet(systemPrompt: String, userQuery: String): String? {
+    private suspend fun queryPollinationsGet(
+        systemPrompt: String,
+        userQuery: String,
+        context: Context? = null,
+    ): String? {
         val encodedPrompt = URLEncoder.encode(userQuery, "UTF-8").replace("+", "%20")
         val encodedSys = URLEncoder.encode(systemPrompt, "UTF-8")
-        val urlStr = "https://text.pollinations.ai/$encodedPrompt?model=openai&system=$encodedSys"
+        val urlPrimary = "https://text.pollinations.ai/$encodedPrompt?model=openai&system=$encodedSys"
+        val urlFallback = "https://text.pollinations.ai/$encodedPrompt?model=openai-fast&system=$encodedSys"
         val outcome = NetworkImmunityManager.fetchTextWithFallback(
-            urls = listOf(urlStr),
+            urls = listOf(urlPrimary, urlFallback),
+            context = context,
             headers = mapOf("Accept" to "text/plain, application/json;q=0.9"),
             timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
             providerLabel = "PollinationsChatGET",
@@ -460,7 +483,11 @@ object SmartAssistantAndSearch {
     suspend fun searchOnlineCatalog(
         query: String,
         category: OnlineSearchCategory,
+        context: Context? = null,
     ): Map<String, List<OnlineSoundItem>> = withContext(Dispatchers.IO) {
+        if (context != null && !NetworkImmunityManager.pingReachable(context)) {
+            return@withContext emptyMap()
+        }
         val defaultQuery = when (category) {
             OnlineSearchCategory.VOICES_CLIPS -> "arabic speech podcast narration"
             OnlineSearchCategory.SOUND_EFFECTS -> "sound effect sfx ambient"
@@ -470,11 +497,16 @@ object SmartAssistantAndSearch {
         try {
             val searchTerms = buildArchiveQuery(cleanQuery, category)
             val encoded = URLEncoder.encode(searchTerms, "UTF-8")
+            val fallbackEncoded = URLEncoder.encode("mediatype:(audio) AND ($defaultQuery)", "UTF-8")
             val apiUrl =
                 "https://archive.org/advancedsearch.php?q=$encoded" +
                     "&fl[]=identifier,title,subject,description&rows=18&page=1&output=json"
+            val fallbackApiUrl =
+                "https://archive.org/advancedsearch.php?q=$fallbackEncoded" +
+                    "&fl[]=identifier,title,subject,description&rows=12&page=1&output=json"
             val outcome = NetworkImmunityManager.fetchTextWithFallback(
-                urls = listOf(apiUrl),
+                urls = listOf(apiUrl, fallbackApiUrl),
+                context = context,
                 timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
                 providerLabel = "ArchiveSearch",
             )
@@ -494,7 +526,7 @@ object SmartAssistantAndSearch {
                     val resolvedItems = coroutineScope {
                         rawDocs.map { (id, title, subject) ->
                             async {
-                                val directUrl = resolveDirectPlayableArchiveUrl(id)
+                                val directUrl = resolveDirectPlayableArchiveUrl(id, context)
                                     ?: return@async null
                                 val cat = classifyCategory(
                                     title = title,
@@ -516,6 +548,8 @@ object SmartAssistantAndSearch {
                     allSounds.addAll(resolvedItems)
                 }
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (_: Exception) {
             // Return cleanly empty map when network errors occur
         }
@@ -574,6 +608,8 @@ object SmartAssistantAndSearch {
                     null
                 }
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (_: Throwable) {
             null
         } finally {
@@ -582,11 +618,15 @@ object SmartAssistantAndSearch {
         }
     }
 
-    private suspend fun resolveDirectPlayableArchiveUrl(identifier: String): String? {
+    private suspend fun resolveDirectPlayableArchiveUrl(
+        identifier: String,
+        context: Context? = null,
+    ): String? {
         return try {
             val metaUrl = "https://archive.org/metadata/$identifier/files"
             val outcome = NetworkImmunityManager.fetchTextWithFallback(
                 urls = listOf(metaUrl),
+                context = context,
                 timeoutMs = 12_000L,
                 providerLabel = "ArchiveMetadata",
             )
@@ -614,6 +654,8 @@ object SmartAssistantAndSearch {
             val chosen = bestMp3 ?: bestAlt ?: return null
             val encodedFile = URLEncoder.encode(chosen, "UTF-8").replace("+", "%20")
             NetworkImmunityManager.enforceHttps("https://archive.org/download/$identifier/$encodedFile")
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (_: Exception) {
             null
         }

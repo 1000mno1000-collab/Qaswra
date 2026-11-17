@@ -144,6 +144,7 @@ import com.example.ui.screens.RingtoneMakerScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SmartAssistantScreen
 import com.example.ui.screens.SmartMusicMixerScreen
+import com.example.ui.screens.SmartQaLabScreen
 import com.example.ui.screens.SpeechToTextScreen
 import com.example.ui.screens.SurroundStereoScreen
 import com.example.ui.screens.TextToSpeechStudioScreen
@@ -982,6 +983,13 @@ private fun SonixRootApp(
                                 val dest = entry.toRoute<StudioRoute.NotificationDetail>()
                                 NotificationDetailScreen(
                                     entryId = dest.entryId,
+                                    uiState = uiState,
+                                    viewModel = viewModel,
+                                    onBack = { navController.popBackStack() },
+                                )
+                            }
+                            composable<StudioRoute.SmartQaLab> {
+                                SmartQaLabScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onBack = { navController.popBackStack() },

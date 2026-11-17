@@ -284,6 +284,26 @@ fun AiToolDetailScreen(
                             }
                         }
 
+                        if (st.isLoading) {
+                            val cancelInt = remember { MutableInteractionSource() }
+                            OutlinedButton(
+                                onClick = { viewModel.cancelActiveOnlineRequest() },
+                                interactionSource = cancelInt,
+                                border = BorderStroke(1.dp, StudioColors.RoseBright),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .lit(cancelInt, StudioColors.RoseBright, cornerRadius = 12.dp)
+                                    .testTag("ai_transcribe_cancel_button"),
+                            ) {
+                                Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(t(lang, "cancel_request"))
+                            }
+                        }
+
                         if (!st.errorMessage.isNullOrBlank()) {
                             AiStatusCard(message = st.errorMessage, isAmber = true)
                         }
@@ -502,6 +522,26 @@ fun AiToolDetailScreen(
                                 Spacer(Modifier.width(8.dp))
                             }
                             Text(if (lang == AppLanguage.EN) "Ask Studio Assistant" else "بحث وإجابة الاستوديو")
+                        }
+
+                        if (st.isLoading) {
+                            val cancelSearchInt = remember { MutableInteractionSource() }
+                            OutlinedButton(
+                                onClick = { viewModel.cancelActiveOnlineRequest() },
+                                interactionSource = cancelSearchInt,
+                                border = BorderStroke(1.dp, StudioColors.RoseBright),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .lit(cancelSearchInt, StudioColors.RoseBright, cornerRadius = 12.dp)
+                                    .testTag("ai_search_cancel_button"),
+                            ) {
+                                Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(t(lang, "cancel_request"))
+                            }
                         }
 
                         if (!st.errorMessage.isNullOrBlank()) {
@@ -972,6 +1012,26 @@ fun TextToSpeechStudioScreen(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+
+                if (uiState.isExtractingArticle) {
+                    val cancelExtractInt = remember { MutableInteractionSource() }
+                    OutlinedButton(
+                        onClick = { viewModel.cancelActiveOnlineRequest() },
+                        interactionSource = cancelExtractInt,
+                        border = BorderStroke(1.dp, StudioColors.RoseBright),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(cancelExtractInt, StudioColors.RoseBright, cornerRadius = 12.dp)
+                            .testTag("tts_article_cancel_button"),
+                    ) {
+                        Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(t(lang, "cancel_request"))
+                    }
+                }
             }
         }
 
@@ -1210,15 +1270,34 @@ fun TextToSpeechStudioScreen(
                 }
 
                 if (uiState.ttsUiState.isGenerating || uiState.ttsUiState.isSynthesizingPreview) {
-                    LinearProgressIndicator(
-                        color = StudioColors.Cyan,
-                        trackColor = StudioColors.BgTop,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(CircleShape)
-                            .testTag("tts_synthesis_progress"),
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LinearProgressIndicator(
+                            color = StudioColors.Cyan,
+                            trackColor = StudioColors.BgTop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(CircleShape)
+                                .testTag("tts_synthesis_progress"),
+                        )
+                        val cancelTtsInt = remember { MutableInteractionSource() }
+                        OutlinedButton(
+                            onClick = { viewModel.cancelActiveOnlineRequest() },
+                            interactionSource = cancelTtsInt,
+                            border = BorderStroke(1.dp, StudioColors.RoseBright),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                                .lit(cancelTtsInt, StudioColors.RoseBright, cornerRadius = 12.dp)
+                                .testTag("tts_cancel_request_button"),
+                        ) {
+                            Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(t(lang, "cancel_request"))
+                        }
+                    }
                 }
 
                 if (uiState.ttsUiState.usedFallbackEngine) {
@@ -2087,6 +2166,11 @@ fun SettingsScreen(
                 }
             }
         }
+
+        SupportUpdatesQaSection(
+            uiState = uiState,
+            viewModel = viewModel,
+        )
     }
 
     LanguageSelectorDialog(

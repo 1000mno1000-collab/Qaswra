@@ -213,6 +213,8 @@ object EdgeTtsClient {
 
                 val mp3Bytes = mp3Out.toByteArray()
                 if (mp3Bytes.size < 256) null else mp3Bytes
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
             } catch (_: Throwable) {
                 null
             } finally {
