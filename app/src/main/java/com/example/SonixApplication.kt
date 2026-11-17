@@ -120,11 +120,11 @@ object SonixCrashGuard {
 
     fun buildFallbackFirebaseOptions(): FirebaseOptions =
         FirebaseOptions.Builder()
-            .setApplicationId("1:749543557478:android:ed8d57155636dc60eae0a7")
-            .setApiKey("AIzaSyC_xjAvAQ5AmFLUXJYwBz5V2fnNecozqKA")
-            .setProjectId("gen-lang-client-0741838748")
-            .setGcmSenderId("749543557478")
-            .setStorageBucket("gen-lang-client-0741838748.firebasestorage.app")
+            .setApplicationId("1:71794555883:android:4c65036e94f7e36e3b37ae")
+            .setApiKey("AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo")
+            .setProjectId("gen-lang-client-0021883952")
+            .setGcmSenderId("71794555883")
+            .setStorageBucket("gen-lang-client-0021883952.firebasestorage.app")
             .build()
 
     fun safeInitializeFirebase(context: Context) {

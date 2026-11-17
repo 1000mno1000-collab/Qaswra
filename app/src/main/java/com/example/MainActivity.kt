@@ -303,10 +303,13 @@ class MainActivity : ComponentActivity() {
     private fun initializeFirebaseSafely() {
         try {
             if (FirebaseApp.getApps(this).isEmpty()) {
-                SonixCrashGuard.safeInitializeFirebase(this)
-            }
-            if (FirebaseApp.getApps(this).isEmpty()) {
-                val options = SonixCrashGuard.buildFallbackFirebaseOptions()
+                val options = FirebaseOptions.Builder()
+                    .setApplicationId("1:71794555883:android:4c65036e94f7e36e3b37ae")
+                    .setApiKey("AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo")
+                    .setProjectId("gen-lang-client-0021883952")
+                    .setGcmSenderId("71794555883")
+                    .setStorageBucket("gen-lang-client-0021883952.firebasestorage.app")
+                    .build()
                 FirebaseApp.initializeApp(this, options)
             }
         } catch (t: Throwable) {

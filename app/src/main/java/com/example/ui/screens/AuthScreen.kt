@@ -110,6 +110,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
+private const val GOOGLE_WEB_CLIENT_ID =
+    "71794555883-1j2b8ckt6mriegaem2vji34ov5vofpb4.apps.googleusercontent.com"
+
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
@@ -221,8 +224,7 @@ fun AuthScreen(
             return@LaunchedEffect
         }
         val cm = credentialManager ?: return@LaunchedEffect
-        val clientId = runCatching { context.getString(R.string.default_web_client_id) }.getOrNull()
-            ?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        val clientId = GOOGLE_WEB_CLIENT_ID.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
         try {
             val googleIdOption = GetGoogleIdOption.Builder()
                 .setFilterByAuthorizedAccounts(true)
@@ -303,14 +305,10 @@ fun AuthScreen(
                 return@AuthScreenContent
             }
 
-            val clientId = try {
-                context.getString(R.string.default_web_client_id)
-            } catch (_: Exception) {
-                ""
-            }
+            val clientId = GOOGLE_WEB_CLIENT_ID
             if (clientId.isBlank()) {
                 errorMsg = if (isEn) {
-                    "Google Sign-In configuration missing: default_web_client_id not found."
+                    "Google Sign-In configuration missing: Web Client ID not found."
                 } else {
                     "إعدادات تسجيل الدخول بحساب Google غير مكتملة (معرّف العميل مفقود)."
                 }
