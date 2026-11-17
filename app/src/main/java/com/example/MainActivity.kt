@@ -630,8 +630,13 @@ private fun SonixRootApp(
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically,
                                         ) {
+                                            val stageLabel = if (progress >= 0.50f && !uiState.importLabel.isNullOrBlank()) {
+                                                uiState.importLabel
+                                            } else {
+                                                t(lang, "importing_file_progress")
+                                            }
                                             Text(
-                                                text = "${t(lang, "importing_file_progress")} $pct%",
+                                                text = "$stageLabel $pct%",
                                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                                 color = StudioColors.Cyan,
                                                 modifier = Modifier.weight(1f),

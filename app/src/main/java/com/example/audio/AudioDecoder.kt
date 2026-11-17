@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.util.Log
@@ -15,11 +16,27 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
+import kotlin.math.abs
+import kotlin.math.log10
+import kotlin.math.max
 import kotlin.math.min
+
+const val LARGE_AUDIO_THRESHOLD_BYTES = 10L * 1024L * 1024L
+private const val STREAM_CHUNK_BYTES = 65_536
+
+data class StreamedAudioMetadata(
+    val sourceFile: File,
+    val durationMs: Long,
+    val sampleRate: Int,
+    val channelCount: Int,
+    val waveformPeaks: List<Float>,
+    val peakDbfs: Float,
+)
 
 sealed interface AudioDecodeOutcome {
     data class Success(val buffer: StereoAudioBuffer) : AudioDecodeOutcome
@@ -97,26 +114,18 @@ object AudioDecoder {
                 "FileNotFoundException: File missing or empty (${file.absolutePath})",
             )
         }
+        if (file.length() > LARGE_AUDIO_THRESHOLD_BYTES * 6L) {
+            // Never allow giant uncompressed reads into Java heap
+            return@withContext AudioDecodeOutcome.Failure(
+                "OutOfMemoryGuard: File size (${file.length() / (1024 * 1024)} MB) exceeds safe heap decode limit; use streaming mode.",
+            )
+        }
         coroutineContext.ensureActive()
 
         var lastError: String? = null
 
         // 1. Fast header check for standard PCM / Float WAV files
-        val isRiffWave = runCatching {
-            FileInputStream(file).use { fis ->
-                val head = ByteArray(12)
-                val read = fis.read(head)
-                read == 12 &&
-                    head[0] == 'R'.code.toByte() &&
-                    head[1] == 'I'.code.toByte() &&
-                    head[2] == 'F'.code.toByte() &&
-                    head[3] == 'F'.code.toByte() &&
-                    head[8] == 'W'.code.toByte() &&
-                    head[9] == 'A'.code.toByte() &&
-                    head[10] == 'V'.code.toByte() &&
-                    head[11] == 'E'.code.toByte()
-            }
-        }.getOrDefault(false)
+        val isRiffWave = isRiffWavHeader(file)
 
         if (isRiffWave) {
             onProgress(0.25f)
@@ -126,6 +135,8 @@ object AudioDecoder {
                     onProgress(1.0f)
                     return@withContext AudioDecodeOutcome.Success(wavBuf)
                 }
+            } catch (oom: OutOfMemoryError) {
+                return@withContext AudioDecodeOutcome.Failure("OutOfMemoryError: ${file.name} exceeds available RAM")
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 lastError = "WAV ${t.javaClass.simpleName}: ${t.message}"
@@ -134,11 +145,15 @@ object AudioDecoder {
         }
 
         // 2. Hardware MediaExtractor + MediaCodec via real local file.absolutePath
-        val primaryOutcome = decodeViaMediaExtractor(
-            file = file,
-            useFdFallback = false,
-            onProgress = onProgress,
-        )
+        val primaryOutcome = try {
+            decodeViaMediaExtractor(
+                file = file,
+                useFdFallback = false,
+                onProgress = onProgress,
+            )
+        } catch (oom: OutOfMemoryError) {
+            return@withContext AudioDecodeOutcome.Failure("OutOfMemoryError: ${file.name} exceeds available RAM")
+        }
         if (primaryOutcome is AudioDecodeOutcome.Success) {
             return@withContext primaryOutcome
         } else if (primaryOutcome is AudioDecodeOutcome.Failure) {
@@ -146,11 +161,15 @@ object AudioDecoder {
         }
 
         // 3. Fallback FileDescriptor-backed MediaExtractor on the same cached file
-        val fdOutcome = decodeViaMediaExtractor(
-            file = file,
-            useFdFallback = true,
-            onProgress = onProgress,
-        )
+        val fdOutcome = try {
+            decodeViaMediaExtractor(
+                file = file,
+                useFdFallback = true,
+                onProgress = onProgress,
+            )
+        } catch (oom: OutOfMemoryError) {
+            return@withContext AudioDecodeOutcome.Failure("OutOfMemoryError: ${file.name} exceeds available RAM")
+        }
         if (fdOutcome is AudioDecodeOutcome.Success) {
             return@withContext fdOutcome
         } else if (fdOutcome is AudioDecodeOutcome.Failure && lastError == null) {
@@ -158,13 +177,525 @@ object AudioDecoder {
         }
 
         // 4. Optional FFmpegKit fallback (strictly after file is in cacheDir, using file.absolutePath)
-        val ffOutcome = tryDecodeViaFfmpegKitReflection(file)
+        val ffOutcome = try {
+            tryDecodeViaFfmpegKitReflection(file)
+        } catch (oom: OutOfMemoryError) {
+            return@withContext AudioDecodeOutcome.Failure("OutOfMemoryError: ${file.name} exceeds available RAM")
+        }
         if (ffOutcome is AudioDecodeOutcome.Success) {
             onProgress(1.0f)
             return@withContext ffOutcome
         }
 
         AudioDecodeOutcome.Failure(lastError ?: "Unsupported or corrupt audio format (${file.name})")
+    }
+
+    /**
+     * Streams large audio files (>10 MB, such as 48 MB+ tracks) strictly on [Dispatchers.IO]
+     * using a fixed 64 KB buffer and downsampled seek windows without decoding the entire file to RAM.
+     */
+    suspend fun inspectLargeAudioStreaming(
+        file: File,
+        buckets: Int = 120,
+        onProgress: (Float) -> Unit,
+    ): StreamedAudioMetadata? = withContext(Dispatchers.IO) {
+        if (!file.exists() || file.length() <= 0L) return@withContext null
+        onProgress(0.04f)
+        coroutineContext.ensureActive()
+
+        var durationMs = 0L
+        var sampleRate = TARGET_SAMPLE_RATE
+        var channelCount = 2
+
+        val wavHeader = if (isRiffWavHeader(file)) parseWavHeaderMeta(file) else null
+        if (wavHeader != null) {
+            durationMs = wavHeader.durationMs
+            sampleRate = wavHeader.sampleRate
+            channelCount = wavHeader.channels
+        } else {
+            // Probe duration & audio format cleanly via MediaExtractor -> MediaMetadataRetriever
+            val extractor = MediaExtractor()
+            try {
+                val setOk = runCatching { extractor.setDataSource(file.absolutePath); true }
+                    .getOrElse {
+                        runCatching {
+                            FileInputStream(file).use { fis -> extractor.setDataSource(fis.fd) }
+                            true
+                        }.getOrDefault(false)
+                    }
+                if (setOk) {
+                    for (i in 0 until extractor.trackCount) {
+                        val fmt = extractor.getTrackFormat(i)
+                        val mime = fmt.getString(MediaFormat.KEY_MIME) ?: continue
+                        if (mime.startsWith("audio/")) {
+                            if (fmt.containsKey(MediaFormat.KEY_DURATION)) {
+                                durationMs = max(durationMs, fmt.getLong(MediaFormat.KEY_DURATION) / 1000L)
+                            }
+                            if (fmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                                sampleRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE).coerceAtLeast(8000)
+                            }
+                            if (fmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                                channelCount = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+                            }
+                            break
+                        }
+                    }
+                }
+            } finally {
+                runCatching { extractor.release() }
+            }
+            if (durationMs <= 0L) {
+                val mmr = MediaMetadataRetriever()
+                try {
+                    runCatching { mmr.setDataSource(file.absolutePath) }
+                    val durStr = runCatching { mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION) }.getOrNull()
+                    durationMs = durStr?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+                } finally {
+                    runCatching { mmr.release() }
+                }
+            }
+        }
+
+        if (durationMs <= 0L) {
+            // Rough safe estimate (~160 kbps) only if container lacks duration header
+            durationMs = ((file.length() * 8L) / 160L).coerceAtLeast(1000L)
+        }
+        onProgress(0.18f)
+
+        val peaks: List<Float> = when {
+            wavHeader != null -> extractWavPeaksChunked64K(file, wavHeader, buckets) { f ->
+                onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
+            }
+            else -> extractCompressedPeaksSparseOrByteChunked(file, durationMs, buckets) { f ->
+                onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
+            }
+        }
+
+        val maxAmp = peaks.maxOrNull()?.coerceAtLeast(1e-4f) ?: 0.5f
+        val peakDbfs = (20.0 * log10(maxAmp.toDouble())).toFloat().coerceIn(-96f, 0f)
+        onProgress(1.0f)
+        StreamedAudioMetadata(
+            sourceFile = file,
+            durationMs = durationMs,
+            sampleRate = sampleRate,
+            channelCount = channelCount,
+            waveformPeaks = peaks,
+            peakDbfs = peakDbfs,
+        )
+    }
+
+    /**
+     * Decodes a short bounded window (e.g., 18 seconds) from a large audio file for quick AI/Auto-Master analysis
+     * without ever decoding the full file into memory.
+     */
+    suspend fun decodeSampleWindowForAnalysis(
+        file: File,
+        maxSeconds: Float = 18f,
+    ): StereoAudioBuffer? = withContext(Dispatchers.IO) {
+        if (!file.exists() || file.length() <= 0L) return@withContext null
+        val maxUs = (maxSeconds.coerceIn(2f, 30f) * 1_000_000f).toLong()
+        val extractor = MediaExtractor()
+        try {
+            val setOk = runCatching { extractor.setDataSource(file.absolutePath); true }.getOrElse {
+                runCatching {
+                    FileInputStream(file).use { fis -> extractor.setDataSource(fis.fd) }
+                    true
+                }.getOrDefault(false)
+            }
+            if (!setOk) return@withContext null
+
+            var trackIdx = -1
+            var format: MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val tf = extractor.getTrackFormat(i)
+                if (tf.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                    trackIdx = i
+                    format = tf
+                    break
+                }
+            }
+            if (trackIdx < 0 || format == null) return@withContext null
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return@withContext null
+            extractor.selectTrack(trackIdx)
+
+            var sr = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                format.getInteger(MediaFormat.KEY_SAMPLE_RATE).coerceAtLeast(8000)
+            } else TARGET_SAMPLE_RATE
+            var chCount = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                format.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+            } else 2
+            var pcmEncoding = android.media.AudioFormat.ENCODING_PCM_16BIT
+            val maxFrames = (maxSeconds * TARGET_SAMPLE_RATE).toInt().coerceAtMost(TARGET_SAMPLE_RATE * 30)
+            val left = FloatArray(maxFrames)
+            val right = FloatArray(maxFrames)
+            var framePos = 0
+
+            val codec = MediaCodec.createDecoderByType(mime)
+            try {
+                codec.configure(format, null, null, 0)
+                codec.start()
+                val info = MediaCodec.BufferInfo()
+                var inDone = false
+                var outDone = false
+                var idle = 0
+                while (!outDone && framePos < maxFrames) {
+                    coroutineContext.ensureActive()
+                    if (!inDone) {
+                        val inIdx = codec.dequeueInputBuffer(8_000L)
+                        if (inIdx >= 0) {
+                            val buf = codec.getInputBuffer(inIdx)
+                            val sz = if (buf != null) extractor.readSampleData(buf, 0) else -1
+                            val pts = extractor.sampleTime.coerceAtLeast(0L)
+                            if (sz < 0 || pts > maxUs) {
+                                codec.queueInputBuffer(inIdx, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inDone = true
+                            } else {
+                                codec.queueInputBuffer(inIdx, 0, sz, pts, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                    val outIdx = codec.dequeueOutputBuffer(info, 8_000L)
+                    when {
+                        outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            val of = codec.outputFormat
+                            if (of.containsKey(MediaFormat.KEY_SAMPLE_RATE)) sr = of.getInteger(MediaFormat.KEY_SAMPLE_RATE).coerceAtLeast(8000)
+                            if (of.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) chCount = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && of.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                                pcmEncoding = of.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                            }
+                        }
+                        outIdx >= 0 -> {
+                            idle = 0
+                            val ob = codec.getOutputBuffer(outIdx)
+                            if (ob != null && info.size > 0) {
+                                ob.position(info.offset)
+                                ob.limit(info.offset + info.size)
+                                val isFloat = pcmEncoding == android.media.AudioFormat.ENCODING_PCM_FLOAT
+                                val bps = if (isFloat) 4 else 2
+                                val fb = bps * chCount
+                                val framesHere = info.size / fb
+                                val orderBuf = ob.slice().order(ByteOrder.LITTLE_ENDIAN)
+                                for (f in 0 until framesHere) {
+                                    if (framePos >= maxFrames) break
+                                    var l = 0f
+                                    var r = 0f
+                                    for (c in 0 until chCount) {
+                                        val s = if (isFloat) clamp(orderBuf.float, -1f, 1f) else clamp(orderBuf.short / 32768f, -1f, 1f)
+                                        if (c == 0) { l = s; r = s } else if (c == 1) { r = s }
+                                    }
+                                    left[framePos] = l
+                                    right[framePos] = r
+                                    framePos++
+                                }
+                            }
+                            codec.releaseOutputBuffer(outIdx, false)
+                            if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outDone = true
+                        }
+                        outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> if (inDone && ++idle > 60) outDone = true
+                    }
+                }
+            } finally {
+                runCatching { codec.stop() }
+                runCatching { codec.release() }
+            }
+            if (framePos <= 0) return@withContext null
+            val raw = StereoAudioBuffer(left.copyOf(framePos), right.copyOf(framePos), sr)
+            if (sr != TARGET_SAMPLE_RATE) resampleStereo(raw, TARGET_SAMPLE_RATE) else raw
+        } catch (_: Throwable) {
+            null
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    private fun isRiffWavHeader(file: File): Boolean = runCatching {
+        FileInputStream(file).use { fis ->
+            val head = ByteArray(12)
+            val read = fis.read(head)
+            read == 12 &&
+                head[0] == 'R'.code.toByte() &&
+                head[1] == 'I'.code.toByte() &&
+                head[2] == 'F'.code.toByte() &&
+                head[3] == 'F'.code.toByte() &&
+                head[8] == 'W'.code.toByte() &&
+                head[9] == 'A'.code.toByte() &&
+                head[10] == 'V'.code.toByte() &&
+                head[11] == 'E'.code.toByte()
+        }
+    }.getOrDefault(false)
+
+    private data class WavMeta(
+        val audioFormat: Int,
+        val channels: Int,
+        val sampleRate: Int,
+        val bitsPerSample: Int,
+        val dataOffset: Long,
+        val dataSizeBytes: Long,
+        val durationMs: Long,
+    )
+
+    private fun parseWavHeaderMeta(file: File): WavMeta? = runCatching {
+        val len = file.length()
+        if (len < 44L) return@runCatching null
+        RandomAccessFile(file, "r").use { raf ->
+            val h12 = ByteArray(12)
+            raf.readFully(h12)
+            if (String(h12, 0, 4, Charsets.US_ASCII) != "RIFF" ||
+                String(h12, 8, 4, Charsets.US_ASCII) != "WAVE"
+            ) return@runCatching null
+
+            var audioFormat = 1
+            var channels = 2
+            var sampleRate = TARGET_SAMPLE_RATE
+            var bitsPerSample = 16
+            var dataOffset = 44L
+            var dataSize = (len - 44L).coerceAtLeast(0L)
+            var foundData = false
+
+            val hdr = ByteArray(8)
+            while (raf.filePointer + 8L <= len) {
+                raf.readFully(hdr)
+                val bb = ByteBuffer.wrap(hdr).order(ByteOrder.LITTLE_ENDIAN)
+                val id = String(hdr, 0, 4, Charsets.US_ASCII)
+                bb.int
+                val chunkSize = bb.int.toLong() and 0xFFFFFFFFL
+                val padded = chunkSize + (chunkSize and 1L)
+                when (id) {
+                    "fmt " -> {
+                        val toRead = chunkSize.coerceAtMost(64L).toInt()
+                        val fmt = ByteArray(toRead)
+                        raf.readFully(fmt)
+                        val fb = ByteBuffer.wrap(fmt).order(ByteOrder.LITTLE_ENDIAN)
+                        if (toRead >= 16) {
+                            audioFormat = fb.short.toInt() and 0xFFFF
+                            channels = fb.short.toInt() and 0xFFFF
+                            sampleRate = fb.int.coerceAtLeast(8000)
+                            fb.int
+                            fb.short
+                            bitsPerSample = fb.short.toInt() and 0xFFFF
+                        }
+                        if (padded > toRead) raf.seek((raf.filePointer + (padded - toRead)).coerceAtMost(len))
+                    }
+                    "data" -> {
+                        dataOffset = raf.filePointer
+                        val avail = (len - dataOffset).coerceAtLeast(0L)
+                        dataSize = if (chunkSize == 0L || chunkSize > avail) avail else chunkSize
+                        foundData = true
+                        break
+                    }
+                    else -> {
+                        raf.seek((raf.filePointer + padded).coerceAtMost(len))
+                    }
+                }
+            }
+            if (!foundData || channels <= 0 || bitsPerSample <= 0) return@runCatching null
+            val byteRate = sampleRate.toLong() * channels * (bitsPerSample / 8L)
+            val durMs = if (byteRate > 0L) (dataSize * 1000L) / byteRate else 1000L
+            WavMeta(audioFormat, channels, sampleRate, bitsPerSample, dataOffset, dataSize, durMs.coerceAtLeast(100L))
+        }
+    }.getOrNull()
+
+    private suspend fun extractWavPeaksChunked64K(
+        file: File,
+        meta: WavMeta,
+        buckets: Int,
+        onProgress: (Float) -> Unit,
+    ): List<Float> {
+        val frameBytes = (meta.channels * (meta.bitsPerSample / 8)).coerceAtLeast(1)
+        val totalFrames = (meta.dataSizeBytes / frameBytes).coerceAtLeast(1L)
+        val chunkBuf = ByteArray(STREAM_CHUNK_BYTES)
+        val peaks = ArrayList<Float>(buckets)
+        RandomAccessFile(file, "r").use { raf ->
+            for (i in 0 until buckets) {
+                coroutineContext.ensureActive()
+                val startFrame = (i.toDouble() / buckets * totalFrames).toLong()
+                val bytePos = meta.dataOffset + startFrame * frameBytes
+                raf.seek(bytePos.coerceIn(meta.dataOffset, file.length()))
+                val framesToSample = min(STREAM_CHUNK_BYTES / frameBytes, max(1, (totalFrames / buckets).toInt()))
+                val bytesToRead = (framesToSample * frameBytes).coerceIn(frameBytes, STREAM_CHUNK_BYTES)
+                val got = raf.read(chunkBuf, 0, bytesToRead)
+                var peak = 0.04f
+                if (got >= frameBytes) {
+                    val bb = ByteBuffer.wrap(chunkBuf, 0, got).order(ByteOrder.LITTLE_ENDIAN)
+                    val gotFrames = got / frameBytes
+                    val stride = max(1, gotFrames / 32)
+                    var f = 0
+                    while (f < gotFrames) {
+                        bb.position(f * frameBytes)
+                        val v = when {
+                            meta.audioFormat == 3 && meta.bitsPerSample == 32 -> abs(bb.float)
+                            meta.bitsPerSample == 16 -> abs(bb.short / 32768f)
+                            else -> abs(((bb.get().toInt() and 0xFF) - 128) / 128f)
+                        }
+                        if (v > peak) peak = v
+                        f += stride
+                    }
+                }
+                peaks.add(clamp(peak, 0.03f, 1f))
+                if (i % 8 == 0 || i == buckets - 1) {
+                    onProgress((i + 1).toFloat() / buckets)
+                }
+            }
+        }
+        return peaks
+    }
+
+    private suspend fun extractCompressedPeaksSparseOrByteChunked(
+        file: File,
+        durationMs: Long,
+        buckets: Int,
+        onProgress: (Float) -> Unit,
+    ): List<Float> {
+        val checkpoints = 32
+        val rawSamples = FloatArray(checkpoints) { 0f }
+        var codecSucceeded = false
+
+        if (durationMs > 200L) {
+            val extractor = MediaExtractor()
+            var codec: MediaCodec? = null
+            try {
+                val setOk = runCatching { extractor.setDataSource(file.absolutePath); true }.getOrElse {
+                    runCatching {
+                        FileInputStream(file).use { fis -> extractor.setDataSource(fis.fd) }
+                        true
+                    }.getOrDefault(false)
+                }
+                if (setOk) {
+                    var trackIdx = -1
+                    var fmt: MediaFormat? = null
+                    for (t in 0 until extractor.trackCount) {
+                        val tf = extractor.getTrackFormat(t)
+                        if (tf.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                            trackIdx = t
+                            fmt = tf
+                            break
+                        }
+                    }
+                    if (trackIdx >= 0 && fmt != null) {
+                        val mime = fmt.getString(MediaFormat.KEY_MIME)
+                        if (mime != null) {
+                            extractor.selectTrack(trackIdx)
+                            var ch = if (fmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                                fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+                            } else 2
+                            var pcmEnc = android.media.AudioFormat.ENCODING_PCM_16BIT
+                            codec = MediaCodec.createDecoderByType(mime).apply {
+                                configure(fmt, null, null, 0)
+                                start()
+                            }
+                            val bufInfo = MediaCodec.BufferInfo()
+                            val durUs = durationMs * 1000L
+                            var hits = 0
+                            for (cp in 0 until checkpoints) {
+                                coroutineContext.ensureActive()
+                                val targetUs = ((cp.toDouble() / checkpoints) * durUs).toLong()
+                                extractor.seekTo(targetUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                                codec.flush()
+                                var winPeak = 0.04f
+                                var tries = 0
+                                var gotOut = false
+                                while (!gotOut && tries < 6) {
+                                    tries++
+                                    val inIdx = codec.dequeueInputBuffer(4_000L)
+                                    if (inIdx >= 0) {
+                                        val ib = codec.getInputBuffer(inIdx)
+                                        val sz = if (ib != null) extractor.readSampleData(ib, 0) else -1
+                                        if (sz >= 0) {
+                                            codec.queueInputBuffer(inIdx, 0, sz, extractor.sampleTime.coerceAtLeast(0L), 0)
+                                            extractor.advance()
+                                        }
+                                    }
+                                    val outIdx = codec.dequeueOutputBuffer(bufInfo, 5_000L)
+                                    if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                                        val of = codec.outputFormat
+                                        if (of.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) ch = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && of.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                                            pcmEnc = of.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                                        }
+                                    } else if (outIdx >= 0) {
+                                        val ob = codec.getOutputBuffer(outIdx)
+                                        if (ob != null && bufInfo.size > 0) {
+                                            ob.position(bufInfo.offset)
+                                            ob.limit(bufInfo.offset + bufInfo.size)
+                                            val isFlt = pcmEnc == android.media.AudioFormat.ENCODING_PCM_FLOAT
+                                            val bps = if (isFlt) 4 else 2
+                                            val order = ob.slice().order(ByteOrder.LITTLE_ENDIAN)
+                                            val count = (bufInfo.size / bps).coerceAtLeast(1)
+                                            val stride = max(1, count / 48)
+                                            var k = 0
+                                            while (k + bps <= bufInfo.size) {
+                                                order.position(k)
+                                                val amp = if (isFlt) abs(order.float) else abs(order.short / 32768f)
+                                                if (amp > winPeak) winPeak = amp
+                                                k += bps * stride * ch
+                                            }
+                                            gotOut = true
+                                            hits++
+                                        }
+                                        codec.releaseOutputBuffer(outIdx, false)
+                                    }
+                                }
+                                rawSamples[cp] = clamp(winPeak, 0.04f, 1f)
+                                onProgress((cp + 1).toFloat() / checkpoints)
+                            }
+                            codecSucceeded = hits >= checkpoints / 3
+                        }
+                    }
+                }
+            } catch (_: Throwable) {
+                codecSucceeded = false
+            } finally {
+                runCatching { codec?.stop() }
+                runCatching { codec?.release() }
+                runCatching { extractor.release() }
+            }
+        }
+
+        if (codecSucceeded) {
+            return List(buckets) { b ->
+                val fIdx = (b.toFloat() / max(1, buckets - 1)) * (checkpoints - 1)
+                val i0 = fIdx.toInt().coerceIn(0, checkpoints - 1)
+                val i1 = (i0 + 1).coerceIn(0, checkpoints - 1)
+                val frac = fIdx - i0
+                clamp(rawSamples[i0] + (rawSamples[i1] - rawSamples[i0]) * frac, 0.04f, 1f)
+            }
+        }
+
+        // Pure 64 KB chunked byte-jumping stream fallback (0 heap allocations beyond single 64 KB buffer)
+        val fileLen = file.length().coerceAtLeast(1L)
+        val buf = ByteArray(STREAM_CHUNK_BYTES)
+        val bytePeaks = ArrayList<Float>(buckets)
+        RandomAccessFile(file, "r").use { raf ->
+            val skipHeader = min(4096L, fileLen / 20L)
+            val span = (fileLen - skipHeader).coerceAtLeast(1L)
+            for (b in 0 until buckets) {
+                coroutineContext.ensureActive()
+                val pos = skipHeader + ((b.toDouble() / buckets) * span).toLong()
+                raf.seek(pos.coerceIn(0L, fileLen - 1L))
+                val toRead = min(8192L, fileLen - pos).toInt().coerceAtLeast(1)
+                val got = raf.read(buf, 0, toRead)
+                var energy = 0.12f
+                if (got > 16) {
+                    var sumDiff = 0L
+                    var samples = 0
+                    var i = 1
+                    while (i < got) {
+                        val d = abs((buf[i].toInt() and 0xFF) - (buf[i - 1].toInt() and 0xFF))
+                        sumDiff += d
+                        samples++
+                        i += 8
+                    }
+                    val avg = sumDiff.toFloat() / max(1, samples)
+                    energy = clamp((avg / 96f), 0.06f, 0.96f)
+                }
+                bytePeaks.add(energy)
+                if (b % 8 == 0 || b == buckets - 1) {
+                    onProgress((b + 1).toFloat() / buckets)
+                }
+            }
+        }
+        return bytePeaks
     }
 
     private suspend fun decodeViaMediaExtractor(

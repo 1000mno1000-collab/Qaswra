@@ -442,8 +442,13 @@ fun InAppAudioPickerScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                val phaseLabel = if (prog >= 0.50f && !activeLabel.isNullOrBlank()) {
+                                    activeLabel
+                                } else {
+                                    t(lang, "uploading_to_cache_label")
+                                }
                                 Text(
-                                    text = t(lang, "uploading_to_cache_label"),
+                                    text = phaseLabel,
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                     color = StudioColors.Cyan,
                                     modifier = Modifier.weight(1f),

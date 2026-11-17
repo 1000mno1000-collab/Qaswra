@@ -32,6 +32,7 @@ data class AppDiagnosticEntry(
     val errorCode: String,
     val stackTrace: String,
     val timestampMs: Long,
+    val occurrenceCount: Int = 1,
 )
 
 /**
@@ -173,6 +174,7 @@ object AppDiagnosticLog {
             appendLine("Severity: ${entry.severity.name}")
             appendLine("Time: ${formatTimestamp(entry.timestampMs)}")
             appendLine("Code: ${entry.errorCode}")
+            appendLine("Occurrences: ${entry.occurrenceCount.coerceAtLeast(1)}")
             appendLine("Title (AR): ${entry.titleAr}")
             appendLine("Title (EN): ${entry.titleEn}")
             appendLine("Cause (AR): ${entry.causeAr}")
@@ -196,7 +198,39 @@ object AppDiagnosticLog {
 
     private fun appendEntry(entry: AppDiagnosticEntry, incrementUnread: Boolean) {
         synchronized(lock) {
-            val updated = (listOf(entry) + _entries.value).take(MAX_ENTRIES)
+            val normCode = entry.errorCode.trim()
+            val normTool = entry.toolName.trim()
+            val currentList = _entries.value
+            val existingIdx = currentList.indexOfFirst {
+                it.errorCode.trim().equals(normCode, ignoreCase = true) &&
+                    it.toolName.trim().equals(normTool, ignoreCase = true)
+            }
+            val updated = if (existingIdx >= 0) {
+                val existing = currentList[existingIdx]
+                val mergedSeverity = if (
+                    existing.severity == DiagnosticSeverity.CRITICAL ||
+                    entry.severity == DiagnosticSeverity.CRITICAL
+                ) {
+                    DiagnosticSeverity.CRITICAL
+                } else {
+                    entry.severity
+                }
+                val merged = existing.copy(
+                    severity = mergedSeverity,
+                    titleAr = entry.titleAr.ifBlank { existing.titleAr },
+                    titleEn = entry.titleEn.ifBlank { existing.titleEn },
+                    causeAr = entry.causeAr.ifBlank { existing.causeAr },
+                    causeEn = entry.causeEn.ifBlank { existing.causeEn },
+                    stackTrace = entry.stackTrace.ifBlank { existing.stackTrace },
+                    timestampMs = maxOf(existing.timestampMs, entry.timestampMs),
+                    occurrenceCount = (existing.occurrenceCount.coerceAtLeast(1) + 1).coerceAtMost(9999),
+                )
+                val withoutOld = currentList.toMutableList().apply { removeAt(existingIdx) }
+                (listOf(merged) + withoutOld).take(MAX_ENTRIES)
+            } else {
+                (listOf(entry.copy(occurrenceCount = entry.occurrenceCount.coerceAtLeast(1))) + currentList)
+                    .take(MAX_ENTRIES)
+            }
             _entries.value = updated
             if (incrementUnread) {
                 _unreadCount.value = (_unreadCount.value + 1).coerceAtMost(999)

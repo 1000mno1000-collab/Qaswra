@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -34,9 +35,7 @@ import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.BlurOn
 import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RestartAlt
-import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Waves
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -131,6 +130,15 @@ fun EchoReverbScreen(
         label = "ripplePhase",
     )
 
+    LaunchedEffect(Unit) {
+        viewModel.beginLiveToolSession("echo_reverb")
+    }
+
+    BackHandler {
+        viewModel.discardLiveToolSession("echo_reverb")
+        onBack()
+    }
+
     LaunchedEffect(uiState.restoredToolSession?.id) {
         val restored = viewModel.consumeRestoredToolSession("echo_reverb")
         if (restored != null) {
@@ -151,7 +159,9 @@ fun EchoReverbScreen(
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopToolPreview()
-            if (latestHasAudio) {
+            val committed = viewModel.isLiveToolSessionCommitted("echo_reverb")
+            viewModel.discardLiveToolSession("echo_reverb")
+            if (committed && latestHasAudio) {
                 val p = latestEcho
                 viewModel.saveToolSessionToCache(
                     toolId = "echo_reverb",
@@ -175,7 +185,10 @@ fun EchoReverbScreen(
             title = t(lang, "section_echo_title"),
             subtitle = t(lang, "section_echo_subtitle"),
             language = lang,
-            onBack = onBack,
+            onBack = {
+                viewModel.discardLiveToolSession("echo_reverb")
+                onBack()
+            },
             trailing = {
                 UndoRedoActionsRow(
                     canUndo = uiState.canUndoEdit,
@@ -334,6 +347,7 @@ fun EchoReverbScreen(
                                 trailPoints.add(Offset(nx, ny))
                                 if (trailPoints.size > 16) trailPoints.removeAt(0)
                                 viewModel.updateEchoReverbFromPad(nx, ny)
+                                viewModel.ensureLivePreviewPlaying()
                             }
                         }
                         .pointerInput(uiState.echoPadAxisMode) {
@@ -344,6 +358,7 @@ fun EchoReverbScreen(
                                 trailPoints.add(Offset(nx, ny))
                                 if (trailPoints.size > 16) trailPoints.removeAt(0)
                                 viewModel.updateEchoReverbFromPad(nx, ny)
+                                viewModel.ensureLivePreviewPlaying()
                             }
                         }
                         .testTag("echo_spatial_pad"),
@@ -482,7 +497,7 @@ fun EchoReverbScreen(
                     testTag = "echo_wet_dry_slider",
                     onValueChange = { v ->
                         viewModel.updateEchoReverbParams { it.copy(wetDryMix = v) }
-                        if (uiState.isSimpleEchoMode) viewModel.ensureLivePreviewPlaying()
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
 
@@ -496,41 +511,13 @@ fun EchoReverbScreen(
                     testTag = "echo_delay_time_slider",
                     onValueChange = { v ->
                         viewModel.updateEchoReverbParams { it.copy(delayTimeMs = v) }
-                        if (uiState.isSimpleEchoMode) viewModel.ensureLivePreviewPlaying()
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
             }
         }
 
         if (!uiState.isSimpleEchoMode) {
-            val proPreviewInteraction = remember { MutableInteractionSource() }
-            Button(
-                onClick = { viewModel.previewEchoReverbPro() },
-                enabled = uiState.hasAudio && !uiState.isBusy,
-                interactionSource = proPreviewInteraction,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Violet,
-                    contentColor = StudioColors.BgTop,
-                ),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .defaultMinSize(minHeight = 48.dp)
-                    .lit(proPreviewInteraction, StudioColors.Violet, cornerRadius = 14.dp)
-                    .testTag("echo_pro_preview_button"),
-            ) {
-                Icon(
-                    imageVector = if (uiState.isToolPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = if (uiState.isToolPreviewPlaying) t(lang, "stop_preview_edit") else t(lang, "preview_edit"),
-                    style = MaterialTheme.typography.labelLarge,
-                )
-            }
-
             StudioSectionCard(
                 title = t(lang, "echo_node_core"),
                 subtitle = "${t(lang, "param_echo_strength")}, ${t(lang, "param_echo_depth")}, ${t(lang, "param_feedback")}",
@@ -555,6 +542,22 @@ fun EchoReverbScreen(
                 testTag = "echo_group_space",
                 onClick = { onOpenDetail(EchoDetailGroup.SPACE) },
             )
+        }
+
+        val applyEchoInteraction = remember { MutableInteractionSource() }
+        Button(
+            onClick = { viewModel.commitLiveToolSession("echo_reverb", t(lang, "section_echo_title")) },
+            enabled = uiState.hasAudio && !uiState.isBusy,
+            interactionSource = applyEchoInteraction,
+            colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 50.dp)
+                .lit(applyEchoInteraction, StudioColors.Cyan, cornerRadius = 14.dp)
+                .testTag("echo_apply_button"),
+        ) {
+            Text(t(lang, "apply_now"), style = MaterialTheme.typography.labelLarge)
         }
     }
 
@@ -659,7 +662,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.echoStrength * 100f).roundToInt()}%",
                             accentColor = StudioColors.Cyan,
                             testTag = "echo_detail_strength",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(echoStrength = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(echoStrength = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_echo_depth"),
@@ -669,7 +675,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.echoDepth * 100f).roundToInt()}%",
                             accentColor = StudioColors.Cyan,
                             testTag = "echo_detail_depth",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(echoDepth = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(echoDepth = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_delay_time"),
@@ -679,7 +688,10 @@ fun EchoDetailScreen(
                             formattedValue = "${echo.delayTimeMs.roundToInt()} ms",
                             accentColor = StudioColors.Violet,
                             testTag = "echo_detail_delay",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(delayTimeMs = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(delayTimeMs = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_feedback"),
@@ -689,7 +701,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.feedback * 100f).roundToInt()}%",
                             accentColor = StudioColors.Amber,
                             testTag = "echo_detail_feedback",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(feedback = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(feedback = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                     }
                     EchoDetailGroup.REFLECTIONS -> {
@@ -701,7 +716,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.earlyReflections * 100f).roundToInt()}%",
                             accentColor = StudioColors.Violet,
                             testTag = "echo_detail_early",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(earlyReflections = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(earlyReflections = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_late_reflections"),
@@ -711,7 +729,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.lateReflections * 100f).roundToInt()}%",
                             accentColor = StudioColors.Violet,
                             testTag = "echo_detail_late",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(lateReflections = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(lateReflections = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_pre_delay"),
@@ -721,7 +742,10 @@ fun EchoDetailScreen(
                             formattedValue = "${echo.preDelayMs.roundToInt()} ms",
                             accentColor = StudioColors.Cyan,
                             testTag = "echo_detail_predelay",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(preDelayMs = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(preDelayMs = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_diffusion"),
@@ -731,7 +755,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.diffusion * 100f).roundToInt()}%",
                             accentColor = StudioColors.Emerald,
                             testTag = "echo_detail_diffusion",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(diffusion = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(diffusion = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                     }
                     EchoDetailGroup.SPACE -> {
@@ -743,7 +770,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.reverbSize * 100f).roundToInt()}%",
                             accentColor = StudioColors.Emerald,
                             testTag = "echo_detail_size",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(reverbSize = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(reverbSize = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_reverb_decay"),
@@ -753,7 +783,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.reverbDecay * 100f).roundToInt()}%",
                             accentColor = StudioColors.Emerald,
                             testTag = "echo_detail_decay",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(reverbDecay = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(reverbDecay = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_stereo_width"),
@@ -763,7 +796,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.stereoWidth * 100f).roundToInt()}%",
                             accentColor = StudioColors.Cyan,
                             testTag = "echo_detail_width",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(stereoWidth = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(stereoWidth = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_damping"),
@@ -773,7 +809,10 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.damping * 100f).roundToInt()}%",
                             accentColor = StudioColors.Amber,
                             testTag = "echo_detail_damping",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(damping = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(damping = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                         StudioParamSlider(
                             label = t(lang, "param_wet_dry"),
@@ -783,9 +822,28 @@ fun EchoDetailScreen(
                             formattedValue = "${(echo.wetDryMix * 100f).roundToInt()}%",
                             accentColor = StudioColors.Cyan,
                             testTag = "echo_detail_wetdry",
-                            onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(wetDryMix = v) } },
+                            onValueChange = { v ->
+                                viewModel.updateEchoReverbParams { it.copy(wetDryMix = v) }
+                                viewModel.ensureLivePreviewPlaying()
+                            },
                         )
                     }
+                }
+
+                val applyDetailInteraction = remember { MutableInteractionSource() }
+                Button(
+                    onClick = { viewModel.commitLiveToolSession("echo_reverb", title) },
+                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = applyDetailInteraction,
+                    colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 50.dp)
+                        .lit(applyDetailInteraction, StudioColors.Cyan, cornerRadius = 14.dp)
+                        .testTag("echo_detail_apply_button"),
+                ) {
+                    Text(t(lang, "apply_now"), style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
@@ -1025,6 +1083,23 @@ fun EffectDetailScreen(
     val cfg = uiState.dspConfig
     val enabled = cfg.isEnabled(effect)
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
+    val sessionKey = "effect_${effect.name}"
+
+    LaunchedEffect(sessionKey) {
+        viewModel.beginLiveToolSession(sessionKey)
+    }
+
+    BackHandler {
+        viewModel.discardLiveToolSession(sessionKey)
+        onBack()
+    }
+
+    DisposableEffect(sessionKey) {
+        onDispose {
+            viewModel.stopToolPreview()
+            viewModel.discardLiveToolSession(sessionKey)
+        }
+    }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -1035,7 +1110,10 @@ fun EffectDetailScreen(
                 if (lang == AppLanguage.EN) "Processor Bypassed" else "المعالج متجاوز حالياً"
             },
             language = lang,
-            onBack = onBack,
+            onBack = {
+                viewModel.discardLiveToolSession(sessionKey)
+                onBack()
+            },
             trailing = {
                 UndoRedoActionsRow(
                     canUndo = uiState.canUndoEdit,
@@ -1191,6 +1269,7 @@ fun EffectDetailScreen(
                             testTag = "bass_gain_slider",
                         ) { v ->
                             viewModel.updateDspConfig { it.copy(bassBoost = it.bassBoost.copy(gainDb = v)).withSlotEnabled(EffectType.BASS_BOOST, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider(
                             label = if (lang == AppLanguage.EN) "Cutoff Frequency" else "تردد القطع",
@@ -1202,6 +1281,7 @@ fun EffectDetailScreen(
                             testTag = "bass_freq_slider",
                         ) { v ->
                             viewModel.updateDspConfig { it.copy(bassBoost = it.bassBoost.copy(frequencyHz = v)).withSlotEnabled(EffectType.BASS_BOOST, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1217,6 +1297,7 @@ fun EffectDetailScreen(
                             testTag = "treble_gain_slider",
                         ) { v ->
                             viewModel.updateDspConfig { it.copy(treble = it.treble.copy(gainDb = v)).withSlotEnabled(EffectType.TREBLE, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider(
                             label = if (lang == AppLanguage.EN) "Shelf Frequency" else "تردد الحدة",
@@ -1228,6 +1309,7 @@ fun EffectDetailScreen(
                             testTag = "treble_freq_slider",
                         ) { v ->
                             viewModel.updateDspConfig { it.copy(treble = it.treble.copy(frequencyHz = v)).withSlotEnabled(EffectType.TREBLE, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1243,6 +1325,7 @@ fun EffectDetailScreen(
                             testTag = "pitch_semitones_slider",
                         ) { v ->
                             viewModel.updateDspConfig { it.copy(pitchShift = it.pitchShift.copy(semitones = v)).withSlotEnabled(EffectType.PITCH_SHIFT, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider(
                             label = if (lang == AppLanguage.EN) "Wet Mix" else "نسبة المزج",
@@ -1254,6 +1337,7 @@ fun EffectDetailScreen(
                             testTag = "pitch_mix_slider",
                         ) { v ->
                             viewModel.updateDspConfig { it.copy(pitchShift = it.pitchShift.copy(wetMix = v)).withSlotEnabled(EffectType.PITCH_SHIFT, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1269,6 +1353,7 @@ fun EffectDetailScreen(
                             testTag = "tempo_ratio_slider",
                         ) { v ->
                             viewModel.updateDspConfig { it.copy(timeStretch = it.timeStretch.copy(tempoRatio = v)).withSlotEnabled(EffectType.TIME_STRETCH, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1276,12 +1361,15 @@ fun EffectDetailScreen(
                         val ch = cfg.chorus
                         StudioParamSlider("Rate", ch.rateHz, 0.1f, 5f, "${"%.2f".format(ch.rateHz)} Hz", StudioColors.Cyan, testTag = "chorus_rate") { v ->
                             viewModel.updateDspConfig { it.copy(chorus = it.chorus.copy(rateHz = v)).withSlotEnabled(EffectType.CHORUS, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Depth", ch.depthMs, 1f, 18f, "${"%.1f".format(ch.depthMs)} ms", StudioColors.Violet, testTag = "chorus_depth") { v ->
                             viewModel.updateDspConfig { it.copy(chorus = it.chorus.copy(depthMs = v)).withSlotEnabled(EffectType.CHORUS, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Mix", ch.mix, 0f, 1f, "${(ch.mix * 100f).roundToInt()}%", StudioColors.Emerald, testTag = "chorus_mix") { v ->
                             viewModel.updateDspConfig { it.copy(chorus = it.chorus.copy(mix = v)).withSlotEnabled(EffectType.CHORUS, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1289,15 +1377,19 @@ fun EffectDetailScreen(
                         val fl = cfg.flanger
                         StudioParamSlider("Rate", fl.rateHz, 0.05f, 3f, "${"%.2f".format(fl.rateHz)} Hz", StudioColors.Cyan, testTag = "flanger_rate") { v ->
                             viewModel.updateDspConfig { it.copy(flanger = it.flanger.copy(rateHz = v)).withSlotEnabled(EffectType.FLANGER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Depth", fl.depthMs, 0.5f, 8f, "${"%.1f".format(fl.depthMs)} ms", StudioColors.Violet, testTag = "flanger_depth") { v ->
                             viewModel.updateDspConfig { it.copy(flanger = it.flanger.copy(depthMs = v)).withSlotEnabled(EffectType.FLANGER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Feedback", fl.feedback, 0f, 0.85f, "${(fl.feedback * 100f).roundToInt()}%", StudioColors.Amber, testTag = "flanger_feedback") { v ->
                             viewModel.updateDspConfig { it.copy(flanger = it.flanger.copy(feedback = v)).withSlotEnabled(EffectType.FLANGER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Mix", fl.mix, 0f, 1f, "${(fl.mix * 100f).roundToInt()}%", StudioColors.Emerald, testTag = "flanger_mix") { v ->
                             viewModel.updateDspConfig { it.copy(flanger = it.flanger.copy(mix = v)).withSlotEnabled(EffectType.FLANGER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1305,15 +1397,19 @@ fun EffectDetailScreen(
                         val ph = cfg.phaser
                         StudioParamSlider("Rate", ph.rateHz, 0.1f, 4f, "${"%.2f".format(ph.rateHz)} Hz", StudioColors.Cyan, testTag = "phaser_rate") { v ->
                             viewModel.updateDspConfig { it.copy(phaser = it.phaser.copy(rateHz = v)).withSlotEnabled(EffectType.PHASER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Depth", ph.depth, 0f, 1f, "${(ph.depth * 100f).roundToInt()}%", StudioColors.Violet, testTag = "phaser_depth") { v ->
                             viewModel.updateDspConfig { it.copy(phaser = it.phaser.copy(depth = v)).withSlotEnabled(EffectType.PHASER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Feedback", ph.feedback, 0f, 0.85f, "${(ph.feedback * 100f).roundToInt()}%", StudioColors.Amber, testTag = "phaser_feedback") { v ->
                             viewModel.updateDspConfig { it.copy(phaser = it.phaser.copy(feedback = v)).withSlotEnabled(EffectType.PHASER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Mix", ph.mix, 0f, 1f, "${(ph.mix * 100f).roundToInt()}%", StudioColors.Emerald, testTag = "phaser_mix") { v ->
                             viewModel.updateDspConfig { it.copy(phaser = it.phaser.copy(mix = v)).withSlotEnabled(EffectType.PHASER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1334,6 +1430,7 @@ fun EffectDetailScreen(
                                         viewModel.updateDspConfig {
                                             it.copy(distortion = it.distortion.copy(mode = mode)).withSlotEnabled(EffectType.DISTORTION, true)
                                         }
+                                        viewModel.ensureLivePreviewPlaying()
                                     },
                                     interactionSource = chipInteraction,
                                     label = { Text(mode.name.replace('_', ' '), maxLines = 1) },
@@ -1347,12 +1444,15 @@ fun EffectDetailScreen(
                         }
                         StudioParamSlider("Drive", d.drive, 1f, 12f, "${"%.1f".format(d.drive)}x", StudioColors.Rose, testTag = "dist_drive") { v ->
                             viewModel.updateDspConfig { it.copy(distortion = it.distortion.copy(drive = v)).withSlotEnabled(EffectType.DISTORTION, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Tone Cutoff", d.toneHz, 800f, 12000f, "${d.toneHz.roundToInt()} Hz", StudioColors.Amber, testTag = "dist_tone") { v ->
                             viewModel.updateDspConfig { it.copy(distortion = it.distortion.copy(toneHz = v)).withSlotEnabled(EffectType.DISTORTION, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Mix", d.mix, 0f, 1f, "${(d.mix * 100f).roundToInt()}%", StudioColors.Cyan, testTag = "dist_mix") { v ->
                             viewModel.updateDspConfig { it.copy(distortion = it.distortion.copy(mix = v)).withSlotEnabled(EffectType.DISTORTION, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1394,18 +1494,23 @@ fun EffectDetailScreen(
 
                         StudioParamSlider("Threshold", comp.thresholdDb, -42f, -2f, "${comp.thresholdDb.roundToInt()} dB", StudioColors.Cyan, testTag = "comp_thresh") { v ->
                             viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(thresholdDb = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Ratio", comp.ratio, 1.2f, 12f, "${"%.1f".format(comp.ratio)}:1", StudioColors.Violet, testTag = "comp_ratio") { v ->
                             viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(ratio = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Attack", comp.attackMs, 1f, 80f, "${comp.attackMs.roundToInt()} ms", StudioColors.Emerald, testTag = "comp_attack") { v ->
                             viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(attackMs = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Release", comp.releaseMs, 20f, 500f, "${comp.releaseMs.roundToInt()} ms", StudioColors.Emerald, testTag = "comp_release") { v ->
                             viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(releaseMs = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Makeup Gain", comp.makeupGainDb, -6f, 12f, "+${"%.1f".format(comp.makeupGainDb)} dB", StudioColors.Amber, testTag = "comp_makeup") { v ->
                             viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(makeupGainDb = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1413,9 +1518,11 @@ fun EffectDetailScreen(
                         val lim = cfg.limiter
                         StudioParamSlider("Ceiling", lim.ceilingDb, -6f, -0.1f, "${"%.1f".format(lim.ceilingDb)} dB", StudioColors.Rose, testTag = "limiter_ceiling") { v ->
                             viewModel.updateDspConfig { it.copy(limiter = it.limiter.copy(ceilingDb = v)).withSlotEnabled(EffectType.LIMITER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Release", lim.releaseMs, 10f, 300f, "${lim.releaseMs.roundToInt()} ms", StudioColors.Cyan, testTag = "limiter_release") { v ->
                             viewModel.updateDspConfig { it.copy(limiter = it.limiter.copy(releaseMs = v)).withSlotEnabled(EffectType.LIMITER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
@@ -1423,19 +1530,39 @@ fun EffectDetailScreen(
                         val nr = cfg.noiseReduction
                         StudioParamSlider("Spectral Strength", nr.spectralStrength, 0f, 1f, "${(nr.spectralStrength * 100f).roundToInt()}%", StudioColors.Emerald, testTag = "nr_strength") { v ->
                             viewModel.updateDspConfig { it.copy(noiseReduction = it.noiseReduction.copy(spectralStrength = v)).withSlotEnabled(EffectType.NOISE_REDUCTION, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Gate Threshold", nr.thresholdDb, -70f, -18f, "${nr.thresholdDb.roundToInt()} dB", StudioColors.Cyan, testTag = "nr_thresh") { v ->
                             viewModel.updateDspConfig { it.copy(noiseReduction = it.noiseReduction.copy(thresholdDb = v)).withSlotEnabled(EffectType.NOISE_REDUCTION, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("Reduction Depth", nr.reductionDb, 0f, 36f, "${nr.reductionDb.roundToInt()} dB", StudioColors.Violet, testTag = "nr_depth") { v ->
                             viewModel.updateDspConfig { it.copy(noiseReduction = it.noiseReduction.copy(reductionDb = v)).withSlotEnabled(EffectType.NOISE_REDUCTION, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("High-Pass Cutoff", nr.highPassHz, 20f, 260f, "${nr.highPassHz.roundToInt()} Hz", StudioColors.Amber, testTag = "nr_hp") { v ->
                             viewModel.updateDspConfig { it.copy(noiseReduction = it.noiseReduction.copy(highPassHz = v)).withSlotEnabled(EffectType.NOISE_REDUCTION, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                     }
 
                     EffectType.ECHO_REVERB -> Unit
+                }
+
+                val applyEffectInteraction = remember { MutableInteractionSource() }
+                Button(
+                    onClick = { viewModel.commitLiveToolSession(sessionKey, t(lang, effect.titleKey)) },
+                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = applyEffectInteraction,
+                    colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 50.dp)
+                        .lit(applyEffectInteraction, StudioColors.Cyan, cornerRadius = 14.dp)
+                        .testTag("effect_detail_apply_button"),
+                ) {
+                    Text(t(lang, "apply_now"), style = MaterialTheme.typography.labelLarge)
                 }
             }
         }

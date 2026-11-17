@@ -713,3 +713,156 @@ suspend fun saveAndSetRingtone(
         RingtoneSaveResult.Error(t.message ?: "خطأ أثناء كتابة ملف النغمة")
     }
 }
+
+suspend fun stageLargeFileToCleanAsciiCache(
+    context: Context,
+    uploadedFile: File,
+    prefix: String = "large",
+): File = withContext(Dispatchers.IO) {
+    val stagedDir = File(context.cacheDir, "staged_inputs").apply { mkdirs() }
+    val cleanExt = uploadedFile.extension.lowercase()
+        .replace(Regex("[^a-z0-9]"), "")
+        .take(8)
+        .ifBlank { "audio" }
+    val target = File(stagedDir, "${prefix}_${UUID.randomUUID()}.$cleanExt")
+    if (uploadedFile.renameTo(target) && target.exists() && target.length() > 0L) {
+        return@withContext target
+    }
+    uploadedFile.inputStream().buffered(65_536).use { inp ->
+        target.outputStream().buffered(65_536).use { out ->
+            inp.copyTo(out, 65_536)
+        }
+    }
+    runCatching { uploadedFile.delete() }
+    target
+}
+
+suspend fun processAudioFileWithFfmpeg(
+    context: Context,
+    inputFile: File,
+    audioFilter: String,
+    toolName: String,
+    preInputArgs: String = "",
+    postInputArgs: String = "",
+): File? = withContext(Dispatchers.IO) {
+    if (!inputFile.exists() || !FfmpegKitBridge.isAvailable()) return@withContext null
+    val safeIn = com.example.audio.cache.SmartCacheManager.ensureSafeFfmpegInputFile(context, inputFile)
+    val stagedDir = File(context.cacheDir, "staged_inputs").apply { mkdirs() }
+    val outFile = File(stagedDir, "ff_proc_${UUID.randomUUID()}.m4a")
+    val filterPart = if (audioFilter.isNotBlank()) "-af \"$audioFilter\"" else ""
+    val cmd = buildString {
+        append("-y ")
+        if (preInputArgs.isNotBlank()) append("$preInputArgs ")
+        append("-i \"${safeIn.absolutePath}\" ")
+        if (postInputArgs.isNotBlank()) append("$postInputArgs ")
+        if (filterPart.isNotBlank()) append("$filterPart ")
+        append("-vn -ar 44100 -ac 2 -c:a aac -b:a 192k \"${outFile.absolutePath}\"")
+    }
+    val ok = FfmpegKitBridge.execute(cmd, toolName = toolName, logNonZeroFailure = true)
+    if (safeIn != inputFile) runCatching { safeIn.delete() }
+    if (ok && outFile.exists() && outFile.length() > 512L) {
+        outFile
+    } else {
+        runCatching { outFile.delete() }
+        null
+    }
+}
+
+suspend fun mixAudioFilesWithFfmpeg(
+    context: Context,
+    primaryFile: File,
+    secondaryFile: File,
+    primaryGain: Float = 1f,
+    secondaryGain: Float = 0.25f,
+    autoDucking: Boolean = false,
+    mode: MergeStudioMode = MergeStudioMode.OVERLAY,
+    crossfadeSec: Float = 2f,
+    offsetSec: Float = 0f,
+    outFile: File? = null,
+): File? = withContext(Dispatchers.IO) {
+    if (!primaryFile.exists() || !secondaryFile.exists() || !FfmpegKitBridge.isAvailable()) {
+        return@withContext null
+    }
+    val safe1 = com.example.audio.cache.SmartCacheManager.ensureSafeFfmpegInputFile(context, primaryFile)
+    val safe2 = com.example.audio.cache.SmartCacheManager.ensureSafeFfmpegInputFile(context, secondaryFile)
+    val stagedDir = File(context.cacheDir, "staged_inputs").apply { mkdirs() }
+    val target = outFile ?: File(stagedDir, "ff_mix_${UUID.randomUUID()}.m4a")
+    val g1 = String.format(Locale.US, "%.2f", primaryGain.coerceIn(0.1f, 2.5f))
+    val g2 = String.format(Locale.US, "%.2f", secondaryGain.coerceIn(0.05f, 2.5f))
+    val delayMs = (offsetSec.coerceIn(0f, 60f) * 1000f).roundToInt()
+
+    val filterComplex = when (mode) {
+        MergeStudioMode.SEQUENTIAL -> {
+            "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1[a0];" +
+                "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g2[a1];" +
+                "[a0][a1]concat=n=2:v=0:a=1[out]"
+        }
+        MergeStudioMode.CROSSFADE -> {
+            val xf = String.format(Locale.US, "%.2f", crossfadeSec.coerceIn(0.1f, 15f))
+            "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1[a0];" +
+                "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g2[a1];" +
+                "[a0][a1]acrossfade=d=$xf:c1=tri:c2=tri[out]"
+        }
+        MergeStudioMode.OVERLAY -> {
+            val delayFilter = if (delayMs > 0) ",adelay=${delayMs}|${delayMs}" else ""
+            if (autoDucking) {
+                "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1,asplit=2[v][sc];" +
+                    "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g2$delayFilter[m];" +
+                    "[m][sc]sidechaincompress=threshold=0.04:ratio=5:attack=25:release=260[ducked];" +
+                    "[v][ducked]amix=inputs=2:duration=first:normalize=0[out]"
+            } else {
+                "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1[a0];" +
+                    "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g2$delayFilter[a1];" +
+                    "[a0][a1]amix=inputs=2:duration=first:normalize=0[out]"
+            }
+        }
+    }
+
+    val isWav = target.extension.equals("wav", ignoreCase = true)
+    val codecArgs = if (isWav) "-acodec pcm_s16le -ar 44100 -ac 2" else "-ar 44100 -ac 2 -c:a aac -b:a 192k"
+    val cmd = "-y -i \"${safe1.absolutePath}\" -i \"${safe2.absolutePath}\" -filter_complex \"$filterComplex\" -map \"[out]\" -vn $codecArgs \"${target.absolutePath}\""
+    val ok = FfmpegKitBridge.execute(cmd, toolName = "LargeFileFfmpegMix", logNonZeroFailure = true)
+    if (safe1 != primaryFile) runCatching { safe1.delete() }
+    if (safe2 != secondaryFile) runCatching { safe2.delete() }
+    if (ok && target.exists() && target.length() > 512L) {
+        target
+    } else {
+        runCatching { target.delete() }
+        null
+    }
+}
+
+suspend fun exportSourceFileDirectlyWithFfmpeg(
+    context: Context,
+    sourceFile: File,
+    format: com.example.model.ExportAudioFormat,
+    baseFileName: String,
+    loudnessTarget: com.example.model.PlatformLoudnessTarget,
+): ExportedAudioResult? = withContext(Dispatchers.IO) {
+    if (!sourceFile.exists() || !FfmpegKitBridge.isAvailable()) return@withContext null
+    val safeIn = com.example.audio.cache.SmartCacheManager.ensureSafeFfmpegInputFile(context, sourceFile)
+    val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+    val cleanBase = baseFileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "Sonix_Export" }
+    val stamp = UUID.randomUUID().toString().take(6)
+
+    val (ext, mime, codecArgs) = when (format) {
+        com.example.model.ExportAudioFormat.WAV -> Triple("wav", "audio/wav", "-acodec pcm_s16le -ar 44100 -ac 2")
+        com.example.model.ExportAudioFormat.FLAC -> Triple("flac", "audio/flac", "-c:a flac -ar 44100 -ac 2")
+        com.example.model.ExportAudioFormat.MP3 -> Triple("mp3", "audio/mpeg", "-c:a libmp3lame -b:a 320k -ar 44100 -ac 2")
+        com.example.model.ExportAudioFormat.M4A,
+        com.example.model.ExportAudioFormat.OGG -> Triple("m4a", "audio/mp4", "-c:a aac -b:a 320k -ar 44100 -ac 2")
+    }
+    val outFile = File(exportDir, "${cleanBase}_$stamp.$ext")
+    val lufs = loudnessTarget.targetLufs
+    val afArg = if (lufs != null) "-af \"loudnorm=I=$lufs:TP=-1.0:LRA=9\"" else ""
+    val cmd = "-y -i \"${safeIn.absolutePath}\" -vn $afArg $codecArgs \"${outFile.absolutePath}\""
+    val ok = FfmpegKitBridge.execute(cmd, toolName = "LargeFileFfmpegExport", logNonZeroFailure = true)
+    if (safeIn != sourceFile) runCatching { safeIn.delete() }
+    if (ok && outFile.exists() && outFile.length() > 512L) {
+        ExportedAudioResult(outFile, ext, mime)
+    } else {
+        runCatching { outFile.delete() }
+        null
+    }
+}
+

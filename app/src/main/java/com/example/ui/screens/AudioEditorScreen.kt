@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -81,6 +82,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -142,6 +144,15 @@ fun AudioEditorScreen(
     var exportDialogOpen by remember { mutableStateOf(false) }
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        viewModel.beginClipGainSession()
+    }
+
+    BackHandler {
+        viewModel.discardUnapprovedClipGainSession()
+        onBack()
+    }
+
     LaunchedEffect(uiState.restoredToolSession?.id) {
         val restored = viewModel.consumeRestoredToolSession("editor")
         if (restored != null) {
@@ -171,6 +182,7 @@ fun AudioEditorScreen(
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopToolPreview()
+            viewModel.discardUnapprovedClipGainSession()
             val cur = latestState
             if (cur.hasAudio) {
                 val curDur = cur.durationMs.coerceAtLeast(0L)
@@ -202,7 +214,10 @@ fun AudioEditorScreen(
             title = t(lang, "section_editor_title"),
             subtitle = "${formatDurationCentisMs(startMs)} → ${formatDurationCentisMs(endMs)} (${formatDurationCentisMs(selLenMs)})",
             language = lang,
-            onBack = onBack,
+            onBack = {
+                viewModel.discardUnapprovedClipGainSession()
+                onBack()
+            },
             trailing = {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     val undoInteraction = remember { MutableInteractionSource() }
@@ -262,8 +277,13 @@ fun AudioEditorScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        val phaseText = if (prog >= 0.50f && !uiState.importLabel.isNullOrBlank()) {
+                            uiState.importLabel
+                        } else {
+                            t(lang, "uploading_to_cache_label")
+                        }
                         Text(
-                            text = "${t(lang, "uploading_to_cache_label")} $pct%",
+                            text = "$phaseText $pct%",
                             style = MaterialTheme.typography.labelMedium,
                             color = StudioColors.Cyan,
                             modifier = Modifier.weight(1f),
@@ -330,7 +350,7 @@ fun AudioEditorScreen(
                     val savePermInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { viewModel.saveEditsPermanent() },
-                        enabled = uiState.hasAudio,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = savePermInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.ElevatedSurface,
@@ -413,6 +433,11 @@ fun AudioEditorScreen(
                 }
 
                 // Zoomable Horizontally Scrollable Waveform Canvas
+                val density = LocalDensity.current
+                val edgePadPx = remember(density) { with(density) { 10.dp.toPx() } }
+                val handleRadiusPx = remember(density) { with(density) { 8.dp.toPx() } }
+                val handleHitRadiusPx = remember(density) { with(density) { 28.dp.toPx() } }
+                val topHandleYPx = remember(density) { with(density) { 14.dp.toPx() } }
                 BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -432,36 +457,57 @@ fun AudioEditorScreen(
                             modifier = Modifier
                                 .width(zoomedWidth)
                                 .height(154.dp)
-                                .pointerInput(uiState.trimStart, uiState.trimEnd, uiState.hasAudio) {
+                                .pointerInput(uiState.hasAudio) {
                                     if (!uiState.hasAudio) return@pointerInput
                                     detectTapGestures { offset ->
-                                        val nx = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
-                                        val distStart = abs(nx - uiState.trimStart)
-                                        val distEnd = abs(nx - uiState.trimEnd)
-                                        if (distStart <= distEnd) {
-                                            viewModel.updateTrimRange(nx, uiState.trimEnd)
-                                        } else {
-                                            viewModel.updateTrimRange(uiState.trimStart, nx)
-                                        }
+                                        val w = size.width.toFloat().coerceAtLeast(1f)
+                                        val nx = (offset.x / w).coerceIn(0f, 1f)
+                                        viewModel.seekToFraction(nx)
                                     }
                                 }
                                 .pointerInput(uiState.hasAudio) {
                                     if (!uiState.hasAudio) return@pointerInput
-                                    var draggingStart = true
+                                    var dragTarget = 0 // 0 = PLAYHEAD, 1 = START, 2 = END
                                     detectDragGestures(
                                         onDragStart = { startOffset ->
-                                            val nx = (startOffset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                            val w = size.width.toFloat().coerceAtLeast(1f)
+                                            val h = size.height.toFloat().coerceAtLeast(1f)
+                                            val usableW = (w - 2f * edgePadPx).coerceAtLeast(1f)
                                             val st = viewModel.uiState.value
-                                            draggingStart = abs(nx - st.trimStart) <= abs(nx - st.trimEnd)
+                                            val sx = (edgePadPx + st.trimStart * usableW)
+                                                .coerceIn(edgePadPx, (w - edgePadPx).coerceAtLeast(edgePadPx))
+                                            val ex = (edgePadPx + st.trimEnd * usableW)
+                                                .coerceIn(edgePadPx, (w - edgePadPx).coerceAtLeast(edgePadPx))
+                                            val distStartCircle = (startOffset - Offset(sx, topHandleYPx)).getDistance()
+                                            val distEndCircle = (startOffset - Offset(ex, h - topHandleYPx)).getDistance()
+                                            dragTarget = when {
+                                                distStartCircle <= handleHitRadiusPx && distStartCircle <= distEndCircle -> 1
+                                                distEndCircle <= handleHitRadiusPx -> 2
+                                                else -> 0
+                                            }
                                         },
                                         onDrag = { change, _ ->
                                             change.consume()
-                                            val nx = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                            val w = size.width.toFloat().coerceAtLeast(1f)
+                                            val usableW = (w - 2f * edgePadPx).coerceAtLeast(1f)
                                             val st = viewModel.uiState.value
-                                            if (draggingStart) {
-                                                viewModel.updateTrimRange(nx, st.trimEnd)
-                                            } else {
-                                                viewModel.updateTrimRange(st.trimStart, nx)
+                                            when (dragTarget) {
+                                                1 -> {
+                                                    val clampedX = change.position.x
+                                                        .coerceIn(edgePadPx, (w - edgePadPx).coerceAtLeast(edgePadPx))
+                                                    val nx = ((clampedX - edgePadPx) / usableW).coerceIn(0f, 1f)
+                                                    viewModel.updateTrimRange(nx, st.trimEnd)
+                                                }
+                                                2 -> {
+                                                    val clampedX = change.position.x
+                                                        .coerceIn(edgePadPx, (w - edgePadPx).coerceAtLeast(edgePadPx))
+                                                    val nx = ((clampedX - edgePadPx) / usableW).coerceIn(0f, 1f)
+                                                    viewModel.updateTrimRange(st.trimStart, nx)
+                                                }
+                                                else -> {
+                                                    val nx = (change.position.x / w).coerceIn(0f, 1f)
+                                                    viewModel.seekToFraction(nx)
+                                                }
                                             }
                                         },
                                     )
@@ -480,8 +526,10 @@ fun AudioEditorScreen(
                             }
 
                             Canvas(modifier = Modifier.fillMaxSize()) {
-                                val sx = uiState.trimStart * size.width
-                                val ex = uiState.trimEnd * size.width
+                                val maxSafeX = (size.width - edgePadPx).coerceAtLeast(edgePadPx)
+                                val usableW = (size.width - 2f * edgePadPx).coerceAtLeast(1f)
+                                val sx = (edgePadPx + uiState.trimStart * usableW).coerceIn(edgePadPx, maxSafeX)
+                                val ex = (edgePadPx + uiState.trimEnd * usableW).coerceIn(edgePadPx, maxSafeX)
 
                                 drawRect(
                                     color = StudioColors.Cyan.copy(alpha = 0.12f),
@@ -507,12 +555,19 @@ fun AudioEditorScreen(
                                     )
                                 }
 
-                                val px = playFrac * size.width
+                                val pxMin = 2.dp.toPx()
+                                val pxMax = (size.width - pxMin).coerceAtLeast(pxMin)
+                                val px = (playFrac * size.width).coerceIn(pxMin, pxMax)
                                 drawLine(
-                                    color = StudioColors.Rose,
+                                    color = StudioColors.RoseBright,
                                     start = Offset(px, 0f),
                                     end = Offset(px, size.height),
-                                    strokeWidth = 2.dp.toPx(),
+                                    strokeWidth = 2.5.dp.toPx(),
+                                )
+                                drawCircle(
+                                    color = StudioColors.RoseBright,
+                                    radius = 4.5.dp.toPx(),
+                                    center = Offset(px, 6.dp.toPx()),
                                 )
 
                                 drawLine(
@@ -523,8 +578,13 @@ fun AudioEditorScreen(
                                 )
                                 drawCircle(
                                     color = StudioColors.Emerald,
-                                    radius = 7.dp.toPx(),
-                                    center = Offset(sx, 14.dp.toPx()),
+                                    radius = handleRadiusPx,
+                                    center = Offset(sx, topHandleYPx),
+                                )
+                                drawCircle(
+                                    color = StudioColors.BgTop,
+                                    radius = 2.5.dp.toPx(),
+                                    center = Offset(sx, topHandleYPx),
                                 )
 
                                 drawLine(
@@ -535,8 +595,13 @@ fun AudioEditorScreen(
                                 )
                                 drawCircle(
                                     color = StudioColors.Amber,
-                                    radius = 7.dp.toPx(),
-                                    center = Offset(ex, size.height - 14.dp.toPx()),
+                                    radius = handleRadiusPx,
+                                    center = Offset(ex, size.height - topHandleYPx),
+                                )
+                                drawCircle(
+                                    color = StudioColors.BgTop,
+                                    radius = 2.5.dp.toPx(),
+                                    center = Offset(ex, size.height - topHandleYPx),
                                 )
                             }
                         }
@@ -662,7 +727,7 @@ fun AudioEditorScreen(
                             previewSelectionOnly = true,
                         )
                     },
-                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = previewSelInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Cyan,
@@ -695,7 +760,7 @@ fun AudioEditorScreen(
                     val trimInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.trimKeepSelection(autoFadeEdges) },
-                        enabled = uiState.hasAudio,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = trimInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -711,7 +776,7 @@ fun AudioEditorScreen(
                     val cutInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.cutSelectedRange(autoFadeEdges) },
-                        enabled = uiState.hasAudio,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = cutInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -733,7 +798,7 @@ fun AudioEditorScreen(
                     val selectAllInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.resetSelection() },
-                        enabled = uiState.hasAudio,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = selectAllInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -749,7 +814,7 @@ fun AudioEditorScreen(
                     val normalizeInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.normalizeAudioBuffer() },
-                        enabled = uiState.hasAudio,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = normalizeInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -814,7 +879,7 @@ fun AudioEditorScreen(
                 val applyClipGainInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.bakeClipGainDb(uiState.clipGainDb) },
-                    enabled = uiState.hasAudio && abs(uiState.clipGainDb) > 0.05f && !uiState.isBusy,
+                    enabled = uiState.hasAudio && abs(uiState.clipGainDb) > 0.05f && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = applyClipGainInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Amber, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
@@ -876,7 +941,7 @@ fun AudioEditorScreen(
                             previewSelectionOnly = false,
                         )
                     },
-                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = previewFadeInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Cyan,
@@ -908,7 +973,7 @@ fun AudioEditorScreen(
                     val fadeInInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.applyFadeInSeconds(fadeInSec) },
-                        enabled = uiState.hasAudio && fadeInSec > 0.02f,
+                        enabled = uiState.hasAudio && fadeInSec > 0.02f && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = fadeInInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -922,7 +987,7 @@ fun AudioEditorScreen(
                     val fadeOutInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.applyFadeOutSeconds(fadeOutSec) },
-                        enabled = uiState.hasAudio && fadeOutSec > 0.02f,
+                        enabled = uiState.hasAudio && fadeOutSec > 0.02f && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = fadeOutInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -1022,7 +1087,7 @@ fun AudioEditorScreen(
                 val applyMixInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.mixWithBackgroundTrack(mainMixGain, bgMixGain) },
-                    enabled = uiState.hasAudio && uiState.mixBgName != null,
+                    enabled = uiState.hasAudio && uiState.mixBgName != null && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = applyMixInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Violet,
@@ -1156,7 +1221,7 @@ fun AudioEditorScreen(
                                 dualLayerMix = chosen?.dualLayerMix ?: 0f,
                             )
                         },
-                        enabled = uiState.hasAudio && !uiState.isBusy,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = applyVoiceCharInteraction,
                         colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Violet, contentColor = StudioColors.BgTop),
                         shape = RoundedCornerShape(12.dp),
@@ -1296,7 +1361,7 @@ fun AudioEditorScreen(
                                 appendToExisting = uiState.hasAudio,
                             )
                         },
-                        enabled = !uiState.isBusy,
+                        enabled = !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = ttsInsertInteraction,
                         colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                         shape = RoundedCornerShape(12.dp),
@@ -1385,7 +1450,7 @@ fun AudioEditorScreen(
                 val saveDraftInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { saveDraftDialogOpen = true },
-                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = saveDraftInteraction,
                     border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),
@@ -1404,7 +1469,7 @@ fun AudioEditorScreen(
                 val openExportInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { exportDialogOpen = true },
-                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = openExportInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Cyan,

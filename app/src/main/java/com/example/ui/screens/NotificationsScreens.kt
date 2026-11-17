@@ -25,6 +25,7 @@ import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.WarningAmber
@@ -36,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -212,6 +214,22 @@ private fun DiagnosticEntryCard(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                     )
                 }
+                if (entry.occurrenceCount > 1) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = StudioColors.Rose.copy(alpha = 0.2f),
+                        border = BorderStroke(1.dp, StudioColors.RoseBright.copy(alpha = 0.55f)),
+                        modifier = Modifier.testTag("notification_repeat_badge_${entry.id}"),
+                    ) {
+                        Text(
+                            text = "×${entry.occurrenceCount}",
+                            style = TelemetryTextStyle.copy(fontSize = 11.sp, fontWeight = FontWeight.ExtraBold),
+                            color = StudioColors.RoseBright,
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        )
+                    }
+                }
             }
 
             Text(
@@ -243,8 +261,13 @@ private fun DiagnosticEntryCard(
                         color = StudioColors.TextMuted,
                     )
                 }
+                val repeatText = if (entry.occurrenceCount > 1) {
+                    "${entry.errorCode} • ${t(lang, "notifications_repeat_count")} ×${entry.occurrenceCount}"
+                } else {
+                    entry.errorCode
+                }
                 Text(
-                    text = entry.errorCode,
+                    text = repeatText,
                     style = TelemetryTextStyle.copy(fontSize = 11.sp),
                     color = StudioColors.Cyan,
                     maxLines = 1,
@@ -355,8 +378,13 @@ fun NotificationDetailScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = StudioColors.TextPrimary,
                             )
+                            val countSuffix = if (entry.occurrenceCount > 1) {
+                                " • ${t(lang, "notifications_repeat_count")} ×${entry.occurrenceCount}"
+                            } else {
+                                ""
+                            }
                             Text(
-                                text = "Code: ${entry.errorCode} (${entry.severity.name})",
+                                text = "Code: ${entry.errorCode} (${entry.severity.name})$countSuffix",
                                 style = TelemetryTextStyle.copy(fontSize = 11.sp),
                                 color = accent,
                             )
@@ -417,6 +445,40 @@ fun NotificationDetailScreen(
                         Spacer(Modifier.width(8.dp))
                         Text(
                             text = if (copied) t(lang, "notifications_copied") else t(lang, "notifications_copy_code"),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+
+                    val sendSupportInteraction = remember { MutableInteractionSource() }
+                    OutlinedButton(
+                        onClick = {
+                            val subject = if (lang == AppLanguage.EN) {
+                                "Sonix Diagnostic Report [${entry.errorCode}]"
+                            } else {
+                                "تقرير خطأ تقني لتطبيق Sonix [${entry.errorCode}]"
+                            }
+                            val feedback = launchSupportEmail(
+                                context = context,
+                                subject = subject,
+                                body = AppDiagnosticLog.formatFullReport(entry),
+                                lang = lang,
+                            )
+                            viewModel.showStatusBanner(feedback)
+                        },
+                        interactionSource = sendSupportInteraction,
+                        border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.7f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(sendSupportInteraction, StudioColors.Violet, cornerRadius = 14.dp)
+                            .testTag("notifications_send_support"),
+                    ) {
+                        Icon(Icons.Rounded.Email, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = t(lang, "notifications_send_support"),
                             style = MaterialTheme.typography.labelLarge,
                         )
                     }

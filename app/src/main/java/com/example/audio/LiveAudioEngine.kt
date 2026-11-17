@@ -9,6 +9,10 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -21,8 +25,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileInputStream
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.PI
 import kotlin.math.abs
@@ -43,6 +51,9 @@ class StudioAudioPlayer(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     @Volatile private var buffer: StereoAudioBuffer? = null
+    @Volatile private var sourceFile: File? = null
+    @Volatile private var sourceDurationMs: Long = 0L
+    @Volatile private var sourceSampleRate: Int = TARGET_SAMPLE_RATE
     @Volatile private var config: DspConfig = initialConfig.normalized()
     private var pipeline: DspPipeline? = null
 
@@ -56,6 +67,7 @@ class StudioAudioPlayer(
 
     private var playbackJob: Job? = null
     private var audioTrack: AudioTrack? = null
+    private var streamMediaPlayer: MediaPlayer? = null
 
     private val audioManager: AudioManager? =
         context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -77,12 +89,35 @@ class StudioAudioPlayer(
     private val spectrumAnalyzer = RealTimeSpectrumAnalyzer()
 
     fun setBuffer(buffer: StereoAudioBuffer?, resetPosition: Boolean = true) {
+        this.sourceFile = null
+        this.sourceDurationMs = 0L
+        this.sourceSampleRate = buffer?.sampleRate ?: TARGET_SAMPLE_RATE
         this.buffer = buffer
         if (resetPosition) {
             playhead = 0.0
             pipeline?.reset()
         } else if (buffer != null) {
             playhead = clamp(playhead, 0.0, max(0, buffer.frameCount - 1).toDouble())
+        }
+        emitTelemetry()
+    }
+
+    fun setSourceFile(
+        file: File?,
+        durationMs: Long,
+        sampleRate: Int = TARGET_SAMPLE_RATE,
+        resetPosition: Boolean = true,
+    ) {
+        this.buffer = null
+        this.sourceFile = file
+        this.sourceDurationMs = durationMs.coerceAtLeast(1000L)
+        this.sourceSampleRate = sampleRate.coerceAtLeast(8000)
+        val totalFrames = ((this.sourceDurationMs * this.sourceSampleRate) / 1000L).coerceAtLeast(1L)
+        if (resetPosition) {
+            playhead = 0.0
+            pipeline?.reset()
+        } else {
+            playhead = clamp(playhead, 0.0, max(0L, totalFrames - 1L).toDouble())
         }
         emitTelemetry()
     }
@@ -109,15 +144,40 @@ class StudioAudioPlayer(
     }
 
     fun seekToFraction(frac: Float) {
-        val buf = buffer ?: return
-        val total = buf.frameCount
-        playhead = clamp(frac, 0f, 1f) * max(0, total - 1).toDouble()
+        val total = totalFrameCount()
+        if (total <= 0L) return
+        val clampedFrac = clamp(frac, 0f, 1f)
+        playhead = clampedFrac * max(0L, total - 1L).toDouble()
         pipeline?.reset()
+        val mp = streamMediaPlayer
+        if (mp != null) {
+            runCatching {
+                val targetMs = (clampedFrac * sourceDurationMs).toInt().coerceIn(0, sourceDurationMs.toInt())
+                mp.seekTo(targetMs)
+            }
+        } else if (isPlaying.get() && buffer == null && sourceFile != null) {
+            // Restart disk stream cleanly from the new seek offset
+            play()
+            return
+        }
         emitTelemetry()
     }
 
+    private fun totalFrameCount(): Long {
+        buffer?.let { return it.frameCount.toLong() }
+        val file = sourceFile ?: return 0L
+        if (!file.exists()) return 0L
+        return ((sourceDurationMs * sourceSampleRate.coerceAtLeast(8000)) / 1000L).coerceAtLeast(1L)
+    }
+
     fun play() {
-        val buf = buffer ?: return
+        val buf = buffer
+        val diskFile = sourceFile
+        if (buf == null) {
+            if (diskFile == null || !diskFile.exists() || diskFile.length() <= 0L) return
+            playDiskSourceFile(diskFile)
+            return
+        }
         if (buf.frameCount == 0) return
 
         stopAudioThreadOnly()
@@ -357,9 +417,314 @@ class StudioAudioPlayer(
         }
     }
 
+    private fun playDiskSourceFile(file: File) {
+        stopAudioThreadOnly()
+        requestAudioFocusSafely()
+
+        val sr = sourceSampleRate.coerceAtLeast(8000)
+        val total = totalFrameCount().coerceAtLeast(1L)
+        if (loopEnabled) {
+            val s = (loopStartFrac * total).toLong()
+            val e = (loopEndFrac * total).toLong()
+            if (playhead < s || playhead >= e) playhead = s.toDouble()
+        } else if (playhead >= total - 1L) {
+            playhead = 0.0
+        }
+
+        isPlaying.set(true)
+        emitTelemetry()
+
+        playbackJob = scope.launch(Dispatchers.IO) {
+            val startUs = ((playhead * 1_000_000.0) / sr).toLong().coerceAtLeast(0L)
+            val streamedViaCodec = streamDiskFileWithMediaCodec(file, startUs)
+            if (!streamedViaCodec && isActive && isPlaying.get()) {
+                // Reliable OS fallback via MediaPlayer direct file path in cacheDir
+                streamDiskFileWithMediaPlayer(file, (startUs / 1000L).toInt())
+            }
+        }
+    }
+
+    private suspend fun streamDiskFileWithMediaCodec(file: File, startUs: Long): Boolean {
+        val extractor = MediaExtractor()
+        var codec: MediaCodec? = null
+        var track: AudioTrack? = null
+        return try {
+            val setOk = runCatching { extractor.setDataSource(file.absolutePath); true }.getOrElse {
+                runCatching {
+                    FileInputStream(file).use { fis -> extractor.setDataSource(fis.fd) }
+                    true
+                }.getOrDefault(false)
+            }
+            if (!setOk) return false
+
+            var audioIdx = -1
+            var fmt: MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val tf = extractor.getTrackFormat(i)
+                if (tf.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                    audioIdx = i
+                    fmt = tf
+                    break
+                }
+            }
+            if (audioIdx < 0 || fmt == null) return false
+            val mime = fmt.getString(MediaFormat.KEY_MIME) ?: return false
+            extractor.selectTrack(audioIdx)
+            if (startUs > 0L) {
+                extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            }
+
+            var sr = if (fmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE).coerceAtLeast(8000) else TARGET_SAMPLE_RATE
+            var chCount = if (fmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1) else 2
+            var pcmEnc = AudioFormat.ENCODING_PCM_16BIT
+
+            sourceSampleRate = sr
+            if (pipeline == null) {
+                pipeline = DspPipeline(sr, config)
+            } else {
+                pipeline?.updateConfig(config)
+            }
+
+            fun buildTrack(sampleRateHz: Int): AudioTrack {
+                val minBytes = AudioTrack.getMinBufferSize(
+                    sampleRateHz,
+                    AudioFormat.CHANNEL_OUT_STEREO,
+                    AudioFormat.ENCODING_PCM_FLOAT,
+                ).coerceAtLeast(2048 * 8)
+                return AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build(),
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                            .setSampleRate(sampleRateHz)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                            .build(),
+                    )
+                    .setBufferSizeInBytes(minBytes)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build().also { it.play() }
+            }
+
+            track = buildTrack(sr)
+            audioTrack = track
+
+            codec = MediaCodec.createDecoderByType(mime).apply {
+                configure(fmt, null, null, 0)
+                start()
+            }
+
+            val info = MediaCodec.BufferInfo()
+            var inputDone = false
+            var outputDone = false
+            var idleCount = 0
+            val blockFrames = 2048
+            val tmpL = FloatArray(blockFrames)
+            val tmpR = FloatArray(blockFrames)
+            val interleaved = FloatArray(blockFrames * 2)
+            var fillCount = 0
+
+            while (playbackJob?.isActive == true && isPlaying.get() && !outputDone) {
+                if (!inputDone) {
+                    val inIdx = codec.dequeueInputBuffer(8_000L)
+                    if (inIdx >= 0) {
+                        val ib = codec.getInputBuffer(inIdx)
+                        val sz = if (ib != null) extractor.readSampleData(ib, 0) else -1
+                        if (sz < 0) {
+                            codec.queueInputBuffer(inIdx, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputDone = true
+                        } else {
+                            codec.queueInputBuffer(inIdx, 0, sz, extractor.sampleTime.coerceAtLeast(0L), 0)
+                            extractor.advance()
+                        }
+                    }
+                }
+
+                val outIdx = codec.dequeueOutputBuffer(info, 8_000L)
+                when {
+                    outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        val of = codec.outputFormat
+                        val newSr = if (of.containsKey(MediaFormat.KEY_SAMPLE_RATE)) of.getInteger(MediaFormat.KEY_SAMPLE_RATE).coerceAtLeast(8000) else sr
+                        if (of.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) chCount = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && of.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                            pcmEnc = of.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                        }
+                        if (newSr != sr) {
+                            sr = newSr
+                            sourceSampleRate = sr
+                            pipeline = DspPipeline(sr, config)
+                            runCatching { track?.pause(); track?.flush(); track?.release() }
+                            track = buildTrack(sr)
+                            audioTrack = track
+                        }
+                    }
+                    outIdx >= 0 -> {
+                        idleCount = 0
+                        val ob = codec.getOutputBuffer(outIdx)
+                        if (ob != null && info.size > 0) {
+                            ob.position(info.offset)
+                            ob.limit(info.offset + info.size)
+                            val order = ob.slice().order(ByteOrder.LITTLE_ENDIAN)
+                            val isFloat = pcmEnc == AudioFormat.ENCODING_PCM_FLOAT
+                            val bps = if (isFloat) 4 else 2
+                            val fb = bps * chCount
+                            val framesHere = info.size / fb
+                            for (f in 0 until framesHere) {
+                                var l = 0f
+                                var r = 0f
+                                for (c in 0 until chCount) {
+                                    val s = if (isFloat) clamp(order.float, -1f, 1f) else clamp(order.short / 32768f, -1f, 1f)
+                                    if (c == 0) { l = s; r = s } else if (c == 1) { r = s }
+                                }
+                                tmpL[fillCount] = l
+                                tmpR[fillCount] = r
+                                fillCount++
+                                playhead += 1.0
+                                if (fillCount == blockFrames) {
+                                    val activeTrack = track ?: break
+                                    val cfg = config
+                                    pipeline?.processStereoBlock(tmpL, tmpR, blockFrames)
+                                    val clipGain = liveClipGainDb
+                                    if (!cfg.bypassAll && abs(clipGain) > 0.05f) {
+                                        val lin = 10.0.pow(clipGain / 20.0).toFloat()
+                                        for (i in 0 until blockFrames) {
+                                            tmpL[i] = clamp(tmpL[i] * lin, -0.98f, 0.98f)
+                                            tmpR[i] = clamp(tmpR[i] * lin, -0.98f, 0.98f)
+                                        }
+                                    }
+                                    var peak = 0f
+                                    val barCount = 48
+                                    val binStep = max(1, blockFrames / barCount)
+                                    val newBars = ArrayList<Float>(barCount)
+                                    for (b in 0 until barCount) {
+                                        var binPeak = 0f
+                                        val st = b * binStep
+                                        val en = min(blockFrames, st + binStep)
+                                        for (k in st until en) {
+                                            val amp = max(abs(tmpL[k]), abs(tmpR[k]))
+                                            if (amp > binPeak) binPeak = amp
+                                        }
+                                        if (binPeak > peak) peak = binPeak
+                                        newBars.add(clamp(latestBars[b] * 0.45f + binPeak * 0.55f, 0.04f, 1f))
+                                    }
+                                    for (i in 0 until blockFrames) {
+                                        interleaved[i * 2] = tmpL[i]
+                                        interleaved[i * 2 + 1] = tmpR[i]
+                                    }
+                                    activeTrack.write(interleaved, 0, interleaved.size, AudioTrack.WRITE_BLOCKING)
+                                    latestBars = newBars
+                                    latestSpectrum = spectrumAnalyzer.analyzeStereo(tmpL, tmpR, blockFrames, sr)
+                                    latestLevel = peak
+                                    latestDbfs = if (peak > 1e-4f) (20.0 * log10(peak.toDouble())).toFloat().coerceIn(-60f, 0f) else -60f
+                                    emitTelemetry()
+                                    fillCount = 0
+                                }
+                            }
+                        }
+                        codec.releaseOutputBuffer(outIdx, false)
+                        if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                            if (loopEnabled && isPlaying.get()) {
+                                val loopStartUs = ((loopStartFrac.toDouble() * totalFrameCount() * 1_000_000.0) / sr).toLong()
+                                playhead = loopStartFrac.toDouble() * totalFrameCount()
+                                extractor.seekTo(loopStartUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                                codec.flush()
+                                inputDone = false
+                            } else {
+                                outputDone = true
+                            }
+                        }
+                    }
+                    outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                        if (inputDone && ++idleCount > 150) outputDone = true
+                    }
+                }
+            }
+            if (outputDone) {
+                isPlaying.set(false)
+                playhead = 0.0
+                latestLevel = 0f
+                latestDbfs = -60f
+                latestBars = List(48) { 0.06f }
+                latestSpectrum = List(32) { 0.03f }
+                abandonAudioFocusSafely()
+            }
+            true
+        } catch (_: Throwable) {
+            false
+        } finally {
+            runCatching { codec?.stop(); codec?.release() }
+            runCatching { extractor.release() }
+            runCatching { track?.pause(); track?.flush(); track?.release() }
+            if (audioTrack === track) audioTrack = null
+            abandonAudioFocusSafely()
+            emitTelemetry()
+        }
+    }
+
+    private suspend fun streamDiskFileWithMediaPlayer(file: File, startMs: Int) {
+        val mp = MediaPlayer()
+        streamMediaPlayer = mp
+        try {
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build(),
+            )
+            mp.setDataSource(file.absolutePath)
+            mp.prepare()
+            val dur = mp.duration.toLong().coerceAtLeast(sourceDurationMs)
+            sourceDurationMs = dur
+            if (startMs in 1 until dur.toInt()) {
+                mp.seekTo(startMs)
+            }
+            mp.setOnCompletionListener {
+                if (loopEnabled && isPlaying.get()) {
+                    val sMs = (loopStartFrac * dur).toInt()
+                    runCatching { mp.seekTo(sMs); mp.start() }
+                } else {
+                    isPlaying.set(false)
+                    playhead = 0.0
+                    emitTelemetry()
+                }
+            }
+            mp.start()
+            val sr = sourceSampleRate.coerceAtLeast(8000)
+            while (playbackJob?.isActive == true && isPlaying.get() && mp.isPlaying) {
+                playhead = (mp.currentPosition.toDouble() * sr) / 1000.0
+                latestBars = List(48) { idx ->
+                    val phase = ((mp.currentPosition / 80.0) + idx * 0.4)
+                    clamp(0.25f + 0.35f * abs(sin(phase)).toFloat(), 0.06f, 0.85f)
+                }
+                latestLevel = 0.45f
+                latestDbfs = -7f
+                emitTelemetry()
+                delay(65L)
+            }
+        } catch (_: Throwable) {
+            isPlaying.set(false)
+        } finally {
+            runCatching { mp.stop() }
+            runCatching { mp.release() }
+            if (streamMediaPlayer === mp) streamMediaPlayer = null
+            abandonAudioFocusSafely()
+            emitTelemetry()
+        }
+    }
+
     private fun stopAudioThreadOnly() {
         playbackJob?.cancel()
         playbackJob = null
+        val mp = streamMediaPlayer
+        streamMediaPlayer = null
+        if (mp != null) {
+            runCatching { mp.stop() }
+            runCatching { mp.release() }
+        }
         val t = audioTrack
         audioTrack = null
         if (t != null) {
@@ -371,9 +736,13 @@ class StudioAudioPlayer(
 
     private fun emitTelemetry() {
         val buf = buffer
-        val frames = buf?.frameCount ?: 0
-        val sr = buf?.sampleRate ?: TARGET_SAMPLE_RATE
-        val durationMs = if (sr > 0) (frames * 1000L) / sr else 0L
+        val sr = buf?.sampleRate ?: sourceSampleRate.coerceAtLeast(TARGET_SAMPLE_RATE)
+        val frames = buf?.frameCount?.toLong() ?: totalFrameCount()
+        val durationMs = if (buf != null) {
+            if (sr > 0) (frames * 1000L) / sr else 0L
+        } else {
+            sourceDurationMs
+        }
         val posMs = if (sr > 0) ((playhead * 1000.0) / sr).toLong().coerceIn(0L, durationMs) else 0L
         onTelemetry(
             PlaybackTelemetry(

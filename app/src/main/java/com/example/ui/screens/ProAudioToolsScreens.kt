@@ -303,7 +303,7 @@ fun AudioSplitScreen(
                         preferVmUndo = true
                         viewModel.splitAudioAtFraction(splitPoint, loadPart, saveBothToLibrary)
                     },
-                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = splitExecInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
@@ -325,7 +325,7 @@ fun AudioSplitScreen(
                     val leftInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.splitStereoChannel(keepLeft = true) },
-                        enabled = uiState.hasAudio,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = leftInteraction,
                         modifier = Modifier
                             .weight(1f)
@@ -337,7 +337,7 @@ fun AudioSplitScreen(
                     val rightInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.splitStereoChannel(keepLeft = false) },
-                        enabled = uiState.hasAudio,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = rightInteraction,
                         modifier = Modifier
                             .weight(1f)
@@ -364,6 +364,15 @@ fun PitchAndSpeedScreen(
     val tempo = uiState.dspConfig.timeStretch.tempoRatio
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        viewModel.beginLiveToolSession("pitch_speed")
+    }
+
+    androidx.activity.compose.BackHandler {
+        viewModel.discardLiveToolSession("pitch_speed")
+        onBack()
+    }
+
     LaunchedEffect(uiState.restoredToolSession?.id) {
         val restored = viewModel.consumeRestoredToolSession("pitch_speed")
         if (restored != null) {
@@ -385,14 +394,18 @@ fun PitchAndSpeedScreen(
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopToolPreview()
-            viewModel.saveToolSessionToCache(
-                toolId = "pitch_speed",
-                titleAr = "الطبقة والسرعة",
-                titleEn = "Pitch & Speed",
-                summaryAr = "${"%+.1f".format(latestSemi)} st • ${"%.2f".format(latestTempo)}x",
-                summaryEn = "${"%+.1f".format(latestSemi)} st • ${"%.2f".format(latestTempo)}x",
-                floatParams = mapOf("semitones" to latestSemi, "tempoRatio" to latestTempo),
-            )
+            val committed = viewModel.isLiveToolSessionCommitted("pitch_speed")
+            viewModel.discardLiveToolSession("pitch_speed")
+            if (committed) {
+                viewModel.saveToolSessionToCache(
+                    toolId = "pitch_speed",
+                    titleAr = "الطبقة والسرعة",
+                    titleEn = "Pitch & Speed",
+                    summaryAr = "${"%+.1f".format(latestSemi)} st • ${"%.2f".format(latestTempo)}x",
+                    summaryEn = "${"%+.1f".format(latestSemi)} st • ${"%.2f".format(latestTempo)}x",
+                    floatParams = mapOf("semitones" to latestSemi, "tempoRatio" to latestTempo),
+                )
+            }
         }
     }
 
@@ -401,7 +414,10 @@ fun PitchAndSpeedScreen(
             title = t(lang, "tool_pitch_speed"),
             subtitle = if (lang == AppLanguage.EN) "Adjust pitch semitones & tempo independently" else "تعديل حدة الطبقة الصوتية وسرعة الإيقاع بدقة",
             language = lang,
-            onBack = onBack,
+            onBack = {
+                viewModel.discardLiveToolSession("pitch_speed")
+                onBack()
+            },
             trailing = {
                 UndoRedoActionsRow(
                     canUndo = uiState.canUndoEdit,
@@ -476,7 +492,7 @@ fun PitchAndSpeedScreen(
                 val applyPitchInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.applyPitchAndSpeed(semitones, tempo) },
-                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = applyPitchInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
@@ -561,8 +577,8 @@ fun ReverseAudioScreen(
             ) {
                 PreviewAndApplyActionRow(
                     isPreviewPlaying = uiState.isToolPreviewPlaying,
-                    previewEnabled = uiState.hasAudio && !uiState.isBusy,
-                    applyEnabled = uiState.hasAudio && !uiState.isBusy,
+                    previewEnabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
+                    applyEnabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     language = lang,
                     previewTag = "reverse_preview_button",
                     applyTag = "reverse_apply_button",
@@ -592,6 +608,15 @@ fun SurroundStereoScreen(
     var preferVmUndo by remember { mutableStateOf(false) }
     val stereoHistory = rememberEditHistory(Triple(midAdjustPct, sideBoostPct, widthPct))
 
+    LaunchedEffect(Unit) {
+        viewModel.beginLiveToolSession("surround_stereo")
+    }
+
+    androidx.activity.compose.BackHandler {
+        viewModel.discardLiveToolSession("surround_stereo")
+        onBack()
+    }
+
     LaunchedEffect(uiState.restoredToolSession?.id) {
         val restored = viewModel.consumeRestoredToolSession("surround_stereo")
         if (restored != null) {
@@ -607,18 +632,22 @@ fun SurroundStereoScreen(
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopToolPreview()
-            viewModel.saveToolSessionToCache(
-                toolId = "surround_stereo",
-                titleAr = "ستيريو محيطي M/S",
-                titleEn = "Surround Stereo",
-                summaryAr = "Mid ${latestMid.roundToInt()}% • Side ${latestSide.roundToInt()}% • ${latestWidth.roundToInt()}%",
-                summaryEn = "Mid ${latestMid.roundToInt()}% • Side ${latestSide.roundToInt()}% • ${latestWidth.roundToInt()}%",
-                floatParams = mapOf(
-                    "midAdjustPct" to latestMid,
-                    "sideBoostPct" to latestSide,
-                    "widthPct" to latestWidth,
-                ),
-            )
+            val committed = viewModel.isLiveToolSessionCommitted("surround_stereo")
+            viewModel.discardLiveToolSession("surround_stereo")
+            if (committed) {
+                viewModel.saveToolSessionToCache(
+                    toolId = "surround_stereo",
+                    titleAr = "ستيريو محيطي M/S",
+                    titleEn = "Surround Stereo",
+                    summaryAr = "Mid ${latestMid.roundToInt()}% • Side ${latestSide.roundToInt()}% • ${latestWidth.roundToInt()}%",
+                    summaryEn = "Mid ${latestMid.roundToInt()}% • Side ${latestSide.roundToInt()}% • ${latestWidth.roundToInt()}%",
+                    floatParams = mapOf(
+                        "midAdjustPct" to latestMid,
+                        "sideBoostPct" to latestSide,
+                        "widthPct" to latestWidth,
+                    ),
+                )
+            }
         }
     }
 
@@ -627,7 +656,10 @@ fun SurroundStereoScreen(
             title = t(lang, "tool_stereo_surround"),
             subtitle = if (lang == AppLanguage.EN) "Convert mono or narrow clips into wide spatial stereo" else "توسيع المجال الصوتي M/S وتحويل المونو إلى ستيريو محيطي",
             language = lang,
-            onBack = onBack,
+            onBack = {
+                viewModel.discardLiveToolSession("surround_stereo")
+                onBack()
+            },
             trailing = {
                 UndoRedoActionsRow(
                     canUndo = stereoHistory.canUndo || uiState.canUndoEdit,
@@ -748,7 +780,7 @@ fun SurroundStereoScreen(
                         preferVmUndo = true
                         viewModel.applySurroundStereoFromOffsets(midAdjustPct, sideBoostPct, widthPct)
                     },
-                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = applyStereoInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
@@ -906,7 +938,7 @@ fun GenerateSilenceScreen(
                         preferVmUndo = true
                         viewModel.insertGeneratedSilence(durationSec, appendMode)
                     },
-                    enabled = !uiState.isBusy,
+                    enabled = !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = silenceInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
@@ -1051,7 +1083,7 @@ fun FormatConverterScreen(
                     val convertSaveInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { viewModel.exportRenderedAudio(selectedFormat, fileName, shareAfter = false) },
-                        enabled = uiState.hasAudio && !uiState.isBusy,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = convertSaveInteraction,
                         colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                         shape = RoundedCornerShape(14.dp),
@@ -1069,7 +1101,7 @@ fun FormatConverterScreen(
                     val convertShareInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.exportRenderedAudio(selectedFormat, fileName, shareAfter = true) },
-                        enabled = uiState.hasAudio && !uiState.isBusy,
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = convertShareInteraction,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
@@ -1137,7 +1169,7 @@ fun ExtractVideoAudioScreen(
         val pickVideoInteraction = remember { MutableInteractionSource() }
         Button(
             onClick = { videoPicker.launch(arrayOf("video/*")) },
-            enabled = !uiState.isBusy,
+            enabled = !uiState.isBusy && !uiState.isProcessing,
             interactionSource = pickVideoInteraction,
             colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
             shape = RoundedCornerShape(16.dp),
@@ -1197,7 +1229,7 @@ fun ExtractVideoAudioScreen(
                     val extractExportInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { viewModel.exportRenderedAudio(selectedFormat, uiState.activeProjectName, shareAfter = false) },
-                        enabled = !uiState.isBusy,
+                        enabled = !uiState.isBusy && !uiState.isProcessing,
                         interactionSource = extractExportInteraction,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1335,7 +1367,7 @@ fun CompressAudioScreen(
                 val compressInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.compressAndExportAudio(bitrateKbps, fileName, shareAfter = false) },
-                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = compressInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
@@ -1526,7 +1558,7 @@ fun RingtoneMakerScreen(
                             },
                         )
                     },
-                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = ringtoneSaveInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Emerald, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),

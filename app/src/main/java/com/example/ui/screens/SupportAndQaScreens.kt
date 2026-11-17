@@ -355,7 +355,7 @@ fun SupportUpdatesQaSection(
             }
         }
 
-        // Classic Card: Smart QA Bot & 30,000+ Deep Diagnostics Lab
+        // Classic Card: Smart QA Bot & Open-Ended Full Diagnostics Lab
         Card(
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -425,7 +425,7 @@ fun SupportUpdatesQaSection(
                         border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.5f)),
                     ) {
                         Text(
-                            text = "${qaState.scenariosChecked} / 30,000+",
+                            text = "#${qaState.scenariosChecked}",
                             style = TelemetryTextStyle.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
                             color = StudioColors.Cyan,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -514,19 +514,28 @@ fun SupportUpdatesQaSection(
                 }
 
                 // Live Progress & Telemetry Metrics Strip
-                val progressFraction = (qaState.scenariosChecked.toFloat() / qaState.totalTarget.coerceAtLeast(30_000).toFloat())
-                    .coerceIn(0f, 1f)
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    LinearProgressIndicator(
-                        progress = { progressFraction },
-                        color = if (qaState.issues.isNotEmpty()) StudioColors.Amber else StudioColors.Cyan,
-                        trackColor = StudioColors.BgTop,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(7.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .testTag("qa_progress_bar"),
-                    )
+                    val progressBarColor = if (qaState.issues.isNotEmpty()) StudioColors.Amber else StudioColors.Cyan
+                    val progressBarMod = Modifier
+                        .fillMaxWidth()
+                        .height(7.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .testTag("qa_progress_bar")
+                    if (qaState.isRunning) {
+                        LinearProgressIndicator(
+                            color = progressBarColor,
+                            trackColor = StudioColors.BgTop,
+                            modifier = progressBarMod,
+                        )
+                    } else {
+                        val idleFraction = if (qaState.completed && qaState.scenariosChecked > 0) 1f else 0f
+                        LinearProgressIndicator(
+                            progress = { idleFraction },
+                            color = progressBarColor,
+                            trackColor = StudioColors.BgTop,
+                            modifier = progressBarMod,
+                        )
+                    }
 
                     Text(
                         text = if (lang == AppLanguage.EN) qaState.currentPhaseLabelEn else qaState.currentPhaseLabelAr,
@@ -1216,41 +1225,62 @@ private fun buildSupportEmailBody(
     }
 }
 
-private fun launchSupportEmail(
+internal fun launchSupportEmail(
     context: Context,
     subject: String,
     body: String,
     lang: AppLanguage,
 ): String {
+    val safeBody = body.take(12_000)
     val mailtoUri = Uri.parse("mailto:$SUPPORT_EMAIL")
-    val intent = Intent(Intent.ACTION_SENDTO, mailtoUri).apply {
-        putExtra(Intent.EXTRA_EMAIL, arrayOf(SUPPORT_EMAIL))
-        putExtra(Intent.EXTRA_SUBJECT, subject)
-        putExtra(Intent.EXTRA_TEXT, body)
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
-    val hasHandler = runCatching {
-        intent.resolveActivity(context.packageManager) != null
+
+    val primaryStarted = runCatching {
+        val mailtoIntent = Intent(Intent.ACTION_SENDTO, mailtoUri).apply {
+            putExtra(Intent.EXTRA_EMAIL, arrayOf(SUPPORT_EMAIL))
+            putExtra(Intent.EXTRA_SUBJECT, subject)
+            putExtra(Intent.EXTRA_TEXT, safeBody)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(mailtoIntent)
+        true
     }.getOrDefault(false)
 
-    if (hasHandler) {
-        val started = runCatching {
-            context.startActivity(intent)
-            true
-        }.getOrDefault(false)
-        if (started) {
-            return if (lang == AppLanguage.EN) {
-                "Opening email client to $SUPPORT_EMAIL"
-            } else {
-                "تم فتح تطبيق البريد للمراسلة مع $SUPPORT_EMAIL"
-            }
+    if (primaryStarted) {
+        return if (lang == AppLanguage.EN) {
+            "Opening email client to $SUPPORT_EMAIL"
+        } else {
+            "تم فتح تطبيق البريد للمراسلة مع $SUPPORT_EMAIL"
+        }
+    }
+
+    val chooserStarted = runCatching {
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "message/rfc822"
+            putExtra(Intent.EXTRA_EMAIL, arrayOf(SUPPORT_EMAIL))
+            putExtra(Intent.EXTRA_SUBJECT, subject)
+            putExtra(Intent.EXTRA_TEXT, safeBody)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val chooserTitle = if (lang == AppLanguage.EN) "Send Email to Support" else "إرسال إلى الدعم الفني"
+        val chooserIntent = Intent.createChooser(sendIntent, chooserTitle).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(chooserIntent)
+        true
+    }.getOrDefault(false)
+
+    if (chooserStarted) {
+        return if (lang == AppLanguage.EN) {
+            "Opening email chooser to $SUPPORT_EMAIL"
+        } else {
+            "تم فتح نافذة اختيار البريد للمراسلة مع $SUPPORT_EMAIL"
         }
     }
 
     copyTextToClipboard(
         context = context,
         label = "Sonix Support Email & Report",
-        text = "To: $SUPPORT_EMAIL\nSubject: $subject\n\n$body",
+        text = "To: $SUPPORT_EMAIL\nSubject: $subject\n\n$safeBody",
     )
     return if (lang == AppLanguage.EN) {
         "No email app configured — message & address ($SUPPORT_EMAIL) copied to clipboard."

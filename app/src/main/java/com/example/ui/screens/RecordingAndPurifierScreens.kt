@@ -89,7 +89,6 @@ import com.example.model.AppLanguage
 import com.example.model.EffectType
 import com.example.model.VOICE_PURIFY_PRESETS
 import com.example.studio.ui.lit
-import com.example.ui.components.PreviewAndApplyActionRow
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.SpectrumVisualizer
 import com.example.ui.components.StudioFocusTopBar
@@ -454,8 +453,13 @@ fun RecordingStudioScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                val phaseLabel = if (prog >= 0.50f && !uiState.importLabel.isNullOrBlank()) {
+                                    uiState.importLabel
+                                } else {
+                                    t(lang, "uploading_to_cache_label")
+                                }
                                 Text(
-                                    text = "${t(lang, "uploading_to_cache_label")} $pct%",
+                                    text = "$phaseLabel $pct%",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = StudioColors.Cyan,
                                     modifier = Modifier.weight(1f),
@@ -588,6 +592,15 @@ fun VoicePurifierScreen(
     val suppNorm = (uiState.playback.noiseSuppressionDb / 32f).coerceIn(0f, 1f)
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        viewModel.beginLiveToolSession("voice_purifier")
+    }
+
+    androidx.activity.compose.BackHandler {
+        viewModel.discardLiveToolSession("voice_purifier")
+        onBack()
+    }
+
     LaunchedEffect(uiState.restoredToolSession?.id) {
         val restored = viewModel.consumeRestoredToolSession("voice_purifier")
         if (restored != null) {
@@ -610,7 +623,9 @@ fun VoicePurifierScreen(
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopToolPreview()
-            if (latestHasAudio) {
+            val committed = viewModel.isLiveToolSessionCommitted("voice_purifier")
+            viewModel.discardLiveToolSession("voice_purifier")
+            if (committed && latestHasAudio) {
                 val p = latestNr
                 val pct = (p.spectralStrength * 100f).roundToInt()
                 viewModel.saveToolSessionToCache(
@@ -635,7 +650,10 @@ fun VoicePurifierScreen(
             title = t(lang, "section_purifier_title"),
             subtitle = t(lang, "section_purifier_subtitle"),
             language = lang,
-            onBack = onBack,
+            onBack = {
+                viewModel.discardLiveToolSession("voice_purifier")
+                onBack()
+            },
             trailing = {
                 UndoRedoActionsRow(
                     canUndo = uiState.canUndoEdit,
@@ -750,7 +768,10 @@ fun VoicePurifierScreen(
                         kotlin.math.abs(nr.reductionDb - preset.reductionDb) < 1f
                     val presetInteraction = remember { MutableInteractionSource() }
                     Surface(
-                        onClick = { viewModel.applyVoicePurifyPreset(preset) },
+                        onClick = {
+                            viewModel.applyVoicePurifyPreset(preset)
+                            viewModel.ensureLivePreviewPlaying()
+                        },
                         interactionSource = presetInteraction,
                         shape = RoundedCornerShape(14.dp),
                         color = if (isMatched) StudioColors.ElevatedSurface else StudioColors.BgMid,
@@ -832,6 +853,7 @@ fun VoicePurifierScreen(
                                 ),
                             ).withSlotEnabled(EffectType.NOISE_REDUCTION, true)
                         }
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
 
@@ -849,6 +871,7 @@ fun VoicePurifierScreen(
                             prev.copy(noiseReduction = prev.noiseReduction.copy(highPassHz = v))
                                 .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
                         }
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
 
@@ -865,6 +888,7 @@ fun VoicePurifierScreen(
                             prev.copy(noiseReduction = prev.noiseReduction.copy(lowPassHz = v))
                                 .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
                         }
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
 
@@ -882,6 +906,7 @@ fun VoicePurifierScreen(
                             prev.copy(noiseReduction = prev.noiseReduction.copy(clarityBoostDb = v))
                                 .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
                         }
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
 
@@ -915,18 +940,27 @@ fun VoicePurifierScreen(
                     )
                 }
 
-                PreviewAndApplyActionRow(
-                    isPreviewPlaying = uiState.isToolPreviewPlaying,
-                    previewEnabled = uiState.hasAudio && !uiState.isBusy,
-                    applyEnabled = uiState.hasAudio && !uiState.isBusy,
-                    language = lang,
-                    previewTag = "purifier_preview_button",
-                    applyTag = "purifier_deep_clean_button",
-                    applyLabel = if (lang == AppLanguage.EN) "Apply Deep Clean" else "تطبيق التنقية وحفظها",
-                    applyColor = StudioColors.Emerald,
-                    onPreviewClick = { viewModel.previewPurifierOffline() },
-                    onApplyClick = { viewModel.purifyAudioOffline() },
-                )
+                val applyPurifyInteraction = remember { MutableInteractionSource() }
+                Button(
+                    onClick = { viewModel.purifyAudioOffline() },
+                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = applyPurifyInteraction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.Emerald,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 50.dp)
+                        .lit(applyPurifyInteraction, StudioColors.Emerald, cornerRadius = 14.dp)
+                        .testTag("purifier_deep_clean_button"),
+                ) {
+                    Text(
+                        text = if (lang == AppLanguage.EN) "Apply Deep Clean" else "تطبيق التنقية وحفظها",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
             }
         }
     }
