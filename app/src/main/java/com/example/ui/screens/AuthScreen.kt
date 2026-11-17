@@ -79,6 +79,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.credentials.CredentialManager
+import androidx.credentials.CustomCredential
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
 import com.example.SonixCrashGuard
 import com.example.diagnostics.AppDiagnosticLog
@@ -91,11 +97,19 @@ import com.example.ui.theme.SonixTheme
 import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
-import com.google.firebase.auth.OAuthProvider
+import com.google.firebase.auth.GoogleAuthProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+
+private const val GOOGLE_WEB_CLIENT_ID =
+    "71794555883-1j2b8ckt6mriegaem2vji34ov5vofpb4.apps.googleusercontent.com"
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -114,6 +128,9 @@ fun AuthScreen(
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
     val scope = rememberCoroutineScope()
+    val credentialManager = remember(context) {
+        runCatching { CredentialManager.create(context) }.getOrNull()
+    }
 
     var isSignUp by remember { mutableStateOf(false) }
     var displayName by remember { mutableStateOf("") }
@@ -204,7 +221,7 @@ fun AuthScreen(
         }
     }
 
-    // Restore existing Firebase session or pending OAuth result on startup
+    // Restore existing Firebase session on startup
     LaunchedEffect(isPreview) {
         if (isPreview) return@LaunchedEffect
         runCatching {
@@ -216,18 +233,6 @@ fun AuthScreen(
         val existingUser = runCatching { auth.currentUser }.getOrNull()
         if (existingUser != null) {
             finishFirebaseGoogleUser(existingUser)
-            return@LaunchedEffect
-        }
-        runCatching {
-            auth.pendingAuthResult
-                ?.addOnSuccessListener { authResult ->
-                    finishFirebaseGoogleUser(authResult.user ?: auth.currentUser)
-                }
-                ?.addOnFailureListener { e ->
-                    Log.e("Auth", "Pending Google OAuth Sign-In failed", e)
-                    isGoogleLoading = false
-                    errorMsg = formatGoogleAuthFailure(e)
-                }
         }
     }
 
@@ -279,6 +284,16 @@ fun AuthScreen(
                 return@AuthScreenContent
             }
 
+            val cm = credentialManager ?: runCatching { CredentialManager.create(activity) }.getOrNull()
+            if (cm == null) {
+                errorMsg = if (isEn) {
+                    "Credential Manager is unavailable on this device."
+                } else {
+                    "مدير بيانات الاعتماد غير متاح على هذا الجهاز حالياً."
+                }
+                return@AuthScreenContent
+            }
+
             val auth = runCatching { FirebaseAuth.getInstance() }.getOrElse { e ->
                 Log.e("Auth", "FirebaseAuth unavailable", e)
                 errorMsg = if (isEn) {
@@ -291,39 +306,77 @@ fun AuthScreen(
 
             isGoogleLoading = true
             errorMsg = null
-            try {
-                val provider = OAuthProvider.newBuilder("google.com")
-                auth.startActivityForSignInWithProvider(activity, provider.build())
-                    .addOnSuccessListener { authResult ->
+            scope.launch {
+                try {
+                    val googleIdOption = GetGoogleIdOption.Builder()
+                        .setFilterByAuthorizedAccounts(false)
+                        .setServerClientId(GOOGLE_WEB_CLIENT_ID)
+                        .build()
+                    val request = GetCredentialRequest.Builder()
+                        .addCredentialOption(googleIdOption)
+                        .build()
+                    val result = cm.getCredential(activity, request)
+                    val credential = result.credential
+                    if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                        val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
+                        val authResult = auth.signInWithCredential(
+                            GoogleAuthProvider.getCredential(idToken, null),
+                        ).await()
                         finishFirebaseGoogleUser(authResult.user ?: auth.currentUser)
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e("Auth", "Google OAuth Sign-In failed", e)
+                    } else {
                         isGoogleLoading = false
-                        AppDiagnosticLog.logRecoverable(
-                            toolName = "GoogleSignIn",
-                            titleAr = "تعذر إتمام تسجيل الدخول بحساب جوجل",
-                            titleEn = "Google Sign-In Failed",
-                            causeAr = e.localizedMessage ?: e.javaClass.simpleName,
-                            causeEn = e.localizedMessage ?: e.javaClass.simpleName,
-                            errorCode = e.javaClass.simpleName,
-                            throwable = e,
-                        )
-                        errorMsg = formatGoogleAuthFailure(e)
+                        errorMsg = if (isEn) {
+                            "Unexpected credential type returned by Google Sign-In."
+                        } else {
+                            "تم استلام نوع بيانات اعتماد غير متوقع من Google."
+                        }
                     }
-            } catch (e: Exception) {
-                Log.e("Auth", "Failed to start Google OAuth Sign-In", e)
-                isGoogleLoading = false
-                AppDiagnosticLog.logRecoverable(
-                    toolName = "GoogleSignIn",
-                    titleAr = "تعذر إتمام تسجيل الدخول بحساب جوجل",
-                    titleEn = "Google Sign-In Failed",
-                    causeAr = e.localizedMessage ?: e.javaClass.simpleName,
-                    causeEn = e.localizedMessage ?: e.javaClass.simpleName,
-                    errorCode = e.javaClass.simpleName,
-                    throwable = e,
-                )
-                errorMsg = formatGoogleAuthFailure(e)
+                } catch (e: GetCredentialCancellationException) {
+                    Log.w("Auth", "Google Sign-In flow cancelled or dismissed: ${e.message}", e)
+                    isGoogleLoading = false
+                    errorMsg = if (isEn) {
+                        "Sign-in was cancelled. Please select a Google account to continue."
+                    } else {
+                        "تم إلغاء تسجيل الدخول. يرجى اختيار حساب Google للمتابعة."
+                    }
+                } catch (e: NoCredentialException) {
+                    Log.w("Auth", "No Google credentials found on device: ${e.message}", e)
+                    isGoogleLoading = false
+                    errorMsg = if (isEn) {
+                        "No Google account is signed in on this device. Add one in Settings, or use Email / Guest mode."
+                    } else {
+                        "لا يوجد حساب Google مسجل على هذا الجهاز. أضف حساباً من إعدادات الجهاز أو ادخل بالبريد الإلكتروني أو كضيف."
+                    }
+                } catch (e: GetCredentialException) {
+                    Log.e("Auth", "Google Credential Manager error", e)
+                    isGoogleLoading = false
+                    AppDiagnosticLog.logRecoverable(
+                        toolName = "GoogleSignIn",
+                        titleAr = "تعذر إتمام تسجيل الدخول بحساب جوجل",
+                        titleEn = "Google Sign-In Failed",
+                        causeAr = e.localizedMessage ?: e.javaClass.simpleName,
+                        causeEn = e.localizedMessage ?: e.javaClass.simpleName,
+                        errorCode = e.javaClass.simpleName,
+                        throwable = e,
+                    )
+                    errorMsg = formatGoogleAuthFailure(e)
+                } catch (e: CancellationException) {
+                    isGoogleLoading = false
+                    throw e
+                } catch (e: Exception) {
+                    Log.e("Auth", "Google Sign-In failed", e)
+                    isGoogleLoading = false
+                    AppDiagnosticLog.logRecoverable(
+                        toolName = "GoogleSignIn",
+                        titleAr = "تعذر إتمام تسجيل الدخول بحساب جوجل",
+                        titleEn = "Google Sign-In Failed",
+                        causeAr = e.localizedMessage ?: e.javaClass.simpleName,
+                        causeEn = e.localizedMessage ?: e.javaClass.simpleName,
+                        errorCode = e.javaClass.simpleName,
+                        throwable = e,
+                    )
+                    errorMsg = formatGoogleAuthFailure(e)
+                }
             }
         },
         onSubmitEmail = { submitEmailAuth() },
