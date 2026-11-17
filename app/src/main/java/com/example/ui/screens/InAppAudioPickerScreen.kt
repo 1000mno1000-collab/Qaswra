@@ -30,6 +30,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.Folder
@@ -95,6 +97,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Locale
+
+private enum class AudioSortCriterion {
+    NAME,
+    SIZE,
+    DATE,
+}
 
 @Composable
 fun InAppAudioPickerScreen(
@@ -103,6 +112,7 @@ fun InAppAudioPickerScreen(
     viewModel: StudioViewModel,
     showBackButton: Boolean,
     onPickedComplete: () -> Unit,
+    onRouteToExtractVideo: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
@@ -142,6 +152,15 @@ fun InAppAudioPickerScreen(
                     Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
             }
+            val mimeType = runCatching { context.contentResolver.getType(uri) }.getOrNull().orEmpty()
+            val pathLower = uri.lastPathSegment?.lowercase(Locale.ROOT).orEmpty()
+            val isVideo = mimeType.startsWith("video/", ignoreCase = true) ||
+                listOf(".mp4", ".mkv", ".mov", ".avi", ".webm", ".3gp", ".m4v").any { pathLower.endsWith(it) }
+            if (isVideo) {
+                viewModel.stageVideoForExtract(uri)
+                onRouteToExtractVideo()
+                return@rememberLauncherForActivityResult
+            }
             val doneCallback: () -> Unit = {
                 if (showBackButton) onPickedComplete()
             }
@@ -159,6 +178,8 @@ fun InAppAudioPickerScreen(
     var selectedFolder by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedFormat by remember { mutableStateOf("ALL") }
+    var sortCriterion by remember { mutableStateOf(AudioSortCriterion.DATE) }
+    var sortAscending by remember { mutableStateOf(false) }
 
     var previewingUri by remember { mutableStateOf<String?>(null) }
     var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
@@ -253,8 +274,16 @@ fun InAppAudioPickerScreen(
     }
 
     val formatOptions = listOf("ALL", "MP3", "WAV", "M4A", "AAC", "FLAC")
-    val filteredItems = remember(uiState.deviceAudios, searchQuery, selectedFormat, selectedFolder, selectedTab) {
-        uiState.deviceAudios.filter { item ->
+    val filteredItems = remember(
+        uiState.deviceAudios,
+        searchQuery,
+        selectedFormat,
+        selectedFolder,
+        selectedTab,
+        sortCriterion,
+        sortAscending,
+    ) {
+        val base = uiState.deviceAudios.filter { item ->
             val matchesQuery = searchQuery.isBlank() ||
                 item.displayName.contains(searchQuery.trim(), ignoreCase = true) ||
                 item.folderName.contains(searchQuery.trim(), ignoreCase = true)
@@ -262,6 +291,12 @@ fun InAppAudioPickerScreen(
             val matchesFolder = selectedTab != 1 || selectedFolder == null || item.folderName == selectedFolder
             matchesQuery && matchesFormat && matchesFolder
         }
+        val comparator = when (sortCriterion) {
+            AudioSortCriterion.NAME -> compareBy<DeviceAudioItem> { it.displayName.lowercase(Locale.ROOT) }
+            AudioSortCriterion.SIZE -> compareBy<DeviceAudioItem> { it.sizeBytes }
+            AudioSortCriterion.DATE -> compareBy<DeviceAudioItem> { it.dateAddedSec }
+        }
+        if (sortAscending) base.sortedWith(comparator) else base.sortedWith(comparator.reversed())
     }
 
     val foldersSummary = remember(uiState.deviceAudios, searchQuery, selectedFormat) {
@@ -365,7 +400,7 @@ fun InAppAudioPickerScreen(
                 OutlinedButton(
                     onClick = {
                         stopPreview()
-                        externalDocLauncher.launch(arrayOf("audio/*", "application/ogg"))
+                        externalDocLauncher.launch(arrayOf("audio/*", "video/*", "application/ogg"))
                     },
                     interactionSource = externalInteraction,
                     border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.7f)),
@@ -560,7 +595,7 @@ fun InAppAudioPickerScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .horizontalScroll(rememberScrollState())
-                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                                .padding(horizontal = 4.dp, vertical = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             formatOptions.forEach { fmt ->
@@ -583,6 +618,74 @@ fun InAppAudioPickerScreen(
                                     modifier = Modifier
                                         .defaultMinSize(minHeight = 40.dp)
                                         .lit(chipInteraction, MaterialTheme.colorScheme.primary, selected = isFmtSelected, cornerRadius = 10.dp),
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                text = t(lang, "sort_label"),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = StudioColors.TextSecondary,
+                            )
+                            val sortOptions = listOf(
+                                AudioSortCriterion.NAME to t(lang, "sort_name"),
+                                AudioSortCriterion.SIZE to t(lang, "sort_size"),
+                                AudioSortCriterion.DATE to t(lang, "sort_date"),
+                            )
+                            sortOptions.forEach { (criterion, label) ->
+                                val isSelected = sortCriterion == criterion
+                                val sortInteraction = remember { MutableInteractionSource() }
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        if (sortCriterion == criterion) {
+                                            sortAscending = !sortAscending
+                                        } else {
+                                            sortCriterion = criterion
+                                            sortAscending = criterion == AudioSortCriterion.NAME
+                                        }
+                                    },
+                                    interactionSource = sortInteraction,
+                                    label = {
+                                        Text(
+                                            text = label,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        )
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = StudioColors.Violet.copy(alpha = 0.22f),
+                                        selectedLabelColor = StudioColors.Violet,
+                                    ),
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 40.dp)
+                                        .lit(sortInteraction, StudioColors.Violet, selected = isSelected, cornerRadius = 10.dp)
+                                        .testTag("sort_${criterion.name.lowercase()}"),
+                                )
+                            }
+                            val orderInteraction = remember { MutableInteractionSource() }
+                            IconButton(
+                                onClick = { sortAscending = !sortAscending },
+                                interactionSource = orderInteraction,
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    containerColor = StudioColors.ElevatedSurface,
+                                    contentColor = StudioColors.Cyan,
+                                ),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .lit(orderInteraction, StudioColors.Cyan, cornerRadius = 24.dp)
+                                    .testTag("picker_sort_order_toggle"),
+                            ) {
+                                Icon(
+                                    imageVector = if (sortAscending) Icons.Rounded.ArrowUpward else Icons.Rounded.ArrowDownward,
+                                    contentDescription = if (sortAscending) "Ascending" else "Descending",
                                 )
                             }
                         }

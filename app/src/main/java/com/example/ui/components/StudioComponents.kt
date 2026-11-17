@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
@@ -26,15 +27,18 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Redo
 import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.CompareArrows
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -42,6 +46,7 @@ import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -51,12 +56,18 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -67,9 +78,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.audio.formatDurationMs
@@ -79,6 +93,7 @@ import com.example.studio.ui.lit
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
+import java.util.Locale
 import kotlin.math.roundToInt
 
 @Composable
@@ -311,6 +326,10 @@ fun StudioParamSlider(
     testTag: String,
     onValueChange: (Float) -> Unit,
 ) {
+    var inputDialogOpen by remember { mutableStateOf(false) }
+    var textValue by remember { mutableStateOf("") }
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -330,16 +349,35 @@ fun StudioParamSlider(
             )
             Spacer(Modifier.width(8.dp))
             Surface(
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(10.dp),
                 color = StudioColors.BgTop,
-                border = BorderStroke(1.dp, StudioColors.Border),
+                border = BorderStroke(1.dp, accentColor.copy(alpha = 0.5f)),
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable {
+                        textValue = String.format(Locale.US, "%.2f", value.coerceIn(min, max))
+                        inputDialogOpen = true
+                    }
+                    .testTag("${testTag}_counter"),
             ) {
-                Text(
-                    text = formattedValue,
-                    style = TelemetryTextStyle,
-                    color = accentColor,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                ) {
+                    Text(
+                        text = formattedValue,
+                        style = TelemetryTextStyle,
+                        color = accentColor,
+                    )
+                    Icon(
+                        imageVector = Icons.Rounded.Edit,
+                        contentDescription = if (isRtl) "تعديل القيمة" else "Edit value",
+                        tint = accentColor.copy(alpha = 0.8f),
+                        modifier = Modifier.size(12.dp),
+                    )
+                }
             }
         }
 
@@ -357,6 +395,145 @@ fun StudioParamSlider(
                 .fillMaxWidth()
                 .testTag(testTag),
         )
+    }
+
+    if (inputDialogOpen) {
+        val minText = String.format(Locale.US, "%.2f", min)
+        val maxText = String.format(Locale.US, "%.2f", max)
+        AlertDialog(
+            onDismissRequest = { inputDialogOpen = false },
+            containerColor = StudioColors.CardSurface,
+            titleContentColor = StudioColors.TextPrimary,
+            textContentColor = StudioColors.TextSecondary,
+            title = {
+                Text(
+                    text = if (isRtl) "إدخال القيمة بدقة عشرية" else "Exact Decimal Value",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "$label ($minText .. $maxText)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.Cyan,
+                    )
+                    OutlinedTextField(
+                        value = textValue,
+                        onValueChange = { next ->
+                            textValue = next
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        label = { Text(if (isRtl) "أدخل القيمة الرقمية" else "Enter value") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = accentColor,
+                            unfocusedBorderColor = StudioColors.Border,
+                            focusedTextColor = StudioColors.TextPrimary,
+                            unfocusedTextColor = StudioColors.TextPrimary,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("${testTag}_dialog_input"),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val parsed = textValue
+                            .trim()
+                            .replace(',', '.')
+                            .toFloatOrNull()
+                        if (parsed != null) {
+                            onValueChange(parsed.coerceIn(min, max))
+                        }
+                        inputDialogOpen = false
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = accentColor,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                ) {
+                    Text(if (isRtl) "تعيين" else "Set")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { inputDialogOpen = false }) {
+                    Text(
+                        text = if (isRtl) "إلغاء" else "Cancel",
+                        color = StudioColors.TextSecondary,
+                    )
+                }
+            },
+        )
+    }
+}
+
+@Composable
+fun PreviewAndApplyActionRow(
+    isPreviewPlaying: Boolean,
+    previewEnabled: Boolean,
+    applyEnabled: Boolean,
+    language: AppLanguage,
+    previewTag: String,
+    applyTag: String,
+    applyLabel: String = t(language, "apply_now"),
+    applyColor: Color = StudioColors.Violet,
+    onPreviewClick: () -> Unit,
+    onApplyClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        val previewInteraction = remember { MutableInteractionSource() }
+        Button(
+            onClick = onPreviewClick,
+            enabled = previewEnabled,
+            interactionSource = previewInteraction,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (isPreviewPlaying) StudioColors.Amber else StudioColors.Cyan,
+                contentColor = StudioColors.BgTop,
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 48.dp)
+                .lit(previewInteraction, MaterialTheme.colorScheme.primary, selected = isPreviewPlaying, cornerRadius = 14.dp)
+                .testTag(previewTag),
+        ) {
+            Icon(
+                imageVector = if (isPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (isPreviewPlaying) t(language, "stop_preview_edit") else t(language, "preview_edit"),
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+            )
+        }
+
+        val applyInteraction = remember { MutableInteractionSource() }
+        OutlinedButton(
+            onClick = onApplyClick,
+            enabled = applyEnabled,
+            interactionSource = applyInteraction,
+            border = BorderStroke(1.dp, applyColor.copy(alpha = 0.7f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = applyColor),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 48.dp)
+                .lit(applyInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                .testTag(applyTag),
+        ) {
+            Icon(Icons.Rounded.AutoFixHigh, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(applyLabel, style = MaterialTheme.typography.labelLarge)
+        }
     }
 }
 
@@ -717,28 +894,6 @@ fun PersistentTransportBar(
                             text = if (uiState.playback.isPlaying) t(lang, "pause") else t(lang, "play"),
                             style = MaterialTheme.typography.labelLarge,
                             maxLines = 1,
-                        )
-                    }
-
-                    val stopInteraction = remember { MutableInteractionSource() }
-                    IconButton(
-                        onClick = onStop,
-                        interactionSource = stopInteraction,
-                        enabled = uiState.hasAudio,
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = StudioColors.ElevatedSurface,
-                            contentColor = StudioColors.TextPrimary,
-                            disabledContainerColor = StudioColors.BgMid,
-                            disabledContentColor = StudioColors.TextMuted,
-                        ),
-                        modifier = Modifier
-                            .size(48.dp)
-                            .lit(stopInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                            .testTag("transport_stop_button"),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Stop,
-                            contentDescription = t(lang, "stop"),
                         )
                     }
 

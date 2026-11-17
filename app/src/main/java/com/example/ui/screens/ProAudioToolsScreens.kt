@@ -52,11 +52,14 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.example.audio.MergeStudioMode
 import com.example.audio.formatDurationMs
 import com.example.i18n.t
 import com.example.model.AppLanguage
@@ -71,6 +75,7 @@ import com.example.model.AudioPickerTarget
 import com.example.model.EffectType
 import com.example.model.ExportAudioFormat
 import com.example.studio.ui.lit
+import com.example.ui.components.PreviewAndApplyActionRow
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
@@ -85,7 +90,7 @@ import com.example.viewmodel.StudioViewModel
 import kotlin.math.roundToInt
 
 @Composable
-private fun ActiveTrackPromptCard(
+fun ActiveTrackPromptCard(
     uiState: StudioUiState,
     onPickMainAudio: () -> Unit,
 ) {
@@ -149,88 +154,15 @@ fun AudioMergeScreen(
     onOpenPicker: (AudioPickerTarget) -> Unit,
     onBack: () -> Unit,
 ) {
-    val lang = uiState.language
-    StudioScrollColumn {
-        StudioFocusTopBar(
-            title = t(lang, "tool_merge_audio"),
-            subtitle = if (lang == AppLanguage.EN) "Join multiple clips seamlessly with crossfade" else "إلحاق ودمج عدة مقاطع صوتية بسلاسة عالية",
-            language = lang,
-            onBack = onBack,
-            trailing = {
-                UndoRedoActionsRow(
-                    canUndo = uiState.canUndoEdit,
-                    canRedo = uiState.canRedoEdit,
-                    language = lang,
-                    undoTag = "merge_undo_button",
-                    redoTag = "merge_redo_button",
-                    onUndo = { viewModel.undoLastEdit() },
-                    onRedo = { viewModel.redoLastEdit() },
-                )
-            },
-        )
-
-        ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
-
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-            border = BorderStroke(1.dp, StudioColors.Border),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                val mergeInteraction = remember { MutableInteractionSource() }
-                Button(
-                    onClick = { onOpenPicker(AudioPickerTarget.APPEND_CLIP) },
-                    enabled = !uiState.isBusy,
-                    interactionSource = mergeInteraction,
-                    colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(mergeInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                        .testTag("merge_append_library_button"),
-                ) {
-                    Icon(Icons.Rounded.Add, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(t(lang, "merge_clip"))
-                }
-
-                if (uiState.projects.any { it.hasAudio }) {
-                    Text(
-                        text = if (lang == AppLanguage.EN) "Join from Saved Projects:" else "أو إلحاق مشروع محفوظ مباشرة:",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = StudioColors.TextSecondary,
-                    )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 4.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        uiState.projects.filter { it.hasAudio }.forEach { proj ->
-                            val chipInteraction = remember { MutableInteractionSource() }
-                            FilterChip(
-                                selected = false,
-                                onClick = { viewModel.appendSavedProjectToCurrent(proj) },
-                                interactionSource = chipInteraction,
-                                label = { Text("${proj.name} (${formatDurationMs(proj.durationMs)})") },
-                                modifier = Modifier
-                                    .defaultMinSize(minHeight = 48.dp)
-                                    .lit(chipInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 10.dp),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
+    UnifiedMergeOverlayStudioScreen(
+        uiState = uiState,
+        viewModel = viewModel,
+        initialMode = MergeStudioMode.SEQUENTIAL,
+        initialAutoDucking = false,
+        toolId = "merge_studio",
+        onOpenPicker = onOpenPicker,
+        onBack = onBack,
+    )
 }
 
 @Composable
@@ -432,6 +364,38 @@ fun PitchAndSpeedScreen(
     val tempo = uiState.dspConfig.timeStretch.tempoRatio
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
+    LaunchedEffect(uiState.restoredToolSession?.id) {
+        val restored = viewModel.consumeRestoredToolSession("pitch_speed")
+        if (restored != null) {
+            val st = restored.floatParams["semitones"] ?: 0f
+            val tr = restored.floatParams["tempoRatio"] ?: 1f
+            viewModel.updateDspConfig { prev ->
+                prev.copy(
+                    pitchShift = prev.pitchShift.copy(semitones = st, wetMix = 1f),
+                    timeStretch = prev.timeStretch.copy(tempoRatio = tr),
+                )
+                    .withSlotEnabled(EffectType.PITCH_SHIFT, kotlin.math.abs(st) >= 0.05f)
+                    .withSlotEnabled(EffectType.TIME_STRETCH, kotlin.math.abs(tr - 1f) >= 0.02f)
+            }
+        }
+    }
+
+    val latestSemi by rememberUpdatedState(semitones)
+    val latestTempo by rememberUpdatedState(tempo)
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopToolPreview()
+            viewModel.saveToolSessionToCache(
+                toolId = "pitch_speed",
+                titleAr = "الطبقة والسرعة",
+                titleEn = "Pitch & Speed",
+                summaryAr = "${"%+.1f".format(latestSemi)} st • ${"%.2f".format(latestTempo)}x",
+                summaryEn = "${"%+.1f".format(latestSemi)} st • ${"%.2f".format(latestTempo)}x",
+                floatParams = mapOf("semitones" to latestSemi, "tempoRatio" to latestTempo),
+            )
+        }
+    }
+
     StudioScrollColumn {
         StudioFocusTopBar(
             title = t(lang, "tool_pitch_speed"),
@@ -488,6 +452,7 @@ fun PitchAndSpeedScreen(
                             prev.copy(pitchShift = prev.pitchShift.copy(semitones = it, wetMix = 1f))
                                 .withSlotEnabled(EffectType.PITCH_SHIFT, kotlin.math.abs(it) >= 0.05f)
                         }
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
 
@@ -504,25 +469,24 @@ fun PitchAndSpeedScreen(
                             prev.copy(timeStretch = prev.timeStretch.copy(tempoRatio = it))
                                 .withSlotEnabled(EffectType.TIME_STRETCH, kotlin.math.abs(it - 1f) >= 0.02f)
                         }
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
 
-                val bakeInteraction = remember { MutableInteractionSource() }
+                val applyPitchInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.applyPitchAndSpeed(semitones, tempo) },
                     enabled = uiState.hasAudio && !uiState.isBusy,
-                    interactionSource = bakeInteraction,
+                    interactionSource = applyPitchInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(bakeInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                        .defaultMinSize(minHeight = 50.dp)
+                        .lit(applyPitchInteraction, StudioColors.Cyan, cornerRadius = 14.dp)
                         .testTag("pitch_speed_bake_button"),
                 ) {
-                    Icon(Icons.Rounded.Speed, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (lang == AppLanguage.EN) "Render Pitch & Speed into Clip" else "تثبيت الطبقة والسرعة في المقطع")
+                    Text(t(lang, "apply_now"), style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
@@ -547,6 +511,21 @@ fun ReverseAudioScreen(
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopToolPreview()
+            viewModel.saveToolSessionToCache(
+                toolId = "reverse_audio",
+                titleAr = "عكس الصوت",
+                titleEn = "Reverse Audio",
+                summaryAr = "جلسة عكس المقطع",
+                summaryEn = "Reverse clip session",
+                floatParams = emptyMap(),
+            )
+        }
+    }
+
     StudioScrollColumn {
         StudioFocusTopBar(
             title = t(lang, "tool_reverse_audio"),
@@ -568,22 +547,31 @@ fun ReverseAudioScreen(
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
 
-        val reverseInteraction = remember { MutableInteractionSource() }
-        Button(
-            onClick = { viewModel.applyReverseAudio() },
-            enabled = uiState.hasAudio && !uiState.isBusy,
-            interactionSource = reverseInteraction,
-            colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .defaultMinSize(minHeight = 52.dp)
-                .lit(reverseInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp)
-                .testTag("reverse_apply_button"),
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            Icon(Icons.Rounded.Undo, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text(t(lang, "tool_reverse_audio"), style = MaterialTheme.typography.labelLarge)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                PreviewAndApplyActionRow(
+                    isPreviewPlaying = uiState.isToolPreviewPlaying,
+                    previewEnabled = uiState.hasAudio && !uiState.isBusy,
+                    applyEnabled = uiState.hasAudio && !uiState.isBusy,
+                    language = lang,
+                    previewTag = "reverse_preview_button",
+                    applyTag = "reverse_apply_button",
+                    applyLabel = t(lang, "apply_now"),
+                    applyColor = StudioColors.Violet,
+                    onPreviewClick = { viewModel.previewReverseAudio() },
+                    onApplyClick = { viewModel.applyReverseAudio() },
+                )
+            }
         }
     }
 }
@@ -596,12 +584,43 @@ fun SurroundStereoScreen(
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
-    var midLevel by remember { mutableFloatStateOf(1.0f) }
-    var sideLevel by remember { mutableFloatStateOf(1.0f) }
-    var stereoWidth by remember { mutableFloatStateOf(0f) }
+    // True Zero 0% neutral start across all Surround Stereo sliders
+    var midAdjustPct by remember { mutableFloatStateOf(0f) }
+    var sideBoostPct by remember { mutableFloatStateOf(0f) }
+    var widthPct by remember { mutableFloatStateOf(0f) }
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
     var preferVmUndo by remember { mutableStateOf(false) }
-    val stereoHistory = rememberEditHistory(Triple(midLevel, sideLevel, stereoWidth))
+    val stereoHistory = rememberEditHistory(Triple(midAdjustPct, sideBoostPct, widthPct))
+
+    LaunchedEffect(uiState.restoredToolSession?.id) {
+        val restored = viewModel.consumeRestoredToolSession("surround_stereo")
+        if (restored != null) {
+            midAdjustPct = restored.floatParams["midAdjustPct"] ?: 0f
+            sideBoostPct = restored.floatParams["sideBoostPct"] ?: 0f
+            widthPct = restored.floatParams["widthPct"] ?: 0f
+        }
+    }
+
+    val latestMid by rememberUpdatedState(midAdjustPct)
+    val latestSide by rememberUpdatedState(sideBoostPct)
+    val latestWidth by rememberUpdatedState(widthPct)
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopToolPreview()
+            viewModel.saveToolSessionToCache(
+                toolId = "surround_stereo",
+                titleAr = "ستيريو محيطي M/S",
+                titleEn = "Surround Stereo",
+                summaryAr = "Mid ${latestMid.roundToInt()}% • Side ${latestSide.roundToInt()}% • ${latestWidth.roundToInt()}%",
+                summaryEn = "Mid ${latestMid.roundToInt()}% • Side ${latestSide.roundToInt()}% • ${latestWidth.roundToInt()}%",
+                floatParams = mapOf(
+                    "midAdjustPct" to latestMid,
+                    "sideBoostPct" to latestSide,
+                    "widthPct" to latestWidth,
+                ),
+            )
+        }
+    }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -621,9 +640,9 @@ fun SurroundStereoScreen(
                             viewModel.undoLastEdit()
                         } else {
                             stereoHistory.undo()?.let { (m, s, w) ->
-                                midLevel = m
-                                sideLevel = s
-                                stereoWidth = w
+                                midAdjustPct = m
+                                sideBoostPct = s
+                                widthPct = w
                             }
                         }
                     },
@@ -632,9 +651,9 @@ fun SurroundStereoScreen(
                             viewModel.redoLastEdit()
                         } else {
                             stereoHistory.redo()?.let { (m, s, w) ->
-                                midLevel = m
-                                sideLevel = s
-                                stereoWidth = w
+                                midAdjustPct = m
+                                sideBoostPct = s
+                                widthPct = w
                             }
                         }
                     },
@@ -652,10 +671,11 @@ fun SurroundStereoScreen(
             onRedo = { viewModel.redoLastEdit() },
             onResetZero = {
                 preferVmUndo = false
-                midLevel = 1.0f
-                sideLevel = 1.0f
-                stereoWidth = 0f
-                stereoHistory.commit(Triple(1.0f, 1.0f, 0f))
+                midAdjustPct = 0f
+                sideBoostPct = 0f
+                widthPct = 0f
+                stereoHistory.commit(Triple(0f, 0f, 0f))
+                viewModel.updateSurroundLiveParams(0f, 0f, 0f)
                 viewModel.resetAllEffects()
             },
             onOpenSaveDraft = { saveDraftDialogOpen = true },
@@ -674,67 +694,71 @@ fun SurroundStereoScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Mid Center Level" else "مستوى المنتصف (Mid)",
-                    value = midLevel,
-                    min = 0.4f,
-                    max = 1.6f,
-                    formattedValue = "${(midLevel * 100f).roundToInt()}%",
+                    label = if (lang == AppLanguage.EN) "Mid Center Offset" else "إزاحة المنتصف (Mid)",
+                    value = midAdjustPct,
+                    min = -60f,
+                    max = 60f,
+                    formattedValue = "${if (midAdjustPct > 0f) "+" else ""}${midAdjustPct.roundToInt()}%",
                     accentColor = StudioColors.Cyan,
                     testTag = "stereo_mid_slider",
                     onValueChange = {
                         preferVmUndo = false
-                        midLevel = it
-                        stereoHistory.commit(Triple(it, sideLevel, stereoWidth), debounceMs = 350L)
+                        midAdjustPct = it
+                        stereoHistory.commit(Triple(it, sideBoostPct, widthPct), debounceMs = 350L)
+                        viewModel.updateSurroundLiveParams(it, sideBoostPct, widthPct)
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
                 StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Side Surround Level" else "مستوى الجوانب المحيطية (Side)",
-                    value = sideLevel,
-                    min = 0.5f,
-                    max = 2.2f,
-                    formattedValue = "${(sideLevel * 100f).roundToInt()}%",
+                    label = if (lang == AppLanguage.EN) "Side Surround Boost" else "توسيع الجوانب المحيطية (Side)",
+                    value = sideBoostPct,
+                    min = 0f,
+                    max = 120f,
+                    formattedValue = "+${sideBoostPct.roundToInt()}%",
                     accentColor = StudioColors.Violet,
                     testTag = "stereo_side_slider",
                     onValueChange = {
                         preferVmUndo = false
-                        sideLevel = it
-                        stereoHistory.commit(Triple(midLevel, it, stereoWidth), debounceMs = 350L)
+                        sideBoostPct = it
+                        stereoHistory.commit(Triple(midAdjustPct, it, widthPct), debounceMs = 350L)
+                        viewModel.updateSurroundLiveParams(midAdjustPct, it, widthPct)
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
                 StudioParamSlider(
                     label = t(lang, "param_stereo_width"),
-                    value = stereoWidth,
+                    value = widthPct,
                     min = 0f,
-                    max = 1.0f,
-                    formattedValue = "${(stereoWidth * 100f).roundToInt()}%",
+                    max = 100f,
+                    formattedValue = "${widthPct.roundToInt()}%",
                     accentColor = StudioColors.Emerald,
                     testTag = "stereo_width_slider",
                     onValueChange = {
                         preferVmUndo = false
-                        stereoWidth = it
-                        stereoHistory.commit(Triple(midLevel, sideLevel, it), debounceMs = 350L)
+                        widthPct = it
+                        stereoHistory.commit(Triple(midAdjustPct, sideBoostPct, it), debounceMs = 350L)
+                        viewModel.updateSurroundLiveParams(midAdjustPct, sideBoostPct, it)
+                        viewModel.ensureLivePreviewPlaying()
                     },
                 )
 
-                val stereoInteraction = remember { MutableInteractionSource() }
+                val applyStereoInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = {
                         preferVmUndo = true
-                        viewModel.applySurroundStereo(midLevel, sideLevel, stereoWidth)
+                        viewModel.applySurroundStereoFromOffsets(midAdjustPct, sideBoostPct, widthPct)
                     },
                     enabled = uiState.hasAudio && !uiState.isBusy,
-                    interactionSource = stereoInteraction,
+                    interactionSource = applyStereoInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(stereoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                        .defaultMinSize(minHeight = 50.dp)
+                        .lit(applyStereoInteraction, StudioColors.Cyan, cornerRadius = 14.dp)
                         .testTag("stereo_apply_button"),
                 ) {
-                    Icon(Icons.Rounded.SurroundSound, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(t(lang, "apply_now"))
+                    Text(t(lang, "apply_now"), style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
@@ -762,6 +786,32 @@ fun GenerateSilenceScreen(
     var appendMode by remember { mutableStateOf(uiState.hasAudio) }
     var preferVmUndo by remember { mutableStateOf(false) }
     val silenceHistory = rememberEditHistory(durationSec to appendMode)
+
+    LaunchedEffect(uiState.restoredToolSession?.id) {
+        val restored = viewModel.consumeRestoredToolSession("generate_silence")
+        if (restored != null) {
+            durationSec = restored.floatParams["durationSec"] ?: durationSec
+            appendMode = (restored.floatParams["appendMode"] ?: 0f) > 0.5f
+        }
+    }
+
+    val latestDur by rememberUpdatedState(durationSec)
+    val latestAppend by rememberUpdatedState(appendMode)
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.saveToolSessionToCache(
+                toolId = "generate_silence",
+                titleAr = "توليد صمت",
+                titleEn = "Generate Silence",
+                summaryAr = "${"%.1f".format(latestDur)}s",
+                summaryEn = "${"%.1f".format(latestDur)}s",
+                floatParams = mapOf(
+                    "durationSec" to latestDur,
+                    "appendMode" to if (latestAppend) 1f else 0f,
+                ),
+            )
+        }
+    }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -856,6 +906,7 @@ fun GenerateSilenceScreen(
                         preferVmUndo = true
                         viewModel.insertGeneratedSilence(durationSec, appendMode)
                     },
+                    enabled = !uiState.isBusy,
                     interactionSource = silenceInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
@@ -1041,7 +1092,15 @@ fun ExtractVideoAudioScreen(
 ) {
     val lang = uiState.language
     val context = LocalContext.current
-    var selectedFormat by remember { mutableStateOf(ExportAudioFormat.M4A) }
+    var selectedFormat by remember { mutableStateOf(ExportAudioFormat.WAV) }
+
+    LaunchedEffect(uiState.pendingExtractVideoUri) {
+        val stagedUri = viewModel.consumePendingExtractVideoUri()
+        if (stagedUri != null) {
+            viewModel.extractAudioFromVideoUri(stagedUri)
+        }
+    }
+
     val videoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri: Uri? ->
@@ -1118,7 +1177,12 @@ fun ExtractVideoAudioScreen(
                             .padding(horizontal = 4.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        listOf(ExportAudioFormat.M4A, ExportAudioFormat.WAV, ExportAudioFormat.MP3).forEach { fmt ->
+                        listOf(
+                            ExportAudioFormat.WAV,
+                            ExportAudioFormat.MP3,
+                            ExportAudioFormat.FLAC,
+                            ExportAudioFormat.M4A,
+                        ).forEach { fmt ->
                             val isFmtSelected = selectedFormat == fmt
                             val fmtInteraction = remember { MutableInteractionSource() }
                             FilterChip(
@@ -1144,230 +1208,6 @@ fun ExtractVideoAudioScreen(
                         Spacer(Modifier.width(8.dp))
                         Text(t(lang, "export_and_save"))
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun VideoAudioEditorScreen(
-    uiState: StudioUiState,
-    viewModel: StudioViewModel,
-    onOpenPicker: (AudioPickerTarget) -> Unit,
-    onBack: () -> Unit,
-) {
-    val lang = uiState.language
-    val context = LocalContext.current
-    var selectedVideoUri by remember { mutableStateOf<Uri?>(null) }
-    var mixWithOriginal by remember { mutableStateOf(false) }
-    var origGain by remember { mutableFloatStateOf(0.45f) }
-    var newGain by remember { mutableFloatStateOf(1.0f) }
-    var outputName by remember { mutableStateOf("Sonix_Video_Edit") }
-    val videoEditHistory = rememberEditHistory(
-        listOf<Any>(mixWithOriginal, origGain, newGain, outputName),
-    )
-
-    fun commitVideoEdit(
-        mixOrig: Boolean = mixWithOriginal,
-        oGain: Float = origGain,
-        nGain: Float = newGain,
-        outName: String = outputName,
-        debounceMs: Long = 0L,
-    ) {
-        videoEditHistory.commit(listOf<Any>(mixOrig, oGain, nGain, outName), debounceMs = debounceMs)
-    }
-
-    fun applyVideoEdit(snap: List<Any>) {
-        mixWithOriginal = snap[0] as Boolean
-        origGain = snap[1] as Float
-        newGain = snap[2] as Float
-        outputName = snap[3] as String
-    }
-
-    val videoPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri: Uri? ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
-            selectedVideoUri = uri
-        }
-    }
-
-    StudioScrollColumn {
-        StudioFocusTopBar(
-            title = t(lang, "tool_video_audio_edit"),
-            subtitle = if (lang == AppLanguage.EN) "Dub or mix studio audio onto video losslessly" else "دمج أو استبدال صوت الفيديو بصوت الاستوديو بدون فقدان جودة الصورة",
-            language = lang,
-            onBack = onBack,
-            trailing = {
-                UndoRedoActionsRow(
-                    canUndo = videoEditHistory.canUndo || uiState.canUndoEdit,
-                    canRedo = videoEditHistory.canRedo || uiState.canRedoEdit,
-                    language = lang,
-                    undoTag = "video_edit_undo_button",
-                    redoTag = "video_edit_redo_button",
-                    onUndo = {
-                        if (videoEditHistory.canUndo) {
-                            videoEditHistory.undo()?.let(::applyVideoEdit)
-                        } else {
-                            viewModel.undoLastEdit()
-                        }
-                    },
-                    onRedo = {
-                        if (videoEditHistory.canRedo) {
-                            videoEditHistory.redo()?.let(::applyVideoEdit)
-                        } else {
-                            viewModel.redoLastEdit()
-                        }
-                    },
-                )
-            },
-        )
-
-        ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
-
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-            border = BorderStroke(1.dp, StudioColors.Border),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                val videoEditPickInteraction = remember { MutableInteractionSource() }
-                OutlinedButton(
-                    onClick = { videoPicker.launch(arrayOf("video/*")) },
-                    interactionSource = videoEditPickInteraction,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(videoEditPickInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                        .testTag("video_edit_pick_video_button"),
-                ) {
-                    Icon(Icons.Rounded.Movie, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        selectedVideoUri?.lastPathSegment ?: t(lang, "audio_tools_pick_video"),
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        text = if (lang == AppLanguage.EN) "Mix with original video audio" else "مزج مع صوت الفيديو الأصلي (دبلجة)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = StudioColors.TextSecondary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Switch(
-                        checked = mixWithOriginal,
-                        onCheckedChange = {
-                            mixWithOriginal = it
-                            commitVideoEdit(mixOrig = it)
-                        },
-                    )
-                }
-
-                if (mixWithOriginal) {
-                    StudioParamSlider(
-                        label = if (lang == AppLanguage.EN) "Original Video Audio Level" else "مستوى صوت الفيديو الأصلي",
-                        value = origGain,
-                        min = 0f,
-                        max = 1.5f,
-                        formattedValue = "${(origGain * 100f).roundToInt()}%",
-                        accentColor = StudioColors.Violet,
-                        testTag = "video_orig_gain_slider",
-                        onValueChange = {
-                            origGain = it
-                            commitVideoEdit(oGain = it, debounceMs = 350L)
-                        },
-                    )
-                }
-
-                StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Studio Audio Level" else "مستوى صوت الاستوديو المضاف",
-                    value = newGain,
-                    min = 0.2f,
-                    max = 1.5f,
-                    formattedValue = "${(newGain * 100f).roundToInt()}%",
-                    accentColor = StudioColors.Cyan,
-                    testTag = "video_new_gain_slider",
-                    onValueChange = {
-                        newGain = it
-                        commitVideoEdit(nGain = it, debounceMs = 350L)
-                    },
-                )
-
-                OutlinedTextField(
-                    value = outputName,
-                    onValueChange = {
-                        outputName = it
-                        commitVideoEdit(outName = it, debounceMs = 350L)
-                    },
-                    singleLine = true,
-                    label = { Text(if (lang == AppLanguage.EN) "Output Video Name" else "اسم الفيديو الناتج") },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = StudioColors.Cyan,
-                        unfocusedBorderColor = StudioColors.Border,
-                        focusedTextColor = StudioColors.TextPrimary,
-                        unfocusedTextColor = StudioColors.TextPrimary,
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                uiState.exportProgress?.let { p ->
-                    LinearProgressIndicator(
-                        progress = { p.coerceIn(0f, 1f) },
-                        color = StudioColors.Cyan,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(CircleShape),
-                    )
-                }
-
-                val videoExportInteraction = remember { MutableInteractionSource() }
-                Button(
-                    onClick = {
-                        selectedVideoUri?.let { uri ->
-                            viewModel.exportVideoWithEditedAudio(
-                                videoUri = uri,
-                                mixWithOriginal = mixWithOriginal,
-                                originalGain = origGain,
-                                newGain = newGain,
-                                outputName = outputName,
-                                shareAfter = false,
-                            )
-                        }
-                    },
-                    enabled = selectedVideoUri != null && uiState.hasAudio && !uiState.isBusy,
-                    interactionSource = videoExportInteraction,
-                    colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 52.dp)
-                        .lit(videoExportInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                        .testTag("video_edit_export_button"),
-                ) {
-                    Icon(Icons.Rounded.Download, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(t(lang, "export_and_save"))
                 }
             }
         }

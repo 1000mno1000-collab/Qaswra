@@ -28,6 +28,8 @@ class PreferencesStore(private val context: Context) {
         private val KEY_AUTO_LOOP = booleanPreferencesKey("auto_loop")
         private val KEY_AUTH_SESSION = stringPreferencesKey("auth_session")
         private val KEY_CUSTOM_PRESETS_JSON = stringPreferencesKey("custom_presets_json")
+        private val KEY_DEFAULT_SAVE_TREE_URI = stringPreferencesKey("default_save_tree_uri")
+        private val KEY_DEFAULT_SAVE_FOLDER_NAME = stringPreferencesKey("default_save_folder_name")
     }
 
     val languageFlow: Flow<AppLanguage> = context.studioPrefsDataStore.data.map { prefs ->
@@ -46,6 +48,10 @@ class PreferencesStore(private val context: Context) {
     val customPresetsJsonFlow: Flow<List<StoredCustomPreset>> = context.studioPrefsDataStore.data.map { prefs ->
         val raw = prefs[KEY_CUSTOM_PRESETS_JSON] ?: return@map emptyList()
         runCatching { json.decodeFromString(presetListSerializer, raw) }.getOrDefault(emptyList())
+    }
+
+    val defaultSaveFolderFlow: Flow<Pair<String?, String?>> = context.studioPrefsDataStore.data.map { prefs ->
+        prefs[KEY_DEFAULT_SAVE_TREE_URI] to prefs[KEY_DEFAULT_SAVE_FOLDER_NAME]
     }
 
     suspend fun saveLanguage(lang: AppLanguage) {
@@ -69,6 +75,20 @@ class PreferencesStore(private val context: Context) {
     suspend fun saveCustomPresetsJson(presets: List<StoredCustomPreset>) {
         context.studioPrefsDataStore.edit { prefs ->
             prefs[KEY_CUSTOM_PRESETS_JSON] = json.encodeToString(presetListSerializer, presets)
+        }
+    }
+
+    suspend fun saveDefaultSaveFolder(uriString: String, folderName: String) {
+        context.studioPrefsDataStore.edit { prefs ->
+            prefs[KEY_DEFAULT_SAVE_TREE_URI] = uriString
+            prefs[KEY_DEFAULT_SAVE_FOLDER_NAME] = folderName
+        }
+    }
+
+    suspend fun clearDefaultSaveFolder() {
+        context.studioPrefsDataStore.edit { prefs ->
+            prefs.remove(KEY_DEFAULT_SAVE_TREE_URI)
+            prefs.remove(KEY_DEFAULT_SAVE_FOLDER_NAME)
         }
     }
 }

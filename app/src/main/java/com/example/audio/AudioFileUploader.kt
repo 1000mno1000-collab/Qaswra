@@ -185,6 +185,7 @@ object AudioFileUploader {
                 }
 
                 val finalTotal = if (effectiveTotal > 0L) effectiveTotal else copiedBytes
+                com.example.audio.cache.SmartCacheManager.pruneManagedBuckets(context)
                 onProgress(
                     UploadProgressInfo(
                         fraction = 1f,

@@ -42,6 +42,11 @@ class DspPipeline(
     private val vibRingR = FloatArray(vibSize)
     private var vibIdx = 0
 
+    private val surSize = 1024
+    private val surMask = surSize - 1
+    private val surSideRing = FloatArray(surSize)
+    private var surIdx = 0
+
     private var lastBassKey = ""
     private var lastTrebleKey = ""
     private var lastEqKey = ""
@@ -127,6 +132,8 @@ class DspPipeline(
         vibRingL.fill(0f)
         vibRingR.fill(0f)
         vibIdx = 0
+        surSideRing.fill(0f)
+        surIdx = 0
     }
 
     @Synchronized
@@ -188,6 +195,25 @@ class DspPipeline(
                 right[i] = clamp(mono * gR * 1.12f + right[i] * 0.25f, -1f, 1f)
                 spatialPhase += panInc
                 if (spatialPhase > 2.0 * PI) spatialPhase -= 2.0 * PI
+            }
+        }
+
+        if (cfg.hasLiveSurround()) {
+            val midScale = clamp(1f + cfg.surroundMidPct / 100f, 0.25f, 2.0f)
+            val sideScale = clamp(1f + cfg.surroundSidePct / 100f, 0.2f, 2.5f)
+            val widthNorm = clamp(cfg.surroundWidthPct / 100f, 0f, 1f)
+            val widthScale = 1f + widthNorm * 1.15f
+            val delaySamples = min(surSize - 4, max(1, floor(sampleRate * (0.0005f + widthNorm * 0.011f)).toInt()))
+            for (i in 0 until count) {
+                val mid = 0.5f * (left[i] + right[i]) * midScale
+                val side = 0.5f * (left[i] - right[i]) * sideScale * widthScale
+                surSideRing[surIdx] = side
+                val delayedSide = surSideRing[(surIdx - delaySamples + surSize) and surMask]
+                surIdx = (surIdx + 1) and surMask
+                val widL = mid + side + delayedSide * (0.28f * widthNorm)
+                val widR = mid - side - delayedSide * (0.28f * widthNorm)
+                left[i] = clamp(widL, -1.2f, 1.2f)
+                right[i] = clamp(widR, -1.2f, 1.2f)
             }
         }
 

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Mic
@@ -58,10 +59,12 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -90,6 +93,7 @@ import com.example.model.VoiceCharacterPreset
 import com.example.studio.ui.lit
 import com.example.ui.components.InfoBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
+import com.example.ui.components.PreviewAndApplyActionRow
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
@@ -1391,9 +1395,49 @@ fun VoiceTransformerScreen(
         }
     }
 
+    LaunchedEffect(uiState.restoredToolSession?.id) {
+        val restored = viewModel.consumeRestoredToolSession("voice_transformer")
+        if (restored != null) {
+            val fp = restored.floatParams
+            val presetId = restored.stringParams["presetId"]
+            selectedPreset = presetId?.let { id -> VOICE_CHARACTER_PRESETS.firstOrNull { it.id == id } }
+            pitchSemitones = fp["pitchSemitones"] ?: pitchSemitones
+            formantShift = fp["formantShift"] ?: formantShift
+            warmthDb = fp["warmthDb"] ?: warmthDb
+            presenceDb = fp["presenceDb"] ?: presenceDb
+            mix = fp["mix"] ?: mix
+        }
+    }
+
+    val latestHasAudio by rememberUpdatedState(uiState.hasAudio)
+    val latestPresetId by rememberUpdatedState(selectedPreset?.id)
+    val latestPitch by rememberUpdatedState(pitchSemitones)
+    val latestFormant by rememberUpdatedState(formantShift)
+    val latestWarmth by rememberUpdatedState(warmthDb)
+    val latestPresence by rememberUpdatedState(presenceDb)
+    val latestMix by rememberUpdatedState(mix)
+
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopLiveVoiceProcessor()
+            viewModel.stopToolPreview()
+            if (latestHasAudio) {
+                viewModel.saveToolSessionToCache(
+                    toolId = "voice_transformer",
+                    titleAr = "محول الصوت والشخصيات",
+                    titleEn = "Voice Transformer",
+                    summaryAr = "${"%.1f".format(latestPitch)} st / ${(latestMix * 100f).toInt()}%",
+                    summaryEn = "${"%.1f".format(latestPitch)} st / ${(latestMix * 100f).toInt()}%",
+                    floatParams = mapOf(
+                        "pitchSemitones" to latestPitch,
+                        "formantShift" to latestFormant,
+                        "warmthDb" to latestWarmth,
+                        "presenceDb" to latestPresence,
+                        "mix" to latestMix,
+                    ),
+                    stringParams = latestPresetId?.let { mapOf("presetId" to it) } ?: emptyMap(),
+                )
+            }
         }
     }
 
@@ -1798,9 +1842,34 @@ fun VoiceTransformerScreen(
                     )
                 }
 
-                val applyTransformInteraction = remember { MutableInteractionSource() }
-                Button(
-                    onClick = {
+                PreviewAndApplyActionRow(
+                    isPreviewPlaying = uiState.isToolPreviewPlaying,
+                    previewEnabled = uiState.hasAudio && !uiState.isBusy,
+                    applyEnabled = uiState.hasAudio && !uiState.isBusy,
+                    language = lang,
+                    previewTag = "voice_preview_transform_button",
+                    applyTag = "voice_apply_transform_button",
+                    applyLabel = t(lang, "apply_now"),
+                    applyColor = StudioColors.Violet,
+                    onPreviewClick = {
+                        viewModel.previewVoiceTransformerOffline(
+                            pitchSemitones = pitchSemitones,
+                            formantShift = formantShift,
+                            warmthDb = warmthDb,
+                            presenceDb = presenceDb,
+                            mix = mix,
+                            bassBoostDb = selectedPreset?.bassBoostDb ?: 0f,
+                            bassFreqHz = selectedPreset?.bassFreqHz ?: 75f,
+                            vibratoHz = selectedPreset?.vibratoHz ?: 0f,
+                            vibratoDepth = selectedPreset?.vibratoDepth ?: 0f,
+                            echoDelayMs = selectedPreset?.echoDelayMs ?: 0f,
+                            echoDecay = selectedPreset?.echoDecay ?: 0f,
+                            dualLayerPitchSemitones = selectedPreset?.dualLayerPitchSemitones ?: 0f,
+                            dualLayerFormantShift = selectedPreset?.dualLayerFormantShift ?: 1.0f,
+                            dualLayerMix = selectedPreset?.dualLayerMix ?: 0f,
+                        )
+                    },
+                    onApplyClick = {
                         preferVmUndo = true
                         viewModel.transformVoiceOffline(
                             pitchSemitones = pitchSemitones,
@@ -1821,23 +1890,7 @@ fun VoiceTransformerScreen(
                             dualLayerMix = selectedPreset?.dualLayerMix ?: 0f,
                         )
                     },
-                    enabled = !uiState.isBusy,
-                    interactionSource = applyTransformInteraction,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = StudioColors.Violet,
-                        contentColor = StudioColors.BgTop,
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 52.dp)
-                        .lit(applyTransformInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                        .testTag("voice_apply_transform_button"),
-                ) {
-                    Icon(Icons.Rounded.SpatialAudioOff, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(t(lang, "approve_and_start_processing"), style = MaterialTheme.typography.labelLarge)
-                }
+                )
             }
         }
     }
@@ -1913,6 +1966,7 @@ private fun VoiceCharacterPresetRow(
 fun SettingsScreen(
     uiState: StudioUiState,
     viewModel: StudioViewModel,
+    onChangeDefaultSaveFolder: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
@@ -1925,6 +1979,38 @@ fun SettingsScreen(
             language = lang,
             onBack = onBack,
         )
+
+        val saveFolderInteraction = remember { MutableInteractionSource() }
+        Card(
+            onClick = onChangeDefaultSaveFolder,
+            interactionSource = saveFolderInteraction,
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            modifier = Modifier
+                .fillMaxWidth()
+                .lit(saveFolderInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 20.dp)
+                .testTag("settings_save_folder_card"),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(Icons.Rounded.FolderOpen, contentDescription = null, tint = StudioColors.Amber, modifier = Modifier.size(26.dp))
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(t(lang, "settings_save_folder_title"), style = MaterialTheme.typography.titleMedium, color = StudioColors.TextPrimary)
+                    Text(
+                        text = uiState.defaultSaveFolderName ?: t(lang, "settings_save_folder_not_set"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.Amber,
+                    )
+                }
+                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = StudioColors.TextMuted)
+            }
+        }
 
         val langCardInteraction = remember { MutableInteractionSource() }
         Card(

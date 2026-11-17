@@ -5,7 +5,10 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import com.example.audio.cache.SmartCacheManager
+import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.ExportAudioFormat
+import com.example.model.PlatformLoudnessTarget
 import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -13,6 +16,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.UUID
 import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.pow
@@ -288,36 +292,114 @@ suspend fun exportRenderedAudioToFile(
     format: ExportAudioFormat,
     baseFileName: String,
     bitrateKbps: Int = 320,
+    loudnessTarget: PlatformLoudnessTarget = PlatformLoudnessTarget.ORIGINAL,
     onProgress: ((Float) -> Unit)? = null,
 ): ExportedAudioResult = withContext(Dispatchers.IO) {
     val cleanBase = baseFileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "Sonix_Export" }
     val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+    val safeStamp = UUID.randomUUID().toString().take(6)
 
-    when (format) {
+    // Standardize 44100 Hz stereo and apply platform LUFS target if requested
+    var prepared = normalizeToStudioStereo44100(buffer)
+    val targetLufs = loudnessTarget.targetLufs
+    if (targetLufs != null && prepared.frameCount > 0) {
+        prepared = applyPlatformLoudnessNormalization(
+            context = context,
+            buffer = prepared,
+            targetLufs = targetLufs,
+            whatsappSpeechShape = loudnessTarget == PlatformLoudnessTarget.WHATSAPP_VOICE,
+        )
+    }
+
+    val result = when (format) {
         ExportAudioFormat.WAV -> {
-            val out = File(exportDir, "$cleanBase.wav")
-            out.writeBytes(encodeStereoWavBytes(buffer))
+            val out = File(exportDir, "${cleanBase}_$safeStamp.wav")
+            out.writeBytes(encodeStereoWavBytes(prepared))
             onProgress?.invoke(1f)
             ExportedAudioResult(out, "wav", "audio/wav")
         }
         ExportAudioFormat.FLAC -> {
-            val out = File(exportDir, "$cleanBase.flac")
-            out.writeBytes(encodeFlacBytes(buffer, onProgress))
+            val out = File(exportDir, "${cleanBase}_$safeStamp.flac")
+            out.writeBytes(encodeFlacBytes(prepared, onProgress))
             ExportedAudioResult(out, "flac", "audio/flac")
         }
+        ExportAudioFormat.MP3 -> {
+            val tempWav = File(exportDir, "mp3_src_$safeStamp.wav")
+            val mp3File = File(exportDir, "${cleanBase}_$safeStamp.mp3")
+            val safeBitrate = bitrateKbps.coerceIn(128, 320)
+            val ffmpegMp3Ok = try {
+                writeStereoWavFile(tempWav, prepared)
+                val cmd = "-y -i \"${tempWav.absolutePath}\" -vn -ar 44100 -ac 2 -c:a libmp3lame -b:a ${safeBitrate}k \"${mp3File.absolutePath}\""
+                val ok = FfmpegKitBridge.execute(cmd, toolName = "ExportMP3", logNonZeroFailure = false)
+                ok && mp3File.exists() && mp3File.length() > 512L
+            } catch (_: Throwable) {
+                false
+            } finally {
+                runCatching { tempWav.delete() }
+            }
+
+            if (ffmpegMp3Ok) {
+                onProgress?.invoke(1f)
+                ExportedAudioResult(mp3File, "mp3", "audio/mpeg")
+            } else {
+                // High-compat AAC M4A fallback when device has no bundled libmp3lame
+                val m4aFile = File(exportDir, "${cleanBase}_$safeStamp.m4a")
+                if (encodeM4aFile(prepared, m4aFile, safeBitrate, onProgress)) {
+                    ExportedAudioResult(m4aFile, "m4a", "audio/mp4")
+                } else {
+                    val wavFallback = File(exportDir, "${cleanBase}_$safeStamp.wav")
+                    wavFallback.writeBytes(encodeStereoWavBytes(prepared))
+                    onProgress?.invoke(1f)
+                    ExportedAudioResult(wavFallback, "wav", "audio/wav")
+                }
+            }
+        }
         ExportAudioFormat.M4A,
-        ExportAudioFormat.MP3,
         ExportAudioFormat.OGG -> {
-            // Try hardware AAC / M4A first; fall back cleanly to WAV if device codec fails
-            val m4aFile = File(exportDir, "$cleanBase.m4a")
-            if (encodeM4aFile(buffer, m4aFile, bitrateKbps, onProgress)) {
+            val m4aFile = File(exportDir, "${cleanBase}_$safeStamp.m4a")
+            if (encodeM4aFile(prepared, m4aFile, bitrateKbps, onProgress)) {
                 ExportedAudioResult(m4aFile, "m4a", "audio/mp4")
             } else {
-                val wavFallback = File(exportDir, "$cleanBase.wav")
-                wavFallback.writeBytes(encodeStereoWavBytes(buffer))
+                val wavFallback = File(exportDir, "${cleanBase}_$safeStamp.wav")
+                wavFallback.writeBytes(encodeStereoWavBytes(prepared))
                 onProgress?.invoke(1f)
                 ExportedAudioResult(wavFallback, "wav", "audio/wav")
             }
         }
     }
+    SmartCacheManager.pruneManagedBuckets(context)
+    result
+}
+
+private suspend fun applyPlatformLoudnessNormalization(
+    context: Context,
+    buffer: StereoAudioBuffer,
+    targetLufs: Float,
+    whatsappSpeechShape: Boolean,
+): StereoAudioBuffer = withContext(Dispatchers.IO) {
+    val workDir = File(context.cacheDir, "stream_ops").apply { mkdirs() }
+    val id = UUID.randomUUID().toString().take(8)
+    val inWav = File(workDir, "norm_in_$id.wav")
+    val outWav = File(workDir, "norm_out_$id.wav")
+    try {
+        if (FfmpegKitBridge.isAvailable()) {
+            writeStereoWavFile(inWav, buffer)
+            val speechFilter = if (whatsappSpeechShape) "highpass=f=110,acompressor=threshold=-20dB:ratio=3:attack=8:release=80," else ""
+            val cmd = "-y -i \"${inWav.absolutePath}\" -af \"${speechFilter}loudnorm=I=$targetLufs:TP=-1.0:LRA=9\" -ar 44100 -ac 2 \"${outWav.absolutePath}\""
+            val ok = FfmpegKitBridge.execute(cmd, toolName = "PlatformLoudnessExport", logNonZeroFailure = false)
+            if (ok && outWav.exists() && outWav.length() > 44L) {
+                AudioDecoder.decodeFile(outWav)?.let { return@withContext it }
+            }
+        }
+    } finally {
+        runCatching { inWav.delete() }
+        runCatching { outWav.delete() }
+    }
+    // Pure Kotlin fallback loudness + true peak ceiling
+    val targetPeakDb = when {
+        targetLufs >= -14.5f -> -1.0f
+        else -> -1.5f
+    }
+    val leveled = applyAutoCompressorLimiter(context, buffer, strengthPct = if (whatsappSpeechShape) 75f else 55f)
+    normalizeAudio(leveled, targetPeakDb)
 }

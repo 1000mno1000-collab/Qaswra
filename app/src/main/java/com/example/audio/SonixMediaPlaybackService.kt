@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.audio.cache.SmartCacheManager
 import java.util.concurrent.atomic.AtomicBoolean
 
 object StudioPlaybackBridge {
@@ -77,6 +78,13 @@ class SonixMediaPlaybackService : Service() {
         isServiceRunning.set(false)
         releaseWakeLock()
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        runCatching { StudioPlaybackBridge.onStopPlayback?.invoke() }
+        runCatching { SmartCacheManager.trimSessionCache(applicationContext) }
+        stopSelfCleanly()
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun stopSelfCleanly() {

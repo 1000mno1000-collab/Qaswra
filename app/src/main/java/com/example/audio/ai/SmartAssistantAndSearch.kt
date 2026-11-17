@@ -3,7 +3,14 @@ package com.example.audio.ai
 import android.content.Context
 import androidx.compose.runtime.Immutable
 import com.example.audio.AudioDecoder
+import com.example.audio.cache.SmartCacheManager
+import com.example.audio.network.NetworkFetchOutcome
+import com.example.audio.network.NetworkImmunityManager
+import com.example.audio.readStereoWavFile
+import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.AppLanguage
+import com.example.model.AssistantChatMessage
+import com.example.model.OnlineSearchCategory
 import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -13,8 +20,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.UUID
 
@@ -33,6 +38,7 @@ data class OnlineSoundItem(
     val category: String,
     val streamUrl: String,
     val source: String,
+    val searchCategory: OnlineSearchCategory = OnlineSearchCategory.SOUND_EFFECTS,
 )
 
 @Immutable
@@ -42,13 +48,54 @@ data class PollinationsGuideResponse(
     val fromCloudAi: Boolean,
 )
 
+@Immutable
+data class PollinationsChatTurn(
+    val replyText: String,
+    val recommendedToolId: String?,
+    val recommendedToolLabel: String?,
+    val fromCloudAi: Boolean,
+)
+
 object SmartAssistantAndSearch {
+
+    const val CAT_VOICES = "أصوات بشرية ومعلقون"
+    const val CAT_PODCASTS = "بودكاست وحوارات صوتية"
+    const val CAT_CLIPS = "مقاطع وإلقاءات عامة"
 
     const val CAT_HORROR = "مؤثرات رعب وأصوات خرافية"
     const val CAT_NATURE = "أصوات طبيعة وأجواء"
-    const val CAT_MUSIC = "موسيقى خلفية"
+    const val CAT_MUSIC = "موسيقى ومؤثرات سينمائية"
     const val CAT_GAMING = "مؤثرات ألعاب وحركة"
     const val CAT_GENERAL = "مؤثرات صوتية عامة"
+
+    private val VALID_TOOL_IDS = setOf(
+        "noise_reduction",
+        "voice_changer",
+        "human_tts",
+        "reels_audio_templates",
+        "extract_video",
+        "smart_mixer",
+        "audio_editor",
+        "presets_echo",
+        "surround_stereo",
+        "equalizer",
+        "pitch_speed",
+    )
+
+    fun toolDisplayLabel(toolId: String, language: AppLanguage): String = when (toolId) {
+        "noise_reduction" -> if (language == AppLanguage.EN) "Voice Purifier & Denoise" else "منقّي الصوت وعزل الضوضاء"
+        "voice_changer" -> if (language == AppLanguage.EN) "Voice & Mythical FX" else "تغيير الصوت والشخصيات"
+        "human_tts" -> if (language == AppLanguage.EN) "Human Neural TTS" else "تحويل النص لصوت بشري"
+        "reels_audio_templates" -> if (language == AppLanguage.EN) "Reels & Podcast -14 LUFS" else "قوالب الريلز والبودكاست -14 LUFS"
+        "extract_video" -> if (language == AppLanguage.EN) "Extract Audio from Video" else "استخراج الصوت من الفيديو"
+        "smart_mixer" -> if (language == AppLanguage.EN) "Merge & Smart Mixer" else "الدمج والميكس الذكي"
+        "audio_editor" -> if (language == AppLanguage.EN) "Audio Trim & Volume Editor" else "محرر القص ومستوى الصوت"
+        "presets_echo" -> if (language == AppLanguage.EN) "3D Echo & Pro Presets" else "الصدى 3D والقوالب"
+        "surround_stereo" -> if (language == AppLanguage.EN) "M/S Surround Stereo" else "المحيطي ستيريو 3D"
+        "equalizer" -> if (language == AppLanguage.EN) "5-Band Equalizer" else "موازن الترددات EQ"
+        "pitch_speed" -> if (language == AppLanguage.EN) "Pitch & Speed" else "تغيير الطبقة والسرعة"
+        else -> toolId
+    }
 
     fun findBestToolWithTypoTolerance(rawQuery: String): List<ToolGuideResult> {
         val q = normalizeArabicText(rawQuery)
@@ -56,105 +103,152 @@ object SmartAssistantAndSearch {
 
         val results = mutableListOf<ToolGuideResult>()
 
-        if (q.containsAny("ضوضاء", "ضوجه", "ضجه", "هوا", "هواء", "وشه", "تشويش", "تنقيه", "تصفيه", "صافي", "مايك", "بودكاست", "noise", "clean", "denoise", "purify")) {
+        if (q.containsAny("ضوضاء", "ضوجه", "ضجه", "هوا", "هواء", "وشه", "تشويش", "تنقيه", "تصفيه", "صافي", "مايك", "نقي", "noise", "clean", "denoise", "purify", "wind", "hum")) {
             results.add(
                 ToolGuideResult(
                     toolId = "noise_reduction",
-                    toolName = "عزل الضوضاء الذكي (Smart Noise Gate & Denoise)",
-                    matchReason = "فهمت أنك تريد تنظيف الصوت من الهواء والتشويش الخلفي.",
+                    toolName = "منقّي الصوت وعزل الضوضاء (3 مراحل احترافية)",
+                    matchReason = "لعزل الضجيج والهواء، فلترة الترددات المزعجة، وإبراز وضوح الكلام.",
                     howToUseSteps = listOf(
-                        "1. اضغط على زر (افتح الأداة) واختر ملفك الصوتي.",
-                        "2. اختر وضع (تنقية المايك والبودكاست) أو اضبط البوابة لعزل الهواء.",
-                        "3. اضغط (موافقة وبدء المعالجة) للاستماع وحفظ النتيجة.",
+                        "1. فعّل عزل الضوضاء والهواء الذكي.",
+                        "2. اضبط ترددات الباس والحدة بأمان دون اقتطاع مخارج الحروف.",
+                        "3. عاين النتيجة ثم اضغط تطبيق.",
                     ),
                 ),
             )
         }
 
-        if (q.containsAny("تغيير", "تغير", "طفل", "مرعب", "رعب", "تنين", "شبح", "اشباح", "وحش", "فخم", "عميق", "روبوت", "ساحر", "فضائي", "عملاق", "غابه", "راديو", "ملعون", "خرافي", "شخصيه", "voice", "pitch", "dragon")) {
+        if (q.containsAny("تغيير", "تغير", "طفل", "مرعب", "رعب", "تنين", "شبح", "اشباح", "وحش", "فخم", "عميق", "روبوت", "ساحر", "فضائي", "عملاق", "غابه", "خرافي", "شخصيه", "voice", "dragon", "monster")) {
             results.add(
                 ToolGuideResult(
                     toolId = "voice_changer",
-                    toolName = "محوّل الشخصيات والأصوات الخرافية (Voice & Mythical FX)",
-                    matchReason = "فهمت أنك تبحث عن تغيير نبرة الصوت أو إضافة تأثير مرعب/خرافي.",
+                    toolName = "محوّل الشخصيات والأصوات الخرافية",
+                    matchReason = "لتغيير نبرة الصوت أو تقمص شخصيات احترافية وأسطورية.",
                     howToUseSteps = listOf(
-                        "1. افتح الأداة واختر الشخصية (طفل، تنين أسطوري، كيان الظلام، ساحر، أشباح).",
-                        "2. يمكنك تجربة المعاينة الفورية بالمايكروفون أو تعديل ملف مسجل.",
-                        "3. اضغط (موافقة وبدء المعالجة) لتطبيق التأثير بجودة استوديو.",
+                        "1. اختر الشخصية المناسبة.",
+                        "2. اضغط معاينة التعديل للاستماع قبل الحفظ.",
                     ),
                 ),
             )
         }
 
-        if (q.containsAny("نص", "كتابه", "قراءه", "نطق", "تكلم", "معلق", "بشري", "عراقي", "سعودي", "مصري", "فصحى", "سوري", "مقال", "رابط", "tts", "speech", "podcast")) {
+        if (q.containsAny("نص", "كتابه", "قراءه", "نطق", "تكلم", "معلق", "بشري", "عراقي", "سعودي", "مصري", "فصحى", "سوري", "مقال", "رابط", "tts", "speech")) {
             results.add(
                 ToolGuideResult(
                     toolId = "human_tts",
-                    toolName = "استوديو الصوت البشري وقارئ المقالات (Human Neural TTS)",
-                    matchReason = "فهمت أنك تريد تحويل نص مكتوب أو مقال من رابط إلى صوت بشري طبيعي.",
+                    toolName = "استوديو الصوت البشري وقارئ المقالات (أونلاين)",
+                    matchReason = "لتحويل النصوص أو روابط المقالات إلى تعليق صوتي بشري طبيعي.",
                     howToUseSteps = listOf(
-                        "1. اكتب النص أو الصق رابط مقال لاستخراج نصه تلقائياً.",
-                        "2. اختر اللهجة (عراقي، سعودي، مصري، فصحى) ونبرة الإلقاء.",
-                        "3. اضغط (موافقة وبدء المعالجة) لتوليد الصوت بجودة استوديو.",
+                        "1. أدخل النص أو رابط المقال.",
+                        "2. اختر اللهجة العربية أو العالمية ونبرة الإلقاء.",
                     ),
                 ),
             )
         }
 
-        if (q.containsAny("فيديو", "رندر", "ببجي", "بوبجي", "سينمائي", "الوان", "وضوح", "موشن", "ريلز", "موجه", "فريم", "video", "hdr", "reshade", "reels", "120")) {
+        if (q.containsAny("ريلز", "بودكاست", "تيك", "تيكتوك", "شورتس", "سوشيال", "lufs", "14", "مذيع", "reels", "podcast", "shorts")) {
             results.add(
                 ToolGuideResult(
-                    toolId = "cinematic_video",
-                    toolName = "رندر الفيديو السينمائي وصانع الريلز (Cinematic & Reels)",
-                    matchReason = "فهمت أنك تريد تحسين ألوان ووضوح الفيديو (60/90/120 FPS) أو تحويل الصوت لفيديو ريلز.",
+                    toolId = "reels_audio_templates",
+                    toolName = "قوالب الهندسة الصوتية للريلز والبودكاست (-14 LUFS)",
+                    matchReason = "لتضخيم صوت المعلق، عزل الضوضاء، وموازنة الشدة الصوتية -14 LUFS لمنصات السوشيال.",
                     howToUseSteps = listOf(
-                        "1. اختر الفيديو الخاص بك (أو استخدم الصوت الحالي لصنع فيديو ريلز 1080x1920).",
-                        "2. اختر الفلتر السينمائي (HDR مشبع، وضوح الألعاب، طابع الأفلام).",
-                        "3. اضغط (موافقة وبدء المعالجة) مع الحفاظ على كامل الفريمات الأصلية.",
+                        "1. اختر قالب الريلز أو البودكاست المناسب.",
+                        "2. عاين النتيجة واضغط تطبيق الآن.",
                     ),
                 ),
             )
         }
 
-        if (q.containsAny("موسيقي", "موسيقى", "دمج", "خلفيه", "دوبلاج", "مكس", "mixer", "ducking", "music")) {
+        if (q.containsAny("فيديو", "استخراج", "سحب", "فصل الصوت", "mp4", "mkv", "extract", "video")) {
+            results.add(
+                ToolGuideResult(
+                    toolId = "extract_video",
+                    toolName = "استخراج الصوت من الفيديو",
+                    matchReason = "لاستخلاص المسار الصوتي النقي (WAV / MP3 / FLAC) من أي ملف فيديو.",
+                    howToUseSteps = listOf(
+                        "1. اختر الفيديو من الجهاز أو من المكتبة.",
+                        "2. حدد صيغة الاستخراج واضغط استيراد.",
+                    ),
+                ),
+            )
+        }
+
+        if (q.containsAny("موسيقي", "موسيقى", "دمج", "خلفيه", "دوبلاج", "مكس", "تراكب", "mixer", "ducking", "merge")) {
             results.add(
                 ToolGuideResult(
                     toolId = "smart_mixer",
-                    toolName = "دمج الموسيقى الذكي (Auto-Ducking Mixer)",
-                    matchReason = "فهمت أنك تريد مزج الصوت مع موسيقى خلفية تخفت تلقائياً عند الكلام.",
+                    toolName = "استوديو الدمج والميكس الذكي",
+                    matchReason = "لدمج مسارين بالتتابع أو بالتراكب مع خفض الموسيقى تلقائياً عند الكلام.",
                     howToUseSteps = listOf(
-                        "1. افتح الدمج الذكي واختر مسار الكلام ثم مسار الموسيقى.",
-                        "2. اضبط نسبة مستوى الموسيقى وعاين النتيجة مجاناً.",
-                        "3. اضغط اعتماد وتصدير عند الرضا.",
+                        "1. حدد المقطع الأساسي والمقطع الثاني.",
+                        "2. فعّل الخفض التلقائي وعاين الدمج قبل الاعتماد.",
                     ),
                 ),
             )
         }
 
-        if (q.containsAny("قص", "قطع", "تعديل", "دمج صوت", "حذف", "trim", "cut", "edit")) {
+        if (q.containsAny("قص", "قطع", "صوت", "عالي", "ناصي", "رفع", "تخفيض", "تعديل", "تلاشي", "trim", "cut", "volume", "gain", "fade")) {
             results.add(
                 ToolGuideResult(
                     toolId = "audio_editor",
-                    toolName = "استوديو التحرير والقص (Audio Editor)",
-                    matchReason = "فهمت أنك تريد قص جزء من المقطع الصوتي أو تلاشي البداية والنهاية.",
+                    toolName = "استوديو القص والتحرير ورفع الصوت",
+                    matchReason = "لقص الأجزاء الزائدة أو رفع مستوى الصوت وحماية التشويه.",
                     howToUseSteps = listOf(
-                        "1. حدد البداية والنهاية على شريط الموجة.",
-                        "2. استخدم (الإبقاء على المحدد) أو (حذف المحدد) مع التراجع بأي وقت.",
-                        "3. احفظ وصدّر الصيغة المناسبة لك.",
+                        "1. حرّك مؤشر الشدة أو حدّد نطاق القص.",
+                        "2. استمع مباشرة للتعديلات أو اضغط تطبيق.",
                     ),
                 ),
             )
         }
 
-        if (q.containsAny("صدي", "صدى", "قالب", "استوديو", "اوتوتيون", "8d", "echo", "reverb", "preset")) {
+        if (q.containsAny("محيطي", "ستيريو", "مسرح", "اتساع", "surround", "stereo", "3d", "8d")) {
+            results.add(
+                ToolGuideResult(
+                    toolId = "surround_stereo",
+                    toolName = "المحيطي ستيريو (M/S Surround)",
+                    matchReason = "لتوسيع المساحة الفراغية بين السماعتين فورياً وأثناء التشغيل.",
+                    howToUseSteps = listOf(
+                        "1. حرّك أشرطة Mid/Side والاتساع واستمع لحظياً.",
+                    ),
+                ),
+            )
+        }
+
+        if (q.containsAny("ايكو", "صدى", "صدي", "قالب", "قاعه", "مسجد", "كنيسه", "echo", "reverb", "preset")) {
             results.add(
                 ToolGuideResult(
                     toolId = "presets_echo",
-                    toolName = "القوالب العالمية ومساحة الصدى 3D",
-                    matchReason = "فهمت أنك تريد إضافة صدى احترافي أو تفعيل قالب إذاعي/سينمائي.",
+                    toolName = "الصدى 3D والقوالب الاحترافية",
+                    matchReason = "لإضافة عمق مكاني وصدى ناعم أو احترافي.",
                     howToUseSteps = listOf(
-                        "1. افتح القوالب العالمية واختر القالب المناسب للمعاينة الحية.",
-                        "2. استخدم زر (مقارنة الأصل) لمقارنة الفرق فوراً.",
+                        "1. استخدم الوضع البسيط للاستماع المباشر أو الاحترافي للتحكم العميق.",
+                    ),
+                ),
+            )
+        }
+
+        if (q.containsAny("تردد", "ترددات", "اكوالايزر", "ايكوالايزر", "eq", "bass", "treble", "باس")) {
+            results.add(
+                ToolGuideResult(
+                    toolId = "equalizer",
+                    toolName = "موازن الترددات (Equalizer)",
+                    matchReason = "لضبط ترددات الباس والوسط والحدة فورياً أثناء التشغيل.",
+                    howToUseSteps = listOf(
+                        "1. ارفع أو خفّض الترددات الخمسة واستمع للتغيير لحظياً.",
+                    ),
+                ),
+            )
+        }
+
+        if (q.containsAny("سرعه", "بطيء", "سريع", "طبقه", "تنعيم", "تغليظ", "speed", "tempo", "pitch")) {
+            results.add(
+                ToolGuideResult(
+                    toolId = "pitch_speed",
+                    toolName = "تعديل السرعة والطبقة (Pitch & Speed)",
+                    matchReason = "لتسريع أو تبطيء المقطع أو تغيير حدّة الصوت فورياً.",
+                    howToUseSteps = listOf(
+                        "1. اسحب مؤشر السرعة أو الطبقة واستمع للمعاينة الحية فوراً.",
                     ),
                 ),
             )
@@ -163,164 +257,160 @@ object SmartAssistantAndSearch {
         return results
     }
 
-    private val VALID_TOOL_IDS = setOf(
-        "noise_reduction",
-        "voice_changer",
-        "human_tts",
-        "cinematic_video",
-        "smart_mixer",
-        "audio_editor",
-        "presets_echo",
-    )
-
     /**
-     * Queries the free keyless Pollinations Text AI endpoint (https://text.pollinations.ai)
-     * to understand user requests even with Arabic dialects or spelling typos and guide them
-     * to the right Sonix studio tool(s). Must only be called when device has internet.
+     * Multi-turn online Cloud AI chat powered by keyless https://text.pollinations.ai.
+     * Understands Iraqi & Fusha Arabic dialects, repairs typos, explains concisely, and
+     * picks a single best actionable Studio tool for a Compact Action Chip.
      */
-    suspend fun askPollinationsToolGuide(
-        rawQuery: String,
+    suspend fun askPollinationsChat(
+        history: List<AssistantChatMessage>,
+        userMessage: String,
         language: AppLanguage,
-    ): PollinationsGuideResponse = withContext(Dispatchers.IO) {
-        val cleanQuery = rawQuery.trim()
-        if (cleanQuery.isEmpty()) {
-            return@withContext PollinationsGuideResponse(
-                aiSummary = null,
-                tools = emptyList(),
+    ): PollinationsChatTurn = withContext(Dispatchers.IO) {
+        val clean = userMessage.trim()
+        if (clean.isEmpty()) {
+            return@withContext PollinationsChatTurn(
+                replyText = "",
+                recommendedToolId = null,
+                recommendedToolLabel = null,
                 fromCloudAi = false,
             )
         }
 
         val replyLangHint = when (language) {
-            AppLanguage.AR -> "Arabic"
+            AppLanguage.AR -> "Arabic (understand Iraqi, Gulf, Egyptian, Levantine, and Fusha naturally)"
             AppLanguage.EN -> "English"
             AppLanguage.FA -> "Persian"
         }
+
         val systemPrompt = buildString {
-            append("You are the smart studio guide inside Sonix Audio & Video Studio. ")
-            append("Understand user questions even with typos, slang, or Arabic dialects (Iraqi, Saudi, Egyptian, Syrian, Moroccan, Fusha). ")
-            append("Reply in $replyLangHint using strictly valid JSON with schema: ")
-            append("{\"summary\":\"short helpful advice\",\"tools\":[{\"toolId\":\"one_id\",\"toolName\":\"display name\",\"matchReason\":\"why it fits\",\"steps\":[\"step 1\",\"step 2\"]}]}. ")
+            append("You are the expert AI Sound Engineer inside Sonix Pure Audio Engineering Studio (100% free audio app; NO video rendering tools exist). ")
+            append("Respond clearly and concisely in $replyLangHint (max 2-3 helpful sentences). Understand typos and spoken dialects (especially Iraqi, Gulf, Egyptian, Levantine, Fusha). ")
+            append("Return STRICT valid JSON: {\"reply\":\"your concise friendly answer\",\"toolId\":\"best_single_tool_id_or_empty\",\"toolLabel\":\"short tool title\"}. ")
             append("Allowed toolId values ONLY: ")
-            append("noise_reduction (AI noise & hum removal), ")
-            append("voice_changer (Natural child, male/female, dragon, shadow legion, ghost, alien live & offline morphing), ")
-            append("human_tts (Cloud Neural Human TTS in 12 dialects & web article podcast extractor), ")
-            append("cinematic_video (ReShade HDR video renderer up to 120 FPS & 1080x1920 Reels audiogram creator), ")
-            append("smart_mixer (Auto-ducking music + voice mixer), ")
-            append("audio_editor (Trim, cut, merge, normalize, fade), ")
-            append("presets_echo (Pro broadcast presets & 3D spatial echo). ")
-            append("Pick 1 or 2 most relevant tools.")
+            append("noise_reduction (3-stage AI noise cleaner + rumble/hiss filters), ")
+            append("voice_changer (character voices like child, dragon, deep epic), ")
+            append("human_tts (online Cloud Human Neural TTS & article reader), ")
+            append("reels_audio_templates (audio-only Reels & Podcast presets normalized to -14 LUFS), ")
+            append("extract_video (extract pure WAV/MP3/FLAC audio from a video file), ")
+            append("smart_mixer (merge tracks, crossfade, overlay, auto-ducking music), ")
+            append("audio_editor (trim, cut, fade, clip gain volume), ")
+            append("presets_echo (3D Echo & broadcast presets), ")
+            append("surround_stereo (M/S Surround Stereo live widener), ")
+            append("equalizer (5-band live EQ), ")
+            append("pitch_speed (live speed & pitch adjuster).")
         }
 
-        val rawResponse = queryPollinationsPost(systemPrompt, cleanQuery)
-            ?: queryPollinationsGet(systemPrompt, cleanQuery)
+        val messagesArray = JSONArray().apply {
+            put(JSONObject().apply {
+                put("role", "system")
+                put("content", systemPrompt)
+            })
+            history.takeLast(8).forEach { msg ->
+                put(JSONObject().apply {
+                    put("role", if (msg.isUser) "user" else "assistant")
+                    put("content", msg.text)
+                })
+            }
+            put(JSONObject().apply {
+                put("role", "user")
+                put("content", clean)
+            })
+        }
+
+        val rawResponse = queryPollinationsPostMessages(messagesArray)
+            ?: queryPollinationsGet(systemPrompt, clean)
 
         if (!rawResponse.isNullOrBlank()) {
-            val parsed = parsePollinationsJson(rawResponse)
-            if (parsed != null && (parsed.tools.isNotEmpty() || !parsed.aiSummary.isNullOrBlank())) {
-                val mergedTools = if (parsed.tools.isNotEmpty()) {
-                    parsed.tools
-                } else {
-                    findBestToolWithTypoTolerance(cleanQuery)
-                }
-                return@withContext PollinationsGuideResponse(
-                    aiSummary = parsed.aiSummary ?: rawResponse.take(360),
-                    tools = mergedTools,
-                    fromCloudAi = true,
-                )
-            }
+            val parsedTurn = parsePollinationsChatJson(rawResponse, clean, language)
+            if (parsedTurn != null) return@withContext parsedTurn
 
-            // Pollinations answered in natural prose rather than JSON: surface the prose + infer matching tools
-            val inferred = inferToolsFromText(rawResponse)
-                .ifEmpty { findBestToolWithTypoTolerance(cleanQuery) }
-            return@withContext PollinationsGuideResponse(
-                aiSummary = rawResponse.trim().take(480),
-                tools = inferred,
+            val inferredId = VALID_TOOL_IDS.firstOrNull { rawResponse.contains(it, ignoreCase = true) }
+                ?: findBestToolWithTypoTolerance(clean).firstOrNull()?.toolId
+            return@withContext PollinationsChatTurn(
+                replyText = rawResponse.trim().take(520),
+                recommendedToolId = inferredId,
+                recommendedToolLabel = inferredId?.let { toolDisplayLabel(it, language) },
                 fromCloudAi = true,
             )
         }
 
-        // Only if online endpoint temporarily timed out while connected, gracefully provide fuzzy matches
-        val fallbackTools = findBestToolWithTypoTolerance(cleanQuery)
-        PollinationsGuideResponse(
-            aiSummary = null,
-            tools = fallbackTools,
+        val localMatch = findBestToolWithTypoTolerance(clean).firstOrNull()
+        val fallbackText = localMatch?.let {
+            if (language == AppLanguage.EN) {
+                "${it.matchReason} Tap the button below to open ${it.toolName}."
+            } else {
+                "${it.matchReason} اضغط على الشريحة بالأسفل للانتقال مباشرة إلى الأداة."
+            }
+        } ?: if (language == AppLanguage.EN) {
+            "Tell me what you want to do with your audio (remove noise, boost vocals, -14 LUFS Reels, extract audio from video, or merge tracks)."
+        } else {
+            "اشرح لي مشكلتك الصوتية (عزل ضوضاء، رفع صوت، قالب ريلز -14 LUFS، استخراج صوت من فيديو، أو دمج مقاطع) وسأوجهك للأداة الأنسب فوراً."
+        }
+
+        PollinationsChatTurn(
+            replyText = fallbackText,
+            recommendedToolId = localMatch?.toolId,
+            recommendedToolLabel = localMatch?.toolId?.let { toolDisplayLabel(it, language) },
             fromCloudAi = false,
         )
     }
 
-    private fun queryPollinationsPost(systemPrompt: String, userQuery: String): String? {
-        var conn: HttpURLConnection? = null
-        return try {
-            val bodyJson = JSONObject().apply {
-                put(
-                    "messages",
-                    JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("role", "system")
-                            put("content", systemPrompt)
-                        })
-                        put(JSONObject().apply {
-                            put("role", "user")
-                            put("content", userQuery)
-                        })
-                    },
-                )
-                put("model", "openai")
-                put("jsonMode", true)
-            }
-            conn = (URL("https://text.pollinations.ai/").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                setRequestProperty("Accept", "application/json, text/plain;q=0.9, */*;q=0.8")
-                setRequestProperty("User-Agent", "SonixApp/1.0")
-                connectTimeout = 7000
-                readTimeout = 11000
-            }
-            conn.outputStream.use { out ->
-                out.write(bodyJson.toString().toByteArray(Charsets.UTF_8))
-                out.flush()
-            }
-            if (conn.responseCode in 200..299) {
-                conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }.takeIf { it.isNotBlank() }
-            } else {
-                null
-            }
-        } catch (_: Throwable) {
-            null
-        } finally {
-            runCatching { conn?.disconnect() }
+    suspend fun askPollinationsToolGuide(
+        rawQuery: String,
+        language: AppLanguage,
+    ): PollinationsGuideResponse {
+        val turn = askPollinationsChat(emptyList(), rawQuery, language)
+        val matched = findBestToolWithTypoTolerance(rawQuery)
+        val singleTool = turn.recommendedToolId?.let { id ->
+            matched.firstOrNull { it.toolId == id } ?: ToolGuideResult(
+                toolId = id,
+                toolName = turn.recommendedToolLabel ?: toolDisplayLabel(id, language),
+                matchReason = turn.replyText,
+                howToUseSteps = emptyList(),
+            )
         }
+        return PollinationsGuideResponse(
+            aiSummary = turn.replyText,
+            tools = listOfNotNull(singleTool),
+            fromCloudAi = turn.fromCloudAi,
+        )
     }
 
-    private fun queryPollinationsGet(systemPrompt: String, userQuery: String): String? {
-        var conn: HttpURLConnection? = null
-        return try {
-            val encodedPrompt = URLEncoder.encode(userQuery, "UTF-8").replace("+", "%20")
-            val encodedSys = URLEncoder.encode(systemPrompt, "UTF-8")
-            val urlStr = "https://text.pollinations.ai/$encodedPrompt?model=openai&system=$encodedSys"
-            conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "SonixApp/1.0")
-                setRequestProperty("Accept", "text/plain, application/json;q=0.9")
-                connectTimeout = 7000
-                readTimeout = 11000
-            }
-            if (conn.responseCode in 200..299) {
-                conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }.takeIf { it.isNotBlank() }
-            } else {
-                null
-            }
-        } catch (_: Throwable) {
-            null
-        } finally {
-            runCatching { conn?.disconnect() }
+    private suspend fun queryPollinationsPostMessages(messages: JSONArray): String? {
+        val bodyJson = JSONObject().apply {
+            put("messages", messages)
+            put("model", "openai")
+            put("jsonMode", true)
         }
+        val outcome = NetworkImmunityManager.fetchTextWithFallback(
+            urls = listOf("https://text.pollinations.ai/"),
+            headers = mapOf("Accept" to "application/json, text/plain;q=0.9, */*;q=0.8"),
+            postJsonBody = bodyJson.toString(),
+            timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
+            providerLabel = "PollinationsChatPOST",
+        )
+        return (outcome as? NetworkFetchOutcome.Success)?.value?.body?.takeIf { it.isNotBlank() }
     }
 
-    private fun parsePollinationsJson(raw: String): PollinationsGuideResponse? {
+    private suspend fun queryPollinationsGet(systemPrompt: String, userQuery: String): String? {
+        val encodedPrompt = URLEncoder.encode(userQuery, "UTF-8").replace("+", "%20")
+        val encodedSys = URLEncoder.encode(systemPrompt, "UTF-8")
+        val urlStr = "https://text.pollinations.ai/$encodedPrompt?model=openai&system=$encodedSys"
+        val outcome = NetworkImmunityManager.fetchTextWithFallback(
+            urls = listOf(urlStr),
+            headers = mapOf("Accept" to "text/plain, application/json;q=0.9"),
+            timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
+            providerLabel = "PollinationsChatGET",
+        )
+        return (outcome as? NetworkFetchOutcome.Success)?.value?.body?.takeIf { it.isNotBlank() }
+    }
+
+    private fun parsePollinationsChatJson(
+        raw: String,
+        originalUserQuery: String,
+        language: AppLanguage,
+    ): PollinationsChatTurn? {
         return runCatching {
             val stripped = raw
                 .trim()
@@ -332,172 +422,175 @@ object SmartAssistantAndSearch {
             val endIdx = stripped.lastIndexOf('}')
             if (startIdx < 0 || endIdx <= startIdx) return null
             val jsonObj = JSONObject(stripped.substring(startIdx, endIdx + 1))
-            val summary = jsonObj.optString("summary").trim().ifEmpty { null }
-            val toolsArr = jsonObj.optJSONArray("tools") ?: jsonObj.optJSONArray("recommended")
-            val parsedTools = mutableListOf<ToolGuideResult>()
-            if (toolsArr != null) {
-                for (i in 0 until toolsArr.length()) {
-                    val obj = toolsArr.optJSONObject(i) ?: continue
-                    val id = obj.optString("toolId").trim()
-                    if (id !in VALID_TOOL_IDS) continue
-                    val name = obj.optString("toolName").trim().ifBlank { id }
-                    val reason = obj.optString("matchReason").ifBlank { obj.optString("reason") }.trim()
-                    val stepsArr = obj.optJSONArray("steps") ?: obj.optJSONArray("howToUseSteps")
-                    val steps = mutableListOf<String>()
-                    if (stepsArr != null) {
-                        for (s in 0 until stepsArr.length()) {
-                            val line = stepsArr.optString(s).trim()
-                            if (line.isNotEmpty()) steps.add(line)
-                        }
-                    }
-                    parsedTools.add(
-                        ToolGuideResult(
-                            toolId = id,
-                            toolName = name,
-                            matchReason = reason,
-                            howToUseSteps = steps,
-                        ),
-                    )
+
+            val reply = jsonObj.optString("reply")
+                .ifBlank { jsonObj.optString("summary") }
+                .trim()
+            if (reply.isEmpty()) return null
+
+            var rawToolId = jsonObj.optString("toolId").trim()
+            if (rawToolId !in VALID_TOOL_IDS) {
+                val toolsArr = jsonObj.optJSONArray("tools")
+                val firstId = toolsArr?.optJSONObject(0)?.optString("toolId")?.trim().orEmpty()
+                rawToolId = if (firstId in VALID_TOOL_IDS) {
+                    firstId
+                } else {
+                    findBestToolWithTypoTolerance(originalUserQuery).firstOrNull()?.toolId ?: ""
                 }
             }
-            PollinationsGuideResponse(
-                aiSummary = summary,
-                tools = parsedTools,
+            val validId = rawToolId.takeIf { it in VALID_TOOL_IDS }
+            val label = validId?.let { id ->
+                jsonObj.optString("toolLabel").trim().ifBlank { toolDisplayLabel(id, language) }
+            }
+
+            PollinationsChatTurn(
+                replyText = reply,
+                recommendedToolId = validId,
+                recommendedToolLabel = label,
                 fromCloudAi = true,
             )
         }.getOrNull()
     }
 
-    private fun inferToolsFromText(text: String): List<ToolGuideResult> {
-        val matchedIds = VALID_TOOL_IDS.filter { id -> text.contains(id, ignoreCase = true) }
-        val baseCatalog = findBestToolWithTypoTolerance(
-            "ضوضاء تغيير صوت نص فيديو موسيقى قص صدى",
-        ).associateBy { it.toolId }
-        return matchedIds.mapNotNull { baseCatalog[it] }
-    }
-
     /**
-     * Searches Archive.org public audio collections, resolves direct MP3/OGG stream URLs
-     * asynchronously, and distributes items into structured categories.
+     * Searches Archive.org public audio libraries separated cleanly into:
+     * 1) Voices & Clips (speech, poetry, narrations, podcasts, vocal clips)
+     * 2) Sound Effects - SFX (foley, horror, nature, gaming, impacts)
      */
-    suspend fun searchInternetSoundsOrganized(query: String): Map<String, List<OnlineSoundItem>> =
-        withContext(Dispatchers.IO) {
-            val cleanQuery = query.trim().ifEmpty { "cinematic ambient" }
-            val allSounds = mutableListOf<OnlineSoundItem>()
-            try {
-                val searchTerms = buildArchiveQuery(cleanQuery)
-                val encoded = URLEncoder.encode(searchTerms, "UTF-8")
-                val apiUrl =
-                    "https://archive.org/advancedsearch.php?q=$encoded" +
-                        "&fl[]=identifier,title,subject,description&rows=18&page=1&output=json"
-                val conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
-                    setRequestProperty("User-Agent", "SonixApp/1.0")
-                    connectTimeout = 8000
-                    readTimeout = 10000
-                }
+    suspend fun searchOnlineCatalog(
+        query: String,
+        category: OnlineSearchCategory,
+    ): Map<String, List<OnlineSoundItem>> = withContext(Dispatchers.IO) {
+        val defaultQuery = when (category) {
+            OnlineSearchCategory.VOICES_CLIPS -> "arabic speech podcast narration"
+            OnlineSearchCategory.SOUND_EFFECTS -> "sound effect sfx ambient"
+        }
+        val cleanQuery = query.trim().ifEmpty { defaultQuery }
+        val allSounds = mutableListOf<OnlineSoundItem>()
+        try {
+            val searchTerms = buildArchiveQuery(cleanQuery, category)
+            val encoded = URLEncoder.encode(searchTerms, "UTF-8")
+            val apiUrl =
+                "https://archive.org/advancedsearch.php?q=$encoded" +
+                    "&fl[]=identifier,title,subject,description&rows=18&page=1&output=json"
+            val outcome = NetworkImmunityManager.fetchTextWithFallback(
+                urls = listOf(apiUrl),
+                timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
+                providerLabel = "ArchiveSearch",
+            )
+            if (outcome is NetworkFetchOutcome.Success) {
+                val json = JSONObject(outcome.value.body)
+                val docs = json.optJSONObject("response")?.optJSONArray("docs")
+                if (docs != null) {
+                    val rawDocs = (0 until docs.length()).mapNotNull { idx ->
+                        val doc = docs.optJSONObject(idx) ?: return@mapNotNull null
+                        val id = doc.optString("identifier").trim()
+                        if (id.isEmpty()) return@mapNotNull null
+                        val title = doc.optString("title").ifBlank { id }
+                        val subject = doc.optString("subject", "")
+                        Triple(id, title, subject)
+                    }.take(12)
 
-                if (conn.responseCode in 200..299) {
-                    val jsonText = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                    conn.disconnect()
-                    val json = JSONObject(jsonText)
-                    val docs = json.optJSONObject("response")?.optJSONArray("docs")
-                    if (docs != null) {
-                        val rawDocs = (0 until docs.length()).mapNotNull { idx ->
-                            val doc = docs.optJSONObject(idx) ?: return@mapNotNull null
-                            val id = doc.optString("identifier").trim()
-                            if (id.isEmpty()) return@mapNotNull null
-                            val title = doc.optString("title").ifBlank { id }
-                            val subject = doc.optString("subject", "")
-                            Triple(id, title, subject)
-                        }.take(12)
-
-                        val resolvedItems = coroutineScope {
-                            rawDocs.map { (id, title, subject) ->
-                                async {
-                                    val directUrl = resolveDirectPlayableArchiveUrl(id)
-                                        ?: return@async null
-                                    val cat = classifyCategory(title = title, subject = subject, query = cleanQuery)
-                                    OnlineSoundItem(
-                                        identifier = id,
-                                        title = title,
-                                        category = cat,
-                                        streamUrl = directUrl,
-                                        source = "Archive.org",
-                                    )
-                                }
-                            }.awaitAll().filterNotNull()
-                        }
-                        allSounds.addAll(resolvedItems)
+                    val resolvedItems = coroutineScope {
+                        rawDocs.map { (id, title, subject) ->
+                            async {
+                                val directUrl = resolveDirectPlayableArchiveUrl(id)
+                                    ?: return@async null
+                                val cat = classifyCategory(
+                                    title = title,
+                                    subject = subject,
+                                    query = cleanQuery,
+                                    mode = category,
+                                )
+                                OnlineSoundItem(
+                                    identifier = id,
+                                    title = title,
+                                    category = cat,
+                                    streamUrl = directUrl,
+                                    source = "Archive.org",
+                                    searchCategory = category,
+                                )
+                            }
+                        }.awaitAll().filterNotNull()
                     }
-                } else {
-                    conn.disconnect()
-                }
-            } catch (_: Exception) {
-                // Return cleanly structured empty map when offline
-            }
-
-            val orderedCategories = listOf(CAT_HORROR, CAT_NATURE, CAT_MUSIC, CAT_GAMING, CAT_GENERAL)
-            val grouped = linkedMapOf<String, List<OnlineSoundItem>>()
-            val byCategory = allSounds.groupBy { it.category }
-            orderedCategories.forEach { cat ->
-                val list = byCategory[cat].orEmpty()
-                if (list.isNotEmpty()) {
-                    grouped[cat] = list
+                    allSounds.addAll(resolvedItems)
                 }
             }
-            grouped
+        } catch (_: Exception) {
+            // Return cleanly empty map when network errors occur
         }
 
+        val orderedCategories = if (category == OnlineSearchCategory.VOICES_CLIPS) {
+            listOf(CAT_VOICES, CAT_PODCASTS, CAT_CLIPS)
+        } else {
+            listOf(CAT_HORROR, CAT_NATURE, CAT_MUSIC, CAT_GAMING, CAT_GENERAL)
+        }
+        val grouped = linkedMapOf<String, List<OnlineSoundItem>>()
+        val byCategory = allSounds.groupBy { it.category }
+        orderedCategories.forEach { cat ->
+            val list = byCategory[cat].orEmpty()
+            if (list.isNotEmpty()) {
+                grouped[cat] = list
+            }
+        }
+        grouped
+    }
+
+    suspend fun searchInternetSoundsOrganized(query: String): Map<String, List<OnlineSoundItem>> =
+        searchOnlineCatalog(query, OnlineSearchCategory.SOUND_EFFECTS)
+
+    /**
+     * Downloads any public track from Archive.org through NetworkImmunityManager (with payload shield),
+     * automatically converting/extracting pure WAV stereo PCM via FFmpegKit if needed.
+     */
     suspend fun downloadSoundToStudioBuffer(
         context: Context,
         item: OnlineSoundItem,
     ): StereoAudioBuffer? = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "archive_sfx").apply { mkdirs() }
         val ext = item.streamUrl.substringAfterLast('.', "mp3").substringBefore('?').take(4).ifBlank { "mp3" }
-        val tmpFile = File(dir, "sfx_${UUID.randomUUID()}.$ext")
-        var conn: HttpURLConnection? = null
+        val tmpFile = File(dir, "dl_${UUID.randomUUID()}.$ext")
+        val wavFallback = File(dir, "ext_${UUID.randomUUID()}.wav")
         return@withContext try {
-            conn = (URL(item.streamUrl).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "SonixApp/1.0")
-                connectTimeout = 9000
-                readTimeout = 15000
-            }
-            if (conn.responseCode !in 200..299) return@withContext null
-            conn.inputStream.use { input ->
-                tmpFile.outputStream().use { out ->
-                    val buf = ByteArray(16384)
-                    var total = 0L
-                    val maxBytes = 25L * 1024L * 1024L // cap at 25MB safety
-                    while (true) {
-                        val read = input.read(buf)
-                        if (read <= 0) break
-                        total += read
-                        if (total > maxBytes) break
-                        out.write(buf, 0, read)
-                    }
+            val outcome = NetworkImmunityManager.fetchAudioWithFallback(
+                urls = listOf(item.streamUrl),
+                context = context,
+                timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
+                providerLabel = "ArchiveDownload",
+            )
+            val bytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes ?: return@withContext null
+            tmpFile.writeBytes(bytes)
+            SmartCacheManager.pruneManagedBuckets(context)
+            AudioDecoder.decodeFile(tmpFile) ?: run {
+                val cmd = "-y -i \"${tmpFile.absolutePath}\" -vn -ac 2 -ar 44100 -c:a pcm_s16le \"${wavFallback.absolutePath}\""
+                val ok = FfmpegKitBridge.execute(
+                    command = cmd,
+                    toolName = "Archive.org Audio Decoder",
+                    logNonZeroFailure = false,
+                )
+                if (ok && wavFallback.exists()) {
+                    readStereoWavFile(wavFallback)
+                } else {
+                    null
                 }
             }
-            AudioDecoder.decodeFile(tmpFile)
         } catch (_: Throwable) {
             null
         } finally {
-            runCatching { conn?.disconnect() }
             tmpFile.delete()
+            wavFallback.delete()
         }
     }
 
-    private fun resolveDirectPlayableArchiveUrl(identifier: String): String? {
-        var conn: HttpURLConnection? = null
+    private suspend fun resolveDirectPlayableArchiveUrl(identifier: String): String? {
         return try {
             val metaUrl = "https://archive.org/metadata/$identifier/files"
-            conn = (URL(metaUrl).openConnection() as HttpURLConnection).apply {
-                setRequestProperty("User-Agent", "SonixApp/1.0")
-                connectTimeout = 4500
-                readTimeout = 5500
-            }
-            if (conn.responseCode !in 200..299) return null
-            val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val outcome = NetworkImmunityManager.fetchTextWithFallback(
+                urls = listOf(metaUrl),
+                timeoutMs = 12_000L,
+                providerLabel = "ArchiveMetadata",
+            )
+            val text = (outcome as? NetworkFetchOutcome.Success)?.value?.body ?: return null
             val resultArr = JSONObject(text).optJSONArray("result") ?: return null
 
             var bestMp3: String? = null
@@ -520,32 +613,54 @@ object SmartAssistantAndSearch {
             }
             val chosen = bestMp3 ?: bestAlt ?: return null
             val encodedFile = URLEncoder.encode(chosen, "UTF-8").replace("+", "%20")
-            "https://archive.org/download/$identifier/$encodedFile"
+            NetworkImmunityManager.enforceHttps("https://archive.org/download/$identifier/$encodedFile")
         } catch (_: Exception) {
             null
-        } finally {
-            runCatching { conn?.disconnect() }
         }
     }
 
-    private fun buildArchiveQuery(query: String): String {
+    private fun buildArchiveQuery(query: String, category: OnlineSearchCategory): String {
         val norm = normalizeArabicText(query)
-        val mappedKeywords = when {
-            norm.containsAny("رعب", "شبح", "تنين", "وحش", "خرافي") -> "horror monster dark scary sound"
-            norm.containsAny("مطر", "طبيعه", "غابه", "بحر", "ريح", "رعد") -> "rain nature forest ambient"
-            norm.containsAny("موسيقي", "موسيقى", "هادئه", "بيانو", "سينما") -> "cinematic ambient background music"
-            norm.containsAny("العاب", "اكشن", "ضربه", "سلاح", "انفجار", "ببجي") -> "game sound effect action impact"
-            else -> {
-                // Keep ASCII/English tokens if present; otherwise combine with general audio terms
-                val asciiOnly = query.replace(Regex("[^a-zA-Z0-9\\s]"), " ").trim()
-                if (asciiOnly.isNotBlank()) "$asciiOnly sound effect" else "sound effect audio"
+        val mappedKeywords = if (category == OnlineSearchCategory.VOICES_CLIPS) {
+            when {
+                norm.containsAny("قران", "تلاوه", "نشيد", "انشوده") -> "quran recitation arabic vocal"
+                norm.containsAny("بودكاست", "حوار", "مقابله", "قصه") -> "podcast speech narration talk"
+                norm.containsAny("معلق", "شعر", "القاء", "خطاب") -> "voiceover poetry speech narration"
+                norm.containsAny("موسيقي", "موسيقى", "عود", "بيانو") -> "oud piano acoustic vocal music"
+                else -> {
+                    val asciiOnly = query.replace(Regex("[^a-zA-Z0-9\\s]"), " ").trim()
+                    if (asciiOnly.isNotBlank()) "$asciiOnly speech vocal audio" else "arabic speech vocal narration"
+                }
+            }
+        } else {
+            when {
+                norm.containsAny("رعب", "شبح", "تنين", "وحش", "خرافي") -> "horror monster dark scary sound effect"
+                norm.containsAny("مطر", "طبيعه", "غابه", "بحر", "ريح", "رعد") -> "rain nature forest thunder sfx"
+                norm.containsAny("موسيقي", "موسيقى", "هادئه", "بيانو", "سينما") -> "cinematic dramatic transition sound effect"
+                norm.containsAny("العاب", "اكشن", "ضربه", "سلاح", "انفجار", "ببجي") -> "game sound effect action impact foley"
+                else -> {
+                    val asciiOnly = query.replace(Regex("[^a-zA-Z0-9\\s]"), " ").trim()
+                    if (asciiOnly.isNotBlank()) "$asciiOnly sound effect sfx" else "sound effect sfx foley"
+                }
             }
         }
         return "($mappedKeywords) AND mediatype:(audio)"
     }
 
-    private fun classifyCategory(title: String, subject: String, query: String): String {
+    private fun classifyCategory(
+        title: String,
+        subject: String,
+        query: String,
+        mode: OnlineSearchCategory,
+    ): String {
         val text = normalizeArabicText("$title $subject $query")
+        if (mode == OnlineSearchCategory.VOICES_CLIPS) {
+            return when {
+                text.containsAny("podcast", "interview", "talk", "radio", "بودكاست", "حوار", "مقابله", "راديو") -> CAT_PODCASTS
+                text.containsAny("voice", "speech", "quran", "poetry", "narration", "صوت", "معلق", "القاء", "تلاوه", "شعر") -> CAT_VOICES
+                else -> CAT_CLIPS
+            }
+        }
         return when {
             text.containsAny("horror", "scary", "ghost", "dragon", "monster", "dark", "creepy", "رعب", "شبح", "تنين", "وحش") ->
                 CAT_HORROR
@@ -562,7 +677,7 @@ object SmartAssistantAndSearch {
     fun normalizeArabicText(input: String): String {
         return input
             .lowercase()
-            .replace(Regex("[\\u064B-\\u065F\\u0670]"), "") // Strip Arabic diacritics
+            .replace(Regex("[\\u064B-\\u065F\\u0670]"), "")
             .replace('أ', 'ا')
             .replace('إ', 'ا')
             .replace('آ', 'ا')

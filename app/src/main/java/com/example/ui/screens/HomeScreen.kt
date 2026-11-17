@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -32,14 +34,17 @@ import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.Compress
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.HourglassEmpty
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Podcasts
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SpatialAudioOff
@@ -48,17 +53,21 @@ import androidx.compose.material.icons.rounded.SurroundSound
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Undo
-import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material.icons.rounded.Waves
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,6 +84,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.painterResource
@@ -82,10 +92,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.audio.formatDurationMs
+import com.example.data.RecentEditEntry
+import com.example.diagnostics.AppDiagnosticLog
 import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.AudioPickerTarget
@@ -95,6 +108,7 @@ import com.example.model.StudioRoute
 import com.example.studio.ui.lit
 import com.example.ui.components.LanguageBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
+import com.example.ui.components.MiniAiRobotCompanion
 import com.example.ui.components.RealTimeWaveformCanvas
 import com.example.ui.components.ToolInfoDialog
 import com.example.ui.theme.StudioColors
@@ -127,6 +141,10 @@ fun HomeScreen(
     viewModel: StudioViewModel,
     listState: LazyListState,
     onNavigate: (StudioRoute) -> Unit,
+    onOpenNotifications: () -> Unit = { onNavigate(StudioRoute.Notifications) },
+    onRestoreRecentEdit: (RecentEditEntry) -> Unit = { entry ->
+        viewModel.restoreRecentEditSession(entry) { route -> onNavigate(route) }
+    },
 ) {
     val lang = uiState.language
     var langDialogOpen by remember { mutableStateOf(false) }
@@ -296,20 +314,12 @@ fun HomeScreen(
                         route = StudioRoute.ExtractVideoAudio,
                     ),
                     HomeToolTile(
-                        id = "video_audio_edit",
-                        titleKey = "tool_video_audio_edit",
-                        icon = Icons.Rounded.VideoFile,
-                        accent = StudioColors.Violet,
-                        route = StudioRoute.VideoAudioEditor,
-                        infoKey = "tool_video_audio_edit_info",
-                    ),
-                    HomeToolTile(
-                        id = "cinematic_video_reels",
-                        titleKey = "tool_cinematic_video_reels",
-                        icon = Icons.Rounded.Movie,
+                        id = "reels_audio_templates",
+                        titleKey = "tool_reels_audio_templates",
+                        icon = Icons.Rounded.Podcasts,
                         accent = StudioColors.Amber,
-                        route = StudioRoute.CinematicVideoReels,
-                        infoKey = "tool_cinematic_video_reels_info",
+                        route = StudioRoute.ReelsAudioTemplates,
+                        infoKey = "tool_reels_audio_templates_info",
                     ),
                     HomeToolTile(
                         id = "compress_audio",
@@ -401,11 +411,11 @@ fun HomeScreen(
                             .padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        // Row 1: Unconstrained Identity (Logo + full "Sonix ✦" LTR title + readable tagline)
+                        // Row 1: Unconstrained Identity (Logo + single-line unclipped LTR "Sonix ✦" + full tagline + Notification Bell)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             val logoBorderBrush = remember {
                                 Brush.linearGradient(
@@ -420,7 +430,7 @@ fun HomeScreen(
                                     brush = logoBorderBrush,
                                 ),
                                 shadowElevation = 8.dp,
-                                modifier = Modifier.size(56.dp),
+                                modifier = Modifier.size(54.dp),
                             ) {
                                 Image(
                                     bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
@@ -437,23 +447,64 @@ fun HomeScreen(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
-                                Text(
-                                    text = t(lang, "app_name"),
-                                    style = MaterialTheme.typography.headlineMedium.copy(
-                                        fontWeight = FontWeight.ExtraBold,
-                                        textDirection = TextDirection.Ltr,
-                                    ),
-                                    color = StudioColors.TextPrimary,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                )
+                                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                    Text(
+                                        text = "Sonix ✦",
+                                        style = MaterialTheme.typography.headlineSmall.copy(
+                                            fontWeight = FontWeight.ExtraBold,
+                                            textDirection = TextDirection.Ltr,
+                                            letterSpacing = 0.4.sp,
+                                        ),
+                                        color = StudioColors.TextPrimary,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
+                                }
                                 Text(
                                     text = t(lang, "studio_tagline"),
-                                    style = MaterialTheme.typography.bodyMedium,
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = StudioColors.Cyan,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
                                 )
+                            }
+
+                            val bellInteraction = remember { MutableInteractionSource() }
+                            val badgeCount = uiState.unreadDiagnosticCount
+                            val totalCount = uiState.diagnosticEntries.size
+                            IconButton(
+                                onClick = onOpenNotifications,
+                                interactionSource = bellInteraction,
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    containerColor = StudioColors.ElevatedSurface.copy(alpha = 0.92f),
+                                    contentColor = if (badgeCount > 0) StudioColors.Amber else StudioColors.Cyan,
+                                ),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .lit(bellInteraction, StudioColors.Cyan, cornerRadius = 24.dp)
+                                    .testTag("home_notifications_button"),
+                            ) {
+                                BadgedBox(
+                                    badge = {
+                                        if (badgeCount > 0 || totalCount > 0) {
+                                            Badge(
+                                                containerColor = if (badgeCount > 0) StudioColors.RoseBright else StudioColors.Amber,
+                                                contentColor = StudioColors.BgTop,
+                                            ) {
+                                                Text(
+                                                    text = (if (badgeCount > 0) badgeCount else totalCount).coerceAtMost(99).toString(),
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        fontSize = 10.sp,
+                                                    ),
+                                                )
+                                            }
+                                        }
+                                    },
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Notifications,
+                                        contentDescription = t(lang, "notifications_title"),
+                                    )
+                                }
                             }
                         }
 
@@ -524,6 +575,160 @@ fun HomeScreen(
                                 .fillMaxWidth()
                                 .height(44.dp),
                         )
+                    }
+                }
+            }
+
+            item(key = "featured_assistant_robot", contentType = "featured_assistant_robot") {
+                val assistantCardInteraction = remember { MutableInteractionSource() }
+                val signedInName = (uiState.authSession as? AuthSession.SignedIn)?.displayName
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Card(
+                        onClick = { onNavigate(StudioRoute.SmartAssistant) },
+                        interactionSource = assistantCardInteraction,
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = StudioColors.ElevatedSurface),
+                        border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.55f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 46.dp)
+                            .lit(assistantCardInteraction, StudioColors.Cyan, cornerRadius = 20.dp)
+                            .testTag("home_smart_assistant_card"),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = StudioColors.Cyan.copy(alpha = 0.16f),
+                                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
+                                modifier = Modifier.size(44.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.AutoAwesome,
+                                        contentDescription = t(lang, "tool_smart_assistant"),
+                                        tint = StudioColors.Cyan,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                }
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Text(
+                                    text = t(lang, "tool_smart_assistant"),
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = StudioColors.TextPrimary,
+                                )
+                                Text(
+                                    text = t(lang, "assistant_smart_card_subtitle"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioColors.TextSecondary,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = StudioColors.Cyan.copy(alpha = 0.15f),
+                                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
+                            ) {
+                                Text(
+                                    text = "AI ✦",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
+                                    color = StudioColors.Cyan,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    MiniAiRobotCompanion(
+                        userDisplayName = signedInName,
+                        language = lang,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+                }
+            }
+
+            if (uiState.recentEdits.isNotEmpty()) {
+                item(key = "recent_edits_strip", contentType = "recent_edits_strip") {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(horizontal = 2.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.History,
+                                contentDescription = null,
+                                tint = StudioColors.Cyan,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = t(lang, "recent_edits_title"),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.TextPrimary,
+                            )
+                        }
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(horizontal = 2.dp),
+                        ) {
+                            items(
+                                items = uiState.recentEdits,
+                                key = { it.id },
+                            ) { entry ->
+                                val recentInteraction = remember { MutableInteractionSource() }
+                                Surface(
+                                    onClick = { onRestoreRecentEdit(entry) },
+                                    interactionSource = recentInteraction,
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = StudioColors.CardSurface,
+                                    border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.4f)),
+                                    modifier = Modifier
+                                        .widthIn(min = 168.dp, max = 232.dp)
+                                        .lit(recentInteraction, StudioColors.Cyan, cornerRadius = 14.dp)
+                                        .testTag("recent_edit_${entry.id}"),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                                    ) {
+                                        Text(
+                                            text = if (lang == AppLanguage.EN) entry.titleEn else entry.titleAr,
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = StudioColors.Cyan,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = entry.audioName,
+                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = StudioColors.TextPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = "${if (lang == AppLanguage.EN) entry.summaryEn else entry.summaryAr} • ${AppDiagnosticLog.formatTimestamp(entry.timestampMs).takeLast(8)}",
+                                            style = TelemetryTextStyle.copy(fontSize = 10.sp),
+                                            color = StudioColors.TextMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

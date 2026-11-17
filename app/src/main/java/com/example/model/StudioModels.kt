@@ -161,6 +161,7 @@ data class NoiseReductionParams(
     val thresholdDb: Float = -70f,
     val reductionDb: Float = 0f,
     val highPassHz: Float = 20f,
+    val lowPassHz: Float = 16000f,
     val spectralStrength: Float = 0f,
     val deEssAmount: Float = 0f,
     val clarityBoostDb: Float = 0f,
@@ -196,6 +197,9 @@ data class DspConfig(
     val bypassAll: Boolean = false,
     val masterGainDb: Float = 0f,
     val spatialPanHz: Float = 0f,
+    val surroundMidPct: Float = 0f,
+    val surroundSidePct: Float = 0f,
+    val surroundWidthPct: Float = 0f,
     val vibratoHz: Float = 0f,
     val vibratoDepth: Float = 0f,
     val chain: List<EffectSlot> = DEFAULT_CHAIN,
@@ -226,11 +230,17 @@ data class DspConfig(
     fun withSlotEnabled(type: EffectType, enabled: Boolean): DspConfig =
         copy(chain = chain.map { if (it.type == type) it.copy(enabled = enabled) else it })
 
+    fun hasLiveSurround(): Boolean =
+        kotlin.math.abs(surroundMidPct) > 0.5f ||
+            kotlin.math.abs(surroundSidePct) > 0.5f ||
+            surroundWidthPct > 0.5f
+
     fun hasAnyActiveProcessing(): Boolean =
         !bypassAll && (
             chain.any { it.enabled } ||
                 kotlin.math.abs(masterGainDb) > 0.05f ||
                 spatialPanHz > 0.01f ||
+                hasLiveSurround() ||
                 (vibratoHz > 0.1f && vibratoDepth > 0.01f)
             )
 }
@@ -373,6 +383,7 @@ data class VoicePurifyPreset(
     val subtitleAr: String,
     val subtitleEn: String,
     val highPassHz: Float,
+    val lowPassHz: Float,
     val thresholdDb: Float,
     val reductionDb: Float,
     val spectralStrength: Float,
@@ -386,13 +397,14 @@ val VOICE_PURIFY_PRESETS: List<VoicePurifyPreset> = listOf(
         id = "studio_clean",
         titleAr = "نقاء استوديو ناعم",
         titleEn = "Soft Studio Clean",
-        subtitleAr = "تنقية متوازنة تحفظ دفء الصوت وطبيعته",
+        subtitleAr = "تنقية متوازنة تحفظ دفء الصوت ووضوح الحروف",
         subtitleEn = "Balanced noise removal preserving natural vocal warmth",
         highPassHz = 85f,
+        lowPassHz = 15200f,
         thresholdDb = -46f,
         reductionDb = 18f,
-        spectralStrength = 0.65f,
-        deEssAmount = 0.35f,
+        spectralStrength = 0.62f,
+        deEssAmount = 0.25f,
         clarityBoostDb = 2.5f,
         spectralCleanerEnabled = true,
     ),
@@ -400,27 +412,29 @@ val VOICE_PURIFY_PRESETS: List<VoicePurifyPreset> = listOf(
         id = "deep_isolate",
         titleAr = "عزل فائق للضوضاء",
         titleEn = "Deep Noise Isolate",
-        subtitleAr = "قمع قوي لضجيج المكيف، المروحة، والشارع",
-        subtitleEn = "Strong attenuation of AC hum, fans, and street noise",
+        subtitleAr = "قمع قوي لضجيج المكيف، المروحة، وهواء الخلفية",
+        subtitleEn = "Strong attenuation of AC hum, fans, and wind noise",
         highPassHz = 115f,
-        thresholdDb = -38f,
-        reductionDb = 28f,
-        spectralStrength = 0.88f,
-        deEssAmount = 0.45f,
-        clarityBoostDb = 3.5f,
+        lowPassHz = 12800f,
+        thresholdDb = -40f,
+        reductionDb = 24f,
+        spectralStrength = 0.85f,
+        deEssAmount = 0.30f,
+        clarityBoostDb = 3.2f,
         spectralCleanerEnabled = true,
     ),
     VoicePurifyPreset(
         id = "podcast_crisp",
         titleAr = "بودكاست ووضوح الحوار",
         titleEn = "Podcast Vocal Crisp",
-        subtitleAr = "بروز فوري للحروف وإزالة الصدى القريب والصفير",
-        subtitleEn = "Forward vocal presence with tight de-essing",
+        subtitleAr = "بروز فوري للحروف وحماية مخارج الهاء والخاء",
+        subtitleEn = "Forward vocal presence with full consonant clarity",
         highPassHz = 95f,
-        thresholdDb = -43f,
-        reductionDb = 21f,
-        spectralStrength = 0.72f,
-        deEssAmount = 0.55f,
+        lowPassHz = 15800f,
+        thresholdDb = -44f,
+        reductionDb = 20f,
+        spectralStrength = 0.70f,
+        deEssAmount = 0.25f,
         clarityBoostDb = 4.5f,
         spectralCleanerEnabled = true,
     ),
@@ -428,28 +442,30 @@ val VOICE_PURIFY_PRESETS: List<VoicePurifyPreset> = listOf(
         id = "clean_podcast_mic",
         titleAr = "تنقية المايك والبودكاست (Studio Mic)",
         titleEn = "Clean Podcast Mic Pro",
-        subtitleAr = "عزل طيفي -25dB وبوابة ضجيج مع إزالة الصفير وموازنة -16 LUFS",
-        subtitleEn = "Studio FFT -25dB denoise, -35dB gate, de-esser & broadcast loudnorm",
+        subtitleAr = "عزل ذكي مع موازنة وحضور صوتي إذاعي متكامل",
+        subtitleEn = "Studio denoise, rumble cleanup & crisp vocal presence EQ",
         highPassHz = 85f,
-        thresholdDb = -35f,
-        reductionDb = 25f,
-        spectralStrength = 0.85f,
-        deEssAmount = 0.45f,
-        clarityBoostDb = 2.8f,
+        lowPassHz = 14800f,
+        thresholdDb = -40f,
+        reductionDb = 22f,
+        spectralStrength = 0.80f,
+        deEssAmount = 0.30f,
+        clarityBoostDb = 3.0f,
         spectralCleanerEnabled = true,
     ),
     VoicePurifyPreset(
         id = "gentle_denoise",
         titleAr = "تصفية خفيفة (حفظ الجو)",
         titleEn = "Gentle Ambient Safe",
-        subtitleAr = "تخفيف خفيف للهسهسة بدون التأثير على الخلفية الهادئة",
+        subtitleAr = "تخفيف لطيف للهسهسة دون المساس بنقاء الحديث",
         subtitleEn = "Subtle hiss taming without altering quiet ambience",
         highPassHz = 65f,
+        lowPassHz = 16000f,
         thresholdDb = -54f,
         reductionDb = 12f,
-        spectralStrength = 0.42f,
-        deEssAmount = 0.2f,
-        clarityBoostDb = 1f,
+        spectralStrength = 0.40f,
+        deEssAmount = 0.15f,
+        clarityBoostDb = 1.2f,
         spectralCleanerEnabled = true,
     ),
 )
@@ -843,6 +859,8 @@ data class PlaybackTelemetry(
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val outputLevel: Float = 0f,
+    val outputDbfs: Float = -60f,
+    val monitoringSpeed: Float = 1.0f,
     val gainReductionDb: Float = 0f,
     val noiseSuppressionDb: Float = 0f,
     val waveformBars: List<Float> = List(48) { 0.06f },
@@ -855,9 +873,40 @@ data class RecorderTelemetry(
     val isPaused: Boolean = false,
     val elapsedMs: Long = 0L,
     val micLevel: Float = 0f,
+    val micDbfs: Float = -60f,
     val waveformBars: List<Float> = List(48) { 0.05f },
     val spectrumBands: List<Float> = List(32) { 0.03f },
 )
+
+@Immutable
+@Serializable
+data class AudioMarker(
+    val id: String,
+    val positionFrac: Float,
+    val label: String,
+    val colorIndex: Int = 0,
+)
+
+enum class PlatformLoudnessTarget(val targetLufs: Float?, val titleKey: String) {
+    ORIGINAL(null, "export_lufs_original"),
+    YOUTUBE_TIKTOK_14(-14f, "export_lufs_social_14"),
+    PODCAST_16(-16f, "export_lufs_podcast_16"),
+    WHATSAPP_VOICE(-15f, "export_lufs_whatsapp"),
+}
+
+enum class VocalSplitMode(val titleKey: String) {
+    VOCALS_ONLY("vocal_split_vocals"),
+    INSTRUMENTAL_ONLY("vocal_split_instrumental"),
+    CUSTOM_BLEND("vocal_split_blend"),
+}
+
+enum class OneTapSocialPreset(val titleKey: String, val descKey: String) {
+    LUXURY_PODCAST("social_preset_podcast", "social_preset_podcast_desc"),
+    DOCUMENTARY_NARRATOR("social_preset_doc", "social_preset_doc_desc"),
+    VINTAGE_PHONE("social_preset_phone", "social_preset_phone_desc"),
+    GRAND_HALL_REVERB("social_preset_hall", "social_preset_hall_desc"),
+    FM_RADIO("social_preset_fm", "social_preset_fm_desc"),
+}
 
 enum class SleepTimerOption(val minutes: Int?, val labelKey: String) {
     OFF(null, "sleep_timer_off"),
@@ -865,3 +914,19 @@ enum class SleepTimerOption(val minutes: Int?, val labelKey: String) {
     MIN_30(30, "sleep_timer_30"),
     MIN_60(60, "sleep_timer_60"),
 }
+
+enum class OnlineSearchCategory {
+    VOICES_CLIPS,
+    SOUND_EFFECTS,
+}
+
+@Immutable
+data class AssistantChatMessage(
+    val id: String,
+    val isUser: Boolean,
+    val text: String,
+    val recommendedToolId: String? = null,
+    val recommendedToolLabel: String? = null,
+)
+
+

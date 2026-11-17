@@ -56,9 +56,12 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,6 +89,7 @@ import com.example.model.AppLanguage
 import com.example.model.EffectType
 import com.example.model.VOICE_PURIFY_PRESETS
 import com.example.studio.ui.lit
+import com.example.ui.components.PreviewAndApplyActionRow
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.SpectrumVisualizer
 import com.example.ui.components.StudioFocusTopBar
@@ -584,6 +588,48 @@ fun VoicePurifierScreen(
     val suppNorm = (uiState.playback.noiseSuppressionDb / 32f).coerceIn(0f, 1f)
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
+    LaunchedEffect(uiState.restoredToolSession?.id) {
+        val restored = viewModel.consumeRestoredToolSession("voice_purifier")
+        if (restored != null) {
+            val fp = restored.floatParams
+            viewModel.updateDspConfig { prev ->
+                prev.copy(
+                    noiseReduction = prev.noiseReduction.copy(
+                        spectralStrength = fp["spectralStrength"] ?: prev.noiseReduction.spectralStrength,
+                        highPassHz = fp["highPassHz"] ?: prev.noiseReduction.highPassHz,
+                        lowPassHz = fp["lowPassHz"] ?: prev.noiseReduction.lowPassHz,
+                        clarityBoostDb = fp["clarityBoostDb"] ?: prev.noiseReduction.clarityBoostDb,
+                    ),
+                ).withSlotEnabled(EffectType.NOISE_REDUCTION, true)
+            }
+        }
+    }
+
+    val latestNr by rememberUpdatedState(nr)
+    val latestHasAudio by rememberUpdatedState(uiState.hasAudio)
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopToolPreview()
+            if (latestHasAudio) {
+                val p = latestNr
+                val pct = (p.spectralStrength * 100f).roundToInt()
+                viewModel.saveToolSessionToCache(
+                    toolId = "voice_purifier",
+                    titleAr = "تصفية وعزل الضوضاء",
+                    titleEn = "Noise Purifier",
+                    summaryAr = "$pct% / ${p.highPassHz.roundToInt()}-${p.lowPassHz.roundToInt()} Hz",
+                    summaryEn = "$pct% / ${p.highPassHz.roundToInt()}-${p.lowPassHz.roundToInt()} Hz",
+                    floatParams = mapOf(
+                        "spectralStrength" to p.spectralStrength,
+                        "highPassHz" to p.highPassHz,
+                        "lowPassHz" to p.lowPassHz,
+                        "clarityBoostDb" to p.clarityBoostDb,
+                    ),
+                )
+            }
+        }
+    }
+
     StudioScrollColumn {
         StudioFocusTopBar(
             title = t(lang, "section_purifier_title"),
@@ -667,33 +713,6 @@ fun VoicePurifierScreen(
                             .height(10.dp)
                             .clip(CircleShape)
                             .background(StudioColors.Emerald),
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        text = if (lang == AppLanguage.EN) "STFT 512-pt Spectral Cleaner" else "المحرك الطيفي (STFT 512-pt)",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = StudioColors.TextPrimary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Switch(
-                        checked = nr.spectralCleanerEnabled,
-                        onCheckedChange = { checked ->
-                            viewModel.updateDspConfig { prev ->
-                                prev.copy(noiseReduction = prev.noiseReduction.copy(spectralCleanerEnabled = checked))
-                                    .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
-                            }
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = StudioColors.BgTop,
-                            checkedTrackColor = StudioColors.Cyan,
-                        ),
-                        modifier = Modifier.testTag("purifier_spectral_switch"),
                     )
                 }
             }
@@ -781,7 +800,7 @@ fun VoicePurifierScreen(
             }
         }
 
-        // Detailed Sliders
+        // 3 Core High-Impact Purifier Controls
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -794,8 +813,9 @@ fun VoicePurifierScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                // 1) Smart Noise & Wind Isolation
                 StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Spectral Denoise Strength" else "شدة العزل الطيفي",
+                    label = if (lang == AppLanguage.EN) "1. Smart Noise & Wind Isolation" else "1. عزل الضوضاء والهواء الذكي",
                     value = nr.spectralStrength,
                     min = 0f,
                     max = 1f,
@@ -804,49 +824,23 @@ fun VoicePurifierScreen(
                     testTag = "purifier_spectral_strength_slider",
                     onValueChange = { v ->
                         viewModel.updateDspConfig { prev ->
-                            prev.copy(noiseReduction = prev.noiseReduction.copy(spectralStrength = v))
-                                .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
+                            prev.copy(
+                                noiseReduction = prev.noiseReduction.copy(
+                                    spectralStrength = v,
+                                    spectralCleanerEnabled = v > 0.02f,
+                                    reductionDb = (v * 28f).coerceIn(0f, 30f),
+                                ),
+                            ).withSlotEnabled(EffectType.NOISE_REDUCTION, true)
                         }
                     },
                 )
 
+                // 2) Annoying Frequency Band Filters (Low Rumble + High Hiss)
                 StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Noise Gate Threshold" else "عتبة البوابة الصوتية",
-                    value = nr.thresholdDb,
-                    min = -70f,
-                    max = -18f,
-                    formattedValue = "${nr.thresholdDb.roundToInt()} dB",
-                    accentColor = StudioColors.Cyan,
-                    testTag = "purifier_threshold_slider",
-                    onValueChange = { v ->
-                        viewModel.updateDspConfig { prev ->
-                            prev.copy(noiseReduction = prev.noiseReduction.copy(thresholdDb = v))
-                                .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
-                        }
-                    },
-                )
-
-                StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Noise Reduction Depth" else "عمق خفض الضوضاء",
-                    value = nr.reductionDb,
-                    min = 0f,
-                    max = 36f,
-                    formattedValue = "${nr.reductionDb.roundToInt()} dB",
-                    accentColor = StudioColors.Cyan,
-                    testTag = "purifier_reduction_slider",
-                    onValueChange = { v ->
-                        viewModel.updateDspConfig { prev ->
-                            prev.copy(noiseReduction = prev.noiseReduction.copy(reductionDb = v))
-                                .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
-                        }
-                    },
-                )
-
-                StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "High-Pass Rumble Filter" else "تصفية الترددات المنخفضة",
+                    label = if (lang == AppLanguage.EN) "2A. Low-Cut Noise Filter (High-Pass)" else "2أ. قص الترددات المزعجة المنخفضة (High-Pass)",
                     value = nr.highPassHz,
                     min = 20f,
-                    max = 260f,
+                    max = 450f,
                     formattedValue = "${nr.highPassHz.roundToInt()} Hz",
                     accentColor = StudioColors.Violet,
                     testTag = "purifier_highpass_slider",
@@ -859,28 +853,29 @@ fun VoicePurifierScreen(
                 )
 
                 StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "De-Esser (Sibilance)" else "إزالة صفير الحروف (De-Ess)",
-                    value = nr.deEssAmount,
-                    min = 0f,
-                    max = 1f,
-                    formattedValue = "${(nr.deEssAmount * 100f).roundToInt()}%",
-                    accentColor = StudioColors.Amber,
-                    testTag = "purifier_deess_slider",
+                    label = if (lang == AppLanguage.EN) "2B. High-Cut Hiss Filter (Low-Pass)" else "2ب. قص الترددات المزعجة العالية (Low-Pass)",
+                    value = nr.lowPassHz,
+                    min = 2200f,
+                    max = 16000f,
+                    formattedValue = "${nr.lowPassHz.roundToInt()} Hz",
+                    accentColor = StudioColors.Cyan,
+                    testTag = "purifier_lowpass_slider",
                     onValueChange = { v ->
                         viewModel.updateDspConfig { prev ->
-                            prev.copy(noiseReduction = prev.noiseReduction.copy(deEssAmount = v))
+                            prev.copy(noiseReduction = prev.noiseReduction.copy(lowPassHz = v))
                                 .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
                         }
                     },
                 )
 
+                // 3) Vocal Presence & Clarity EQ
                 StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Vocal Clarity Boost" else "تعزيز وضوح الصوت",
+                    label = if (lang == AppLanguage.EN) "3. Vocal Presence Clarity EQ" else "3. بروز ووضوح الصوت البشري",
                     value = nr.clarityBoostDb,
                     min = 0f,
-                    max = 8f,
+                    max = 10f,
                     formattedValue = "+${"%.1f".format(nr.clarityBoostDb)} dB",
-                    accentColor = StudioColors.Emerald,
+                    accentColor = StudioColors.Amber,
                     testTag = "purifier_clarity_slider",
                     onValueChange = { v ->
                         viewModel.updateDspConfig { prev ->
@@ -889,6 +884,24 @@ fun VoicePurifierScreen(
                         }
                     },
                 )
+
+                if (uiState.fricativeWarningPurifier) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = StudioColors.Amber.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, StudioColors.Amber.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("purifier_fricative_warning"),
+                    ) {
+                        Text(
+                            text = t(lang, "fricative_clarity_warning"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioColors.Amber,
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
+                }
 
                 uiState.purifyProgress?.let { prog ->
                     LinearProgressIndicator(
@@ -902,29 +915,18 @@ fun VoicePurifierScreen(
                     )
                 }
 
-                val deepCleanInteraction = remember { MutableInteractionSource() }
-                Button(
-                    onClick = { viewModel.purifyAudioOffline() },
-                    enabled = !uiState.isBusy,
-                    interactionSource = deepCleanInteraction,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = StudioColors.Emerald,
-                        contentColor = StudioColors.BgTop,
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 52.dp)
-                        .lit(deepCleanInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                        .testTag("purifier_deep_clean_button"),
-                ) {
-                    Icon(Icons.Rounded.AutoFixHigh, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = if (lang == AppLanguage.EN) "Deep Offline Spectral Clean" else "تنقية عميقة للمقطع وحفظها في الاستوديو",
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
+                PreviewAndApplyActionRow(
+                    isPreviewPlaying = uiState.isToolPreviewPlaying,
+                    previewEnabled = uiState.hasAudio && !uiState.isBusy,
+                    applyEnabled = uiState.hasAudio && !uiState.isBusy,
+                    language = lang,
+                    previewTag = "purifier_preview_button",
+                    applyTag = "purifier_deep_clean_button",
+                    applyLabel = if (lang == AppLanguage.EN) "Apply Deep Clean" else "تطبيق التنقية وحفظها",
+                    applyColor = StudioColors.Emerald,
+                    onPreviewClick = { viewModel.previewPurifierOffline() },
+                    onApplyClick = { viewModel.purifyAudioOffline() },
+                )
             }
         }
     }

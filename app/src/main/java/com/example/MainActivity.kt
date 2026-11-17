@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -67,6 +68,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -103,9 +105,11 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.example.diagnostics.AppDiagnosticLog
 import com.example.i18n.t
 import com.example.model.AudioPickerTarget
 import com.example.model.AuthSession
+import com.example.model.EffectType
 import com.example.model.StudioRoute
 import com.example.studio.ui.applyDisplayBoost
 import com.example.studio.ui.lit
@@ -118,7 +122,6 @@ import com.example.ui.screens.AudioEditorScreen
 import com.example.ui.screens.AudioMergeScreen
 import com.example.ui.screens.AudioSplitScreen
 import com.example.ui.screens.AuthScreen
-import com.example.ui.screens.CinematicReelsScreen
 import com.example.ui.screens.CompressAudioScreen
 import com.example.ui.screens.EchoDetailScreen
 import com.example.ui.screens.EchoReverbScreen
@@ -129,10 +132,13 @@ import com.example.ui.screens.FormatConverterScreen
 import com.example.ui.screens.GenerateSilenceScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.InAppAudioPickerScreen
+import com.example.ui.screens.NotificationDetailScreen
+import com.example.ui.screens.NotificationsListScreen
 import com.example.ui.screens.PitchAndSpeedScreen
 import com.example.ui.screens.PresetsScreen
 import com.example.ui.screens.ProjectsExportScreen
 import com.example.ui.screens.RecordingStudioScreen
+import com.example.ui.screens.ReelsAudioTemplatesScreen
 import com.example.ui.screens.ReverseAudioScreen
 import com.example.ui.screens.RingtoneMakerScreen
 import com.example.ui.screens.SettingsScreen
@@ -141,7 +147,6 @@ import com.example.ui.screens.SmartMusicMixerScreen
 import com.example.ui.screens.SpeechToTextScreen
 import com.example.ui.screens.SurroundStereoScreen
 import com.example.ui.screens.TextToSpeechStudioScreen
-import com.example.ui.screens.VideoAudioEditorScreen
 import com.example.ui.screens.VoicePurifierScreen
 import com.example.ui.screens.VoiceTransformerScreen
 import com.example.ui.theme.SonixTheme
@@ -188,8 +193,15 @@ class MainActivity : ComponentActivity() {
         }
 
         try {
+            AppDiagnosticLog.init(this)
+            val askRestartConsent = intent?.getBooleanExtra(SonixCrashGuard.EXTRA_ASK_RESTART_CONSENT, false) == true
+            val diagId = intent?.getStringExtra(SonixCrashGuard.EXTRA_DIAGNOSTIC_ID)
             val crashMsg = intent?.getStringExtra(SonixCrashGuard.EXTRA_CRASH_MESSAGE)
-            if (!crashMsg.isNullOrBlank()) {
+            if (askRestartConsent) {
+                if (!diagId.isNullOrBlank()) {
+                    AppDiagnosticLog.showPromptForEntryId(diagId)
+                }
+            } else if (!crashMsg.isNullOrBlank()) {
                 SonixCrashGuard.reportError(
                     StartupErrorReport(
                         threadName = intent.getStringExtra(SonixCrashGuard.EXTRA_CRASH_THREAD) ?: "main",
@@ -320,11 +332,20 @@ private fun SonixRootApp(
         viewModel.completeSaveExportedDocument(uri)
     }
 
+    val openDocumentTreeLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        viewModel.onDefaultSaveFolderPicked(treeUri)
+    }
+
     LaunchedEffect(viewModel) {
         viewModel.sideEffects.collect { effect ->
             when (effect) {
                 is StudioSideEffect.PromptSaveDocument -> {
                     saveDocumentLauncher.launch(effect.result.mimeType to effect.suggestedName)
+                }
+                is StudioSideEffect.PromptPickSaveFolderOnce -> {
+                    openDocumentTreeLauncher.launch(null)
                 }
                 is StudioSideEffect.LaunchShareIntent -> {
                     val shareIntent = Intent(Intent.ACTION_SEND).apply {
@@ -659,6 +680,18 @@ private fun SonixRootApp(
                                             launchSingleTop = true
                                         }
                                     },
+                                    onOpenNotifications = {
+                                        navController.navigate(StudioRoute.Notifications) {
+                                            launchSingleTop = true
+                                        }
+                                    },
+                                    onRestoreRecentEdit = { entry ->
+                                        viewModel.restoreRecentEditSession(entry) { route ->
+                                            navController.navigate(route) {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                    },
                                 )
                             }
                             composable<StudioRoute.AudioPicker> { entry ->
@@ -672,6 +705,11 @@ private fun SonixRootApp(
                                     onPickedComplete = {
                                         if (!isBrowseTab) {
                                             navController.popBackStack()
+                                        }
+                                    },
+                                    onRouteToExtractVideo = {
+                                        navController.navigate(StudioRoute.ExtractVideoAudio) {
+                                            launchSingleTop = true
                                         }
                                     },
                                     onBack = { navController.popBackStack() },
@@ -794,6 +832,9 @@ private fun SonixRootApp(
                                 SettingsScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
+                                    onChangeDefaultSaveFolder = {
+                                        openDocumentTreeLauncher.launch(null)
+                                    },
                                     onBack = { navController.popBackStack() },
                                 )
                             }
@@ -859,14 +900,6 @@ private fun SonixRootApp(
                                     onBack = { navController.popBackStack() },
                                 )
                             }
-                            composable<StudioRoute.VideoAudioEditor> {
-                                VideoAudioEditorScreen(
-                                    uiState = uiState,
-                                    viewModel = viewModel,
-                                    onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
-                                )
-                            }
                             composable<StudioRoute.CompressAudio> {
                                 CompressAudioScreen(
                                     uiState = uiState,
@@ -908,7 +941,11 @@ private fun SonixRootApp(
                                             "noise_reduction" -> StudioRoute.VoicePurifier
                                             "voice_changer" -> StudioRoute.VoiceTransformer
                                             "human_tts" -> StudioRoute.TtsStudio
-                                            "cinematic_video" -> StudioRoute.CinematicVideoReels
+                                            "reels_audio_templates" -> StudioRoute.ReelsAudioTemplates
+                                            "extract_video" -> StudioRoute.ExtractVideoAudio
+                                            "surround_stereo" -> StudioRoute.SurroundStereo
+                                            "equalizer" -> StudioRoute.EffectDetail(EffectType.EQUALIZER)
+                                            "pitch_speed" -> StudioRoute.PitchAndSpeed
                                             "smart_mixer" -> StudioRoute.SmartMusicMixer
                                             "audio_editor" -> StudioRoute.Editor
                                             "presets_echo" -> StudioRoute.Presets
@@ -921,13 +958,32 @@ private fun SonixRootApp(
                                     onBack = { navController.popBackStack() },
                                 )
                             }
-                            composable<StudioRoute.CinematicVideoReels> {
-                                CinematicReelsScreen(
+                            composable<StudioRoute.ReelsAudioTemplates> {
+                                ReelsAudioTemplatesScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onOpenAudioPicker = {
-                                        navController.navigate(StudioRoute.AudioPicker(AudioPickerTarget.IMPORT_MAIN))
+                                    onOpenAudioPicker = { target ->
+                                        navController.navigate(StudioRoute.AudioPicker(target))
                                     },
+                                    onBack = { navController.popBackStack() },
+                                )
+                            }
+                            composable<StudioRoute.Notifications> {
+                                NotificationsListScreen(
+                                    uiState = uiState,
+                                    viewModel = viewModel,
+                                    onOpenDetail = { entryId ->
+                                        navController.navigate(StudioRoute.NotificationDetail(entryId))
+                                    },
+                                    onBack = { navController.popBackStack() },
+                                )
+                            }
+                            composable<StudioRoute.NotificationDetail> { entry ->
+                                val dest = entry.toRoute<StudioRoute.NotificationDetail>()
+                                NotificationDetailScreen(
+                                    entryId = dest.entryId,
+                                    uiState = uiState,
+                                    viewModel = viewModel,
                                     onBack = { navController.popBackStack() },
                                 )
                             }
@@ -944,6 +1000,68 @@ private fun SonixRootApp(
                         onDismiss = { sleepTimerDialogOpen = false },
                     )
                 }
+            }
+
+            val criticalPrompt by AppDiagnosticLog.criticalRestartPrompt.collectAsStateWithLifecycle()
+            criticalPrompt?.let { promptEntry ->
+                AlertDialog(
+                    onDismissRequest = { AppDiagnosticLog.dismissCriticalPrompt() },
+                    containerColor = StudioColors.CardSurface,
+                    titleContentColor = StudioColors.TextPrimary,
+                    textContentColor = StudioColors.TextSecondary,
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ErrorOutline,
+                                contentDescription = null,
+                                tint = StudioColors.RoseBright,
+                            )
+                            Text(
+                                text = t(lang, "crash_dialog_title"),
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            )
+                        }
+                    },
+                    text = {
+                        Text(
+                            text = "${t(lang, "crash_dialog_body")}\n\n[${promptEntry.errorCode}] ${promptEntry.causeAr}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                AppDiagnosticLog.dismissCriticalPrompt()
+                                val restartIntent = Intent(context, MainActivity::class.java).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                                }
+                                context.startActivity(restartIntent)
+                                (context as? Activity)?.finish()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = StudioColors.RoseBright,
+                                contentColor = StudioColors.BgTop,
+                            ),
+                            modifier = Modifier.testTag("crash_restart_now_button"),
+                        ) {
+                            Text(t(lang, "crash_dialog_restart_now"))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = { AppDiagnosticLog.dismissCriticalPrompt() },
+                            modifier = Modifier.testTag("crash_stay_retry_button"),
+                        ) {
+                            Text(
+                                text = t(lang, "crash_dialog_stay_retry"),
+                                color = StudioColors.Cyan,
+                            )
+                        }
+                    },
+                )
             }
 
             SonixLuxuryLaunchOverlay(

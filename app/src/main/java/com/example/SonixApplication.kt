@@ -6,6 +6,9 @@ import android.content.Intent
 import android.os.Looper
 import android.os.Process
 import android.util.Log
+import com.example.audio.cache.SmartCacheManager
+import com.example.data.RecentEditsCacheManager
+import com.example.diagnostics.AppDiagnosticLog
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.auth
@@ -28,6 +31,8 @@ object SonixCrashGuard {
     const val EXTRA_CRASH_THREAD = "sonix_crash_thread"
     const val EXTRA_CRASH_MESSAGE = "sonix_crash_message"
     const val EXTRA_CRASH_TRACE = "sonix_crash_trace"
+    const val EXTRA_ASK_RESTART_CONSENT = "sonix_ask_restart_consent"
+    const val EXTRA_DIAGNOSTIC_ID = "sonix_diagnostic_id"
 
     private const val PREFS_NAME = "sonix_crash_guard"
     private const val KEY_LAST_RELAUNCH_MS = "last_relaunch_ms"
@@ -44,6 +49,16 @@ object SonixCrashGuard {
             ?: throwable::class.java.simpleName
         val trace = Log.getStackTraceString(throwable).takeIf { it.isNotBlank() }
             ?: throwable.toString()
+        AppDiagnosticLog.logCritical(
+            toolName = threadName,
+            titleAr = "خطأ غير متوقع في الواجهة الرئيسية",
+            titleEn = "Unexpected Main Thread Error",
+            causeAr = msg,
+            causeEn = msg,
+            errorCode = throwable.javaClass.simpleName,
+            throwable = throwable,
+            requestUserRestartConsent = true,
+        )
         _uncaughtError.value = StartupErrorReport(
             threadName = threadName,
             message = msg,
@@ -66,7 +81,16 @@ object SonixCrashGuard {
                 FirebaseApp.initializeApp(appCtx)
             }
         } catch (t: Throwable) {
-            Log.w("SonixStartup", "FirebaseApp.initializeApp failed safely (offline mode active): ${t.message}")
+            Log.w("SonixStartup", "FirebaseApp.initializeApp failed safely: ${t.message}")
+            AppDiagnosticLog.logRecoverable(
+                toolName = "FirebaseInit",
+                titleAr = "تجاوز تهيئة Firebase السحابية",
+                titleEn = "Firebase Initialization Bypassed",
+                causeAr = t.localizedMessage ?: "تعذر تهيئة خدمات Firebase حالياً؛ التطبيق يعمل محلياً بأمان.",
+                causeEn = t.localizedMessage ?: "Firebase init skipped; local studio tools continue normally.",
+                errorCode = t.javaClass.simpleName,
+                throwable = t,
+            )
         }
         try {
             if (FirebaseApp.getApps(appCtx).isNotEmpty()) {
@@ -104,51 +128,73 @@ object SonixCrashGuard {
         thread: Thread,
         throwable: Throwable,
     ) {
-        Log.e("SonixCrashHandler", "Uncaught exception on thread ${thread.name}", throwable)
+        Log.e("SonixCrashHandler", "Intercepted exception on thread ${thread.name}", throwable)
         val msg = throwable.localizedMessage?.takeIf { it.isNotBlank() }
             ?: throwable::class.java.simpleName
         val trace = Log.getStackTraceString(throwable).takeIf { it.isNotBlank() }
             ?: throwable.toString()
-        val report = StartupErrorReport(
-            threadName = thread.name,
-            message = msg,
-            stackTrace = trace,
+
+        val isMainLooper = Looper.myLooper() == Looper.getMainLooper() ||
+            thread == Looper.getMainLooper().thread
+
+        if (!isMainLooper) {
+            // Background thread error: intercept & log without closing the app or disrupting UI!
+            AppDiagnosticLog.logRecoverable(
+                toolName = "Background (${thread.name})",
+                titleAr = "تم تجاوز خطأ في المعالجة الخلفية",
+                titleEn = "Background Thread Error Intercepted",
+                causeAr = msg,
+                causeEn = msg,
+                errorCode = throwable.javaClass.simpleName,
+                throwable = throwable,
+            )
+            return
+        }
+
+        // Critical main-looper exception: record persistently and relaunch Activity ONLY
+        // into the user-consent restart dialog (never silent termination).
+        val entry = AppDiagnosticLog.logCritical(
+            toolName = "UI Main Thread",
+            titleAr = "خطأ حرج في واجهة التشغيل",
+            titleEn = "Critical UI Thread Exception",
+            causeAr = msg,
+            causeEn = msg,
+            errorCode = throwable.javaClass.simpleName,
+            throwable = throwable,
+            requestUserRestartConsent = true,
         )
-        _uncaughtError.value = report
 
-        // If the crash occurred on the main thread, the UI Looper has exited;
-        // relaunch MainActivity cleanly with the error details so the user sees
-        // a readable recovery screen instead of the system "has stopped" dialog.
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            val relaunched = runCatching {
-                val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                val now = System.currentTimeMillis()
-                val last = prefs.getLong(KEY_LAST_RELAUNCH_MS, 0L)
-                if (now - last < RELAUNCH_COOLDOWN_MS) {
-                    false
-                } else {
-                    prefs.edit().putLong(KEY_LAST_RELAUNCH_MS, now).commit()
-                    val intent = Intent(context, MainActivity::class.java).apply {
-                        addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_CLEAR_TASK or
-                                Intent.FLAG_ACTIVITY_NO_ANIMATION,
-                        )
-                        putExtra(EXTRA_CRASH_THREAD, report.threadName)
-                        putExtra(EXTRA_CRASH_MESSAGE, report.message)
-                        putExtra(EXTRA_CRASH_TRACE, report.stackTrace.take(8000))
-                    }
-                    context.startActivity(intent)
-                    true
-                }
-            }.getOrDefault(false)
-
-            if (relaunched) {
-                Process.killProcess(Process.myPid())
-                exitProcess(1)
+        val relaunched = runCatching {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val now = System.currentTimeMillis()
+            val last = prefs.getLong(KEY_LAST_RELAUNCH_MS, 0L)
+            if (now - last < RELAUNCH_COOLDOWN_MS) {
+                false
             } else {
-                previousHandler?.uncaughtException(thread, throwable)
+                prefs.edit().putLong(KEY_LAST_RELAUNCH_MS, now).commit()
+                val intent = Intent(context, MainActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                            Intent.FLAG_ACTIVITY_NO_ANIMATION,
+                    )
+                    putExtra(EXTRA_ASK_RESTART_CONSENT, true)
+                    putExtra(EXTRA_DIAGNOSTIC_ID, entry.id)
+                    putExtra(EXTRA_CRASH_THREAD, thread.name)
+                    putExtra(EXTRA_CRASH_MESSAGE, msg)
+                    putExtra(EXTRA_CRASH_TRACE, trace.take(8000))
+                }
+                context.startActivity(intent)
+                true
             }
+        }.getOrDefault(false)
+
+        if (relaunched) {
+            Process.killProcess(Process.myPid())
+            exitProcess(1)
+        } else {
+            _uncaughtError.value = StartupErrorReport(thread.name, msg, trace)
+            previousHandler?.uncaughtException(thread, throwable)
         }
     }
 }
@@ -160,6 +206,9 @@ class SonixApplication : Application() {
         } catch (t: Throwable) {
             Log.e("SonixStartup", "Application super.onCreate error", t)
         }
+        runCatching { AppDiagnosticLog.init(this) }
+        runCatching { RecentEditsCacheManager.init(this) }
+        runCatching { SmartCacheManager.pruneManagedBuckets(this) }
         try {
             SonixCrashGuard.installUncaughtExceptionHandler(this)
         } catch (t: Throwable) {
@@ -169,6 +218,13 @@ class SonixApplication : Application() {
             SonixCrashGuard.safeInitializeFirebase(this)
         } catch (t: Throwable) {
             Log.w("SonixStartup", "Safe Firebase init caught error: ${t.message}")
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_BACKGROUND) {
+            runCatching { SmartCacheManager.trimSessionCache(this, keepCount = 5) }
         }
     }
 }

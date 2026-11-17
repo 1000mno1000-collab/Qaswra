@@ -7,6 +7,7 @@ import android.media.MediaFormat
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -414,17 +415,25 @@ object AudioDecoder {
 
     private fun tryDecodeViaFfmpegKitReflection(sourceFile: File): AudioDecodeOutcome {
         val parent = sourceFile.parentFile ?: return AudioDecodeOutcome.Failure("No cache dir")
-        val outWav = File(parent, "ff_dec_${UUID.randomUUID()}.wav")
+        val id = UUID.randomUUID().toString().take(8)
+        val needsStaging = sourceFile.absolutePath.any { ch ->
+            !(ch in 'a'..'z' || ch in 'A'..'Z' || ch in '0'..'9' || ch == '/' || ch == '_' || ch == '-' || ch == '.')
+        }
+        val cleanExt = sourceFile.extension.lowercase().replace(Regex("[^a-z0-9]"), "").ifBlank { "media" }
+        val stagedIn = if (needsStaging) File(parent, "ff_src_$id.$cleanExt") else sourceFile
+        val outWav = File(parent, "ff_dec_$id.wav")
         return try {
-            val ffmpegClass = Class.forName("com.arthenica.ffmpegkit.FFmpegKit")
-            val returnCodeClass = Class.forName("com.arthenica.ffmpegkit.ReturnCode")
-            val executeMethod = ffmpegClass.getMethod("execute", String::class.java)
-            val cmd = "-y -i \"${sourceFile.absolutePath}\" -vn -acodec pcm_s16le -ar $TARGET_SAMPLE_RATE -ac 2 \"${outWav.absolutePath}\""
-            val session = executeMethod.invoke(null, cmd)
-                ?: return AudioDecodeOutcome.Failure("FFmpegKit returned null session")
-            val rc = session.javaClass.getMethod("getReturnCode").invoke(session)
-                ?: return AudioDecodeOutcome.Failure("FFmpegKit missing ReturnCode")
-            val ok = (returnCodeClass.getMethod("isSuccess", returnCodeClass).invoke(null, rc) as? Boolean) == true
+            if (needsStaging) {
+                sourceFile.inputStream().buffered(65_536).use { inp ->
+                    stagedIn.outputStream().buffered(65_536).use { out -> inp.copyTo(out, 65_536) }
+                }
+            }
+            val cmd = "-y -i \"${stagedIn.absolutePath}\" -vn -af \"aresample=44100,aformat=channel_layouts=stereo\" -acodec pcm_s16le -ar $TARGET_SAMPLE_RATE -ac 2 \"${outWav.absolutePath}\""
+            val ok = FfmpegKitBridge.execute(
+                command = cmd,
+                toolName = "ExoticAudioDecoder",
+                logNonZeroFailure = false,
+            )
             if (ok && outWav.exists() && outWav.length() > 44L) {
                 val buf = readStereoWavFile(outWav)
                 if (buf != null && buf.frameCount > 0) {
@@ -433,11 +442,12 @@ object AudioDecoder {
                     AudioDecodeOutcome.Failure("FFmpegKit produced unreadable WAV")
                 }
             } else {
-                AudioDecodeOutcome.Failure("FFmpegKit exited with code=$rc")
+                AudioDecodeOutcome.Failure("FFmpegKit unavailable or failed for ${sourceFile.name}")
             }
         } catch (t: Throwable) {
             AudioDecodeOutcome.Failure("${t.javaClass.simpleName}: ${t.message}")
         } finally {
+            if (needsStaging) runCatching { stagedIn.delete() }
             runCatching { outWav.delete() }
         }
     }

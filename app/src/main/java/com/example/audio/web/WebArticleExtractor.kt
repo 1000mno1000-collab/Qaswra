@@ -2,11 +2,11 @@ package com.example.audio.web
 
 import android.content.Context
 import com.example.audio.OnlineGuard
+import com.example.audio.network.NetworkFetchOutcome
+import com.example.audio.network.NetworkImmunityManager
 import com.example.model.AppLanguage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
-import java.net.URL
 
 sealed interface ArticleExtractionResult {
     data class Success(val text: String) : ArticleExtractionResult
@@ -25,7 +25,7 @@ object WebArticleExtractor {
         pageUrl: String,
         language: AppLanguage = AppLanguage.AR,
     ): ArticleExtractionResult = withContext(Dispatchers.IO) {
-        if (!OnlineGuard.isOnline(context)) {
+        if (!NetworkImmunityManager.pingReachable(context)) {
             return@withContext ArticleExtractionResult.Offline(OnlineGuard.offlineErrorMessage(language))
         }
         val text = extractCleanTextFromUrl(pageUrl)
@@ -38,58 +38,31 @@ object WebArticleExtractor {
 
     /**
      * Fetches a web page and extracts clean readable article text suitable for
-     * natural human TTS / Podcast narration.
-     * Primary engine: Jina Reader API (`https://r.jina.ai/{url}`) with clean Markdown stripping.
-     * Fallback engine: Direct HTML fetch with script/style/navigation tag stripping.
+     * natural human TTS / Podcast narration with 6-layer Network Immunity.
      */
     suspend fun extractCleanTextFromUrl(pageUrl: String): String = withContext(Dispatchers.IO) {
         val trimmed = pageUrl.trim()
         if (trimmed.isEmpty()) return@withContext ""
-        val normalizedUrl = if (trimmed.startsWith("http://", ignoreCase = true) ||
-            trimmed.startsWith("https://", ignoreCase = true)
-        ) {
-            trimmed
-        } else {
-            "https://$trimmed"
+        val normalizedUrl = NetworkImmunityManager.enforceHttps(trimmed)
+
+        // 1. Primary: Jina AI clean reader (plain text & markdown mirrors) with 30s timeout & backoff
+        val jinaTextOutcome = NetworkImmunityManager.fetchTextWithFallback(
+            urls = listOf("https://r.jina.ai/$normalizedUrl"),
+            headers = mapOf(
+                "Accept" to "text/plain, text/markdown;q=0.9, */*;q=0.5",
+                "X-Return-Format" to "text",
+                "X-No-Cache" to "true",
+            ),
+            timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
+            providerLabel = "JinaReader",
+        )
+        if (jinaTextOutcome is NetworkFetchOutcome.Success) {
+            val cleaned = cleanJinaText(jinaTextOutcome.value.body)
+            if (cleaned.length >= 40) return@withContext cleaned.take(6000)
         }
 
-        // 1. Primary: Jina AI clean reader (handles JS-heavy sites, news, Wikipedia, blogs)
-        val jinaDirect = fetchViaJinaReader("https://r.jina.ai/$normalizedUrl", requestPlainText = true)
-        if (jinaDirect.length >= 40) {
-            return@withContext jinaDirect.take(6000)
-        }
-
-        val jinaMarkdown = fetchViaJinaReader("https://r.jina.ai/$normalizedUrl", requestPlainText = false)
-        if (jinaMarkdown.length >= 40) {
-            return@withContext jinaMarkdown.take(6000)
-        }
-
-        // 2. Fallback: Direct HTML fetch + HTML tag/script stripping
+        // 2. Fallback: Direct HTTPS HTML fetch + script/navigation stripping
         return@withContext fetchAndStripDirectHtml(normalizedUrl)
-    }
-
-    private fun fetchViaJinaReader(jinaUrl: String, requestPlainText: Boolean): String {
-        var conn: HttpURLConnection? = null
-        return try {
-            conn = (URL(jinaUrl).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) SonixStudio/1.0")
-                setRequestProperty("Accept", "text/plain, text/markdown;q=0.9, */*;q=0.5")
-                if (requestPlainText) {
-                    setRequestProperty("X-Return-Format", "text")
-                }
-                setRequestProperty("X-No-Cache", "true")
-                connectTimeout = 9000
-                readTimeout = 14000
-            }
-            if (conn.responseCode !in 200..299) return ""
-            val raw = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            cleanJinaText(raw)
-        } catch (_: Throwable) {
-            ""
-        } finally {
-            runCatching { conn?.disconnect() }
-        }
     }
 
     private fun cleanJinaText(raw: String): String {
@@ -129,22 +102,17 @@ object WebArticleExtractor {
             .trim()
     }
 
-    private fun fetchAndStripDirectHtml(normalizedUrl: String): String {
-        var conn: HttpURLConnection? = null
-        return try {
-            conn = (URL(normalizedUrl).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                setRequestProperty(
-                    "User-Agent",
-                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Mobile Safari/537.36",
-                )
-                setRequestProperty("Accept", "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5")
-                connectTimeout = 8000
-                readTimeout = 10000
-            }
-            if (conn.responseCode !in 200..299) return ""
-
-            val html = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+    private suspend fun fetchAndStripDirectHtml(normalizedUrl: String): String {
+        val outcome = NetworkImmunityManager.fetchTextWithFallback(
+            urls = listOf(normalizedUrl),
+            headers = mapOf(
+                "Accept" to "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+            ),
+            timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
+            providerLabel = "DirectHtmlExtractor",
+        )
+        val html = (outcome as? NetworkFetchOutcome.Success)?.value?.body ?: return ""
+        return runCatching {
             val articleChunk = Regex("<article[^>]*>([\\s\\S]*?)</article>", RegexOption.IGNORE_CASE)
                 .find(html)
                 ?.groupValues
@@ -164,11 +132,7 @@ object WebArticleExtractor {
                 .replace(Regex("\\n{2,}"), "\n")
                 .trim()
                 .take(4000)
-        } catch (_: Exception) {
-            ""
-        } finally {
-            runCatching { conn?.disconnect() }
-        }
+        }.getOrDefault("")
     }
 
     private fun decodeHtmlEntities(text: String): String {

@@ -13,14 +13,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.WifiOff
@@ -30,6 +35,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -53,6 +59,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.i18n.t
 import com.example.model.AppLanguage
+import com.example.model.AssistantChatMessage
+import com.example.model.OnlineSearchCategory
 import com.example.studio.ui.lit
 import com.example.ui.components.InfoBadgeButton
 import com.example.ui.components.StudioFocusTopBar
@@ -70,8 +78,8 @@ fun SmartAssistantScreen(
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
-    var selectedTab by remember { mutableIntStateOf(0) } // 0 = Tool Guide, 1 = Online Archive SFX
-    var guideQuery by remember { mutableStateOf("") }
+    var selectedTab by remember { mutableIntStateOf(0) } // 0 = AI Engineer Chat, 1 = Online Archive Library
+    var chatInput by remember { mutableStateOf("") }
     var soundQuery by remember { mutableStateOf("") }
     var infoOpen by remember { mutableStateOf(false) }
 
@@ -88,12 +96,34 @@ fun SmartAssistantScreen(
             language = lang,
             onBack = onBack,
             trailing = {
-                InfoBadgeButton(
-                    contentDescription = t(lang, "tool_smart_assistant"),
-                    testTag = "assistant_info_button",
-                    accentColor = StudioColors.Cyan,
-                    onClick = { infoOpen = true },
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (selectedTab == 0 && uiState.assistantChatMessages.isNotEmpty()) {
+                        val clearInt = remember { MutableInteractionSource() }
+                        IconButton(
+                            onClick = { viewModel.clearAssistantChat() },
+                            interactionSource = clearInt,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .lit(clearInt, StudioColors.Amber, cornerRadius = 24.dp)
+                                .testTag("assistant_clear_chat_button"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.DeleteSweep,
+                                contentDescription = if (lang == AppLanguage.EN) "Clear Chat" else "مسح المحادثة",
+                                tint = StudioColors.Amber,
+                            )
+                        }
+                    }
+                    InfoBadgeButton(
+                        contentDescription = t(lang, "tool_smart_assistant"),
+                        testTag = "assistant_info_button",
+                        accentColor = StudioColors.Cyan,
+                        onClick = { infoOpen = true },
+                    )
+                }
             },
         )
 
@@ -133,6 +163,7 @@ fun SmartAssistantScreen(
         }
 
         if (selectedTab == 0) {
+            // Multi-Turn Smart AI Audio Engineer Chat (100% Online Pollinations AI + Compact Action Chip)
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -143,13 +174,24 @@ fun SmartAssistantScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = StudioColors.Cyan, modifier = Modifier.size(18.dp))
+                            Text(
+                                text = t(lang, "assistant_ai_reply_title"),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.TextPrimary,
+                            )
+                        }
                         Surface(
                             shape = RoundedCornerShape(999.dp),
                             color = StudioColors.Cyan.copy(alpha = 0.14f),
@@ -164,63 +206,11 @@ fun SmartAssistantScreen(
                         }
                     }
 
-                    OutlinedTextField(
-                        value = guideQuery,
-                        onValueChange = { q ->
-                            guideQuery = q
-                            viewModel.searchToolGuide(q)
-                        },
-                        label = { Text(t(lang, "assistant_guide_hint")) },
-                        leadingIcon = { Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = StudioColors.Cyan) },
-                        singleLine = false,
-                        maxLines = 3,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = StudioColors.Cyan,
-                            unfocusedBorderColor = StudioColors.Border,
-                            focusedTextColor = StudioColors.TextPrimary,
-                            unfocusedTextColor = StudioColors.TextPrimary,
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("assistant_guide_input"),
-                    )
-
-                    val askAiInteraction = remember { MutableInteractionSource() }
-                    Button(
-                        onClick = { viewModel.askAiToolGuide(guideQuery) },
-                        enabled = guideQuery.isNotBlank() && !uiState.isLoadingAiGuide,
-                        interactionSource = askAiInteraction,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = StudioColors.Cyan,
-                            contentColor = StudioColors.BgTop,
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(askAiInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                            .testTag("assistant_guide_search_button"),
-                    ) {
-                        if (uiState.isLoadingAiGuide) {
-                            CircularProgressIndicator(
-                                color = StudioColors.BgTop,
-                                strokeWidth = 2.dp,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(Modifier.width(8.dp))
-                        } else {
-                            Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text(t(lang, "assistant_ask_ai_btn"))
-                    }
-
                     val quickPrompts = remember(lang) {
                         if (lang == AppLanguage.EN) {
-                            listOf("Remove noise", "Dragon voice", "PUBG HDR video", "Web article TTS", "Auto-ducking music")
+                            listOf("Remove fan noise", "Dragon boss voice", "Reels voice template", "Auto-duck music", "Fix muddy sound")
                         } else {
-                            listOf("شلون اشيل الضوضاء", "صوت تنين", "رندر ببجي", "تحويل مقال لبودكاست", "دمج موسيقى")
+                            listOf("شلون اشيل الضوضاء", "ابي صوت تنين", "قالب صوت للريلز", "دمج موسيقى ذكي", "الصوت مكتوم شوي")
                         }
                     }
                     Row(
@@ -232,16 +222,14 @@ fun SmartAssistantScreen(
                         quickPrompts.forEach { sample ->
                             val chipInteraction = remember { MutableInteractionSource() }
                             FilterChip(
-                                selected = guideQuery == sample,
+                                selected = false,
                                 onClick = {
-                                    guideQuery = sample
-                                    viewModel.searchToolGuide(sample)
-                                    viewModel.askAiToolGuide(sample)
+                                    viewModel.sendAssistantChatMessage(sample)
                                 },
                                 interactionSource = chipInteraction,
                                 label = { Text(sample) },
                                 modifier = Modifier
-                                    .defaultMinSize(minHeight = 48.dp)
+                                    .defaultMinSize(minHeight = 44.dp)
                                     .lit(chipInteraction, StudioColors.Cyan, cornerRadius = 10.dp),
                             )
                         }
@@ -271,95 +259,121 @@ fun SmartAssistantScreen(
                         }
                     }
 
-                    uiState.assistantAiSummary?.let { summary ->
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = StudioColors.ElevatedSurface,
-                            border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("assistant_ai_summary_card"),
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    // Conversation Stream
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (uiState.assistantChatMessages.isEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = StudioColors.BgMid,
+                                border = BorderStroke(1.dp, StudioColors.Border),
+                                modifier = Modifier.fillMaxWidth(),
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
                                 ) {
-                                    Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = StudioColors.Violet, modifier = Modifier.size(18.dp))
                                     Text(
-                                        text = t(lang, "assistant_ai_reply_title"),
-                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                                        color = StudioColors.Violet,
+                                        text = if (lang == AppLanguage.EN) {
+                                            "Ask me anything about audio engineering, dialect FX, noise cleanup, or finding the exact Sonix ✦ studio tool."
+                                        } else {
+                                            "اسألني بأي لهجة (عراقي، خليجي، مصري، فصحى) عن أي مشكلة بالصوت أو التأثير اللي تريده، وراح أجاوبك وأعطيك اختصار مباشر للأداة المناسبة!"
+                                        },
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = StudioColors.TextSecondary,
                                     )
                                 }
+                            }
+                        } else {
+                            uiState.assistantChatMessages.forEach { msg ->
+                                ChatBubbleRow(
+                                    message = msg,
+                                    language = lang,
+                                    onNavigateToTool = onNavigateToTool,
+                                )
+                            }
+                        }
+
+                        if (uiState.isLoadingAiGuide) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                CircularProgressIndicator(
+                                    color = StudioColors.Cyan,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(16.dp),
+                                )
                                 Text(
-                                    text = summary,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = StudioColors.TextPrimary,
+                                    text = if (lang == AppLanguage.EN) "Thinking..." else "جاري التحليل...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioColors.Cyan,
                                 )
                             }
                         }
                     }
 
-                    uiState.assistantGuideResults.forEach { guide ->
-                        Surface(
+                    // Bottom Chat Input Bar
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = chatInput,
+                            onValueChange = { chatInput = it },
+                            placeholder = { Text(t(lang, "assistant_chat_placeholder"), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            singleLine = false,
+                            maxLines = 3,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = StudioColors.Cyan,
+                                unfocusedBorderColor = StudioColors.Border,
+                                focusedTextColor = StudioColors.TextPrimary,
+                                unfocusedTextColor = StudioColors.TextPrimary,
+                            ),
                             shape = RoundedCornerShape(16.dp),
-                            color = StudioColors.BgMid,
-                            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("assistant_guide_input"),
+                        )
+
+                        val sendInt = remember { MutableInteractionSource() }
+                        IconButton(
+                            onClick = {
+                                val textToSend = chatInput.trim()
+                                if (textToSend.isNotEmpty() && !uiState.isLoadingAiGuide) {
+                                    chatInput = ""
+                                    viewModel.sendAssistantChatMessage(textToSend)
+                                }
+                            },
+                            enabled = chatInput.isNotBlank() && !uiState.isLoadingAiGuide,
+                            interactionSource = sendInt,
+                            colors = IconButtonDefaults.iconButtonColors(
+                                containerColor = StudioColors.Cyan,
+                                contentColor = StudioColors.BgTop,
+                                disabledContainerColor = StudioColors.ElevatedSurface,
+                                disabledContentColor = StudioColors.TextMuted,
+                            ),
+                            modifier = Modifier
+                                .size(52.dp)
+                                .lit(sendInt, StudioColors.Cyan, cornerRadius = 26.dp)
+                                .testTag("assistant_guide_search_button"),
                         ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Text(
-                                    text = guide.toolName,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = StudioColors.Cyan,
-                                )
-                                Text(
-                                    text = guide.matchReason,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = StudioColors.TextSecondary,
-                                )
-                                guide.howToUseSteps.forEach { step ->
-                                    Text(
-                                        text = step,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = StudioColors.TextPrimary,
-                                    )
-                                }
-                                val openInt = remember { MutableInteractionSource() }
-                                Button(
-                                    onClick = { onNavigateToTool(guide.toolId) },
-                                    interactionSource = openInt,
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = StudioColors.Cyan,
-                                        contentColor = StudioColors.BgTop,
-                                    ),
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .defaultMinSize(minHeight = 48.dp)
-                                        .lit(openInt, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
-                                        .testTag("assistant_open_${guide.toolId}"),
-                                ) {
-                                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(t(lang, "assistant_open_tool"))
-                                }
-                            }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.Send,
+                                contentDescription = t(lang, "assistant_ask_ai_btn"),
+                            )
                         }
                     }
                 }
             }
         } else {
-            // Archive.org categorized internet sound search & import
+            // 2-Tab Categorized Online Audio & SFX Library (Archive.org)
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -370,8 +384,86 @@ fun SmartAssistantScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    // 2 Sub-tabs: Voices & Clips vs Sound Effects (SFX)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val voicesSel = uiState.onlineSearchCategory == OnlineSearchCategory.VOICES_CLIPS
+                        val voicesInt = remember { MutableInteractionSource() }
+                        Surface(
+                            onClick = { viewModel.setOnlineSearchCategory(OnlineSearchCategory.VOICES_CLIPS) },
+                            interactionSource = voicesInt,
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (voicesSel) StudioColors.Cyan.copy(alpha = 0.16f) else StudioColors.BgMid,
+                            border = BorderStroke(1.dp, if (voicesSel) StudioColors.Cyan else StudioColors.Border),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 46.dp)
+                                .lit(voicesInt, StudioColors.Cyan, selected = voicesSel, cornerRadius = 12.dp)
+                                .testTag("online_category_voices_tab"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.RecordVoiceOver,
+                                    contentDescription = null,
+                                    tint = if (voicesSel) StudioColors.Cyan else StudioColors.TextSecondary,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = t(lang, "online_tab_voices_clips"),
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = if (voicesSel) StudioColors.Cyan else StudioColors.TextSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+
+                        val sfxSel = uiState.onlineSearchCategory == OnlineSearchCategory.SOUND_EFFECTS
+                        val sfxInt = remember { MutableInteractionSource() }
+                        Surface(
+                            onClick = { viewModel.setOnlineSearchCategory(OnlineSearchCategory.SOUND_EFFECTS) },
+                            interactionSource = sfxInt,
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (sfxSel) StudioColors.Violet.copy(alpha = 0.18f) else StudioColors.BgMid,
+                            border = BorderStroke(1.dp, if (sfxSel) StudioColors.Violet else StudioColors.Border),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 46.dp)
+                                .lit(sfxInt, StudioColors.Violet, selected = sfxSel, cornerRadius = 12.dp)
+                                .testTag("online_category_sfx_tab"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.GraphicEq,
+                                    contentDescription = null,
+                                    tint = if (sfxSel) StudioColors.Violet else StudioColors.TextSecondary,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = t(lang, "online_tab_sfx"),
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = if (sfxSel) StudioColors.Violet else StudioColors.TextSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -421,11 +513,18 @@ fun SmartAssistantScreen(
                         }
                     }
 
-                    val topicChips = remember(lang) {
-                        if (lang == AppLanguage.EN) {
-                            listOf("Horror", "Rain & Nature", "Cinematic Music", "Gaming Action")
-                        } else {
-                            listOf("رعب", "مطر وطبيعة", "موسيقى سينمائية", "أكشن وألعاب")
+                    val topicChips = remember(lang, uiState.onlineSearchCategory) {
+                        when (uiState.onlineSearchCategory) {
+                            OnlineSearchCategory.VOICES_CLIPS -> if (lang == AppLanguage.EN) {
+                                listOf("Podcast Voice", "Radio Announcer", "Acoustic Loop", "Dramatic Narration")
+                            } else {
+                                listOf("أصوات معلّقين", "حوار وبودكاست", "خطابة وإلقاء", "موسيقى حرة")
+                            }
+                            OnlineSearchCategory.SOUND_EFFECTS -> if (lang == AppLanguage.EN) {
+                                listOf("Horror SFX", "Rain & Thunder", "Whoosh Transition", "Gaming Action")
+                            } else {
+                                listOf("رعب وتشويق", "مطر وطبيعة", "فوش Whoosh", "أكشن وألعاب")
+                            }
                         }
                     }
                     Row(
@@ -444,8 +543,12 @@ fun SmartAssistantScreen(
                                 },
                                 interactionSource = tInt,
                                 label = { Text(topic) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = StudioColors.Violet.copy(alpha = 0.2f),
+                                    selectedLabelColor = StudioColors.Violet,
+                                ),
                                 modifier = Modifier
-                                    .defaultMinSize(minHeight = 48.dp)
+                                    .defaultMinSize(minHeight = 46.dp)
                                     .lit(tInt, StudioColors.Violet, cornerRadius = 10.dp),
                             )
                         }
@@ -590,4 +693,79 @@ fun SmartAssistantScreen(
         language = lang,
         onDismiss = { infoOpen = false },
     )
+}
+
+@Composable
+private fun ChatBubbleRow(
+    message: AssistantChatMessage,
+    language: AppLanguage,
+    onNavigateToTool: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (message.isUser) Arrangement.End else Arrangement.Start,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(
+                topStart = 18.dp,
+                topEnd = 18.dp,
+                bottomStart = if (message.isUser) 18.dp else 4.dp,
+                bottomEnd = if (message.isUser) 4.dp else 18.dp,
+            ),
+            color = if (message.isUser) StudioColors.Cyan.copy(alpha = 0.18f) else StudioColors.ElevatedSurface,
+            border = BorderStroke(
+                1.dp,
+                if (message.isUser) StudioColors.Cyan.copy(alpha = 0.5f) else StudioColors.Violet.copy(alpha = 0.45f),
+            ),
+            modifier = Modifier.widthIn(max = 460.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = message.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = StudioColors.TextPrimary,
+                )
+
+                val toolId = message.recommendedToolId
+                val toolLabel = message.recommendedToolLabel
+                if (!message.isUser && !toolId.isNullOrBlank()) {
+                    val chipInteraction = remember { MutableInteractionSource() }
+                    Surface(
+                        onClick = { onNavigateToTool(toolId) },
+                        interactionSource = chipInteraction,
+                        shape = RoundedCornerShape(999.dp),
+                        color = StudioColors.Cyan.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 40.dp)
+                            .lit(chipInteraction, StudioColors.Cyan, cornerRadius = 20.dp)
+                            .testTag("assistant_compact_chip_$toolId"),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                                contentDescription = toolLabel,
+                                tint = StudioColors.Cyan,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = "${t(language, "assistant_open_recommended")} ${toolLabel ?: toolId}",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.Cyan,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

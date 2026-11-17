@@ -34,8 +34,11 @@ import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.BlurOn
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Waves
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -51,10 +54,13 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,6 +79,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.audio.AudioSignalAnalyzer
 import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.DistortionMode
@@ -123,6 +130,45 @@ fun EchoReverbScreen(
         ),
         label = "ripplePhase",
     )
+
+    LaunchedEffect(uiState.restoredToolSession?.id) {
+        val restored = viewModel.consumeRestoredToolSession("echo_reverb")
+        if (restored != null) {
+            val fp = restored.floatParams
+            viewModel.updateEchoReverbParams { prev ->
+                prev.copy(
+                    wetDryMix = fp["wetDryMix"] ?: prev.wetDryMix,
+                    delayTimeMs = fp["delayTimeMs"] ?: prev.delayTimeMs,
+                    echoStrength = fp["echoStrength"] ?: prev.echoStrength,
+                    reverbSize = fp["reverbSize"] ?: prev.reverbSize,
+                )
+            }
+        }
+    }
+
+    val latestEcho by rememberUpdatedState(echo)
+    val latestHasAudio by rememberUpdatedState(uiState.hasAudio)
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopToolPreview()
+            if (latestHasAudio) {
+                val p = latestEcho
+                viewModel.saveToolSessionToCache(
+                    toolId = "echo_reverb",
+                    titleAr = "استوديو الصدى والفضاء",
+                    titleEn = "Echo & Reverb",
+                    summaryAr = "${(p.wetDryMix * 100f).roundToInt()}% / ${p.delayTimeMs.roundToInt()} ms",
+                    summaryEn = "${(p.wetDryMix * 100f).roundToInt()}% / ${p.delayTimeMs.roundToInt()} ms",
+                    floatParams = mapOf(
+                        "wetDryMix" to p.wetDryMix,
+                        "delayTimeMs" to p.delayTimeMs,
+                        "echoStrength" to p.echoStrength,
+                        "reverbSize" to p.reverbSize,
+                    ),
+                )
+            }
+        }
+    }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -434,7 +480,10 @@ fun EchoReverbScreen(
                     formattedValue = "${(echo.wetDryMix * 100f).roundToInt()}%",
                     accentColor = StudioColors.Cyan,
                     testTag = "echo_wet_dry_slider",
-                    onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(wetDryMix = v) } },
+                    onValueChange = { v ->
+                        viewModel.updateEchoReverbParams { it.copy(wetDryMix = v) }
+                        if (uiState.isSimpleEchoMode) viewModel.ensureLivePreviewPlaying()
+                    },
                 )
 
                 StudioParamSlider(
@@ -445,12 +494,43 @@ fun EchoReverbScreen(
                     formattedValue = "${echo.delayTimeMs.roundToInt()} ms",
                     accentColor = StudioColors.Violet,
                     testTag = "echo_delay_time_slider",
-                    onValueChange = { v -> viewModel.updateEchoReverbParams { it.copy(delayTimeMs = v) } },
+                    onValueChange = { v ->
+                        viewModel.updateEchoReverbParams { it.copy(delayTimeMs = v) }
+                        if (uiState.isSimpleEchoMode) viewModel.ensureLivePreviewPlaying()
+                    },
                 )
             }
         }
 
         if (!uiState.isSimpleEchoMode) {
+            val proPreviewInteraction = remember { MutableInteractionSource() }
+            Button(
+                onClick = { viewModel.previewEchoReverbPro() },
+                enabled = uiState.hasAudio && !uiState.isBusy,
+                interactionSource = proPreviewInteraction,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Violet,
+                    contentColor = StudioColors.BgTop,
+                ),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp)
+                    .lit(proPreviewInteraction, StudioColors.Violet, cornerRadius = 14.dp)
+                    .testTag("echo_pro_preview_button"),
+            ) {
+                Icon(
+                    imageVector = if (uiState.isToolPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (uiState.isToolPreviewPlaying) t(lang, "stop_preview_edit") else t(lang, "preview_edit"),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+
             StudioSectionCard(
                 title = t(lang, "echo_node_core"),
                 subtitle = "${t(lang, "param_echo_strength")}, ${t(lang, "param_echo_depth")}, ${t(lang, "param_feedback")}",
@@ -769,8 +849,29 @@ fun EffectsChainScreen(
                     formattedValue = "${if (uiState.dspConfig.masterGainDb >= 0f) "+" else ""}${"%.1f".format(uiState.dspConfig.masterGainDb)} dB",
                     accentColor = StudioColors.Cyan,
                     testTag = "chain_master_gain_slider",
-                    onValueChange = { v -> viewModel.updateDspConfig { it.copy(masterGainDb = v) } },
+                    onValueChange = { v ->
+                        viewModel.updateDspConfig { it.copy(masterGainDb = v) }
+                        viewModel.ensureLivePreviewPlaying()
+                    },
                 )
+
+                if (uiState.hasAudio && AudioSignalAnalyzer.willGainCauseClipping(uiState.originalPeakDbfs, uiState.dspConfig.masterGainDb)) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = StudioColors.Rose.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, StudioColors.RoseBright.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("chain_master_clipping_warning"),
+                    ) {
+                        Text(
+                            text = t(lang, "clipping_warning"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioColors.RoseBright,
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
+                }
 
                 val resetInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
@@ -1041,18 +1142,40 @@ fun EffectDetailScreen(
 
                         StudioParamSlider("60 Hz", eq.band60HzDb, -12f, 12f, "${"%.1f".format(eq.band60HzDb)} dB", StudioColors.Cyan, testTag = "eq_60") { v ->
                             viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band60HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("230 Hz", eq.band230HzDb, -12f, 12f, "${"%.1f".format(eq.band230HzDb)} dB", StudioColors.Cyan, testTag = "eq_230") { v ->
                             viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band230HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("910 Hz", eq.band910HzDb, -12f, 12f, "${"%.1f".format(eq.band910HzDb)} dB", StudioColors.Violet, testTag = "eq_910") { v ->
                             viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band910HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("3.6 kHz", eq.band3600HzDb, -12f, 12f, "${"%.1f".format(eq.band3600HzDb)} dB", StudioColors.Emerald, testTag = "eq_3600") { v ->
                             viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band3600HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                            viewModel.ensureLivePreviewPlaying()
                         }
                         StudioParamSlider("14 kHz", eq.band14000HzDb, -12f, 12f, "${"%.1f".format(eq.band14000HzDb)} dB", StudioColors.Amber, testTag = "eq_14000") { v ->
                             viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band14000HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
+                            viewModel.ensureLivePreviewPlaying()
+                        }
+                        if (uiState.fricativeWarningEq) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = StudioColors.Amber.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, StudioColors.Amber.copy(alpha = 0.6f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("eq_fricative_warning"),
+                            ) {
+                                Text(
+                                    text = t(lang, "fricative_clarity_warning"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioColors.Amber,
+                                    modifier = Modifier.padding(10.dp),
+                                )
+                            }
                         }
                     }
 

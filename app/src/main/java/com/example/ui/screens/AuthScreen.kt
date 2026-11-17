@@ -78,6 +78,7 @@ import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
+import com.example.diagnostics.AppDiagnosticLog
 import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.studio.ui.lit
@@ -96,8 +97,19 @@ import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-private const val GOOGLE_WEB_CLIENT_ID =
+private const val FALLBACK_GOOGLE_WEB_CLIENT_ID =
     "71794555883-1j2b8ckt6mriegaem2vji34ov5vofpb4.apps.googleusercontent.com"
+
+private fun resolveWebClientId(context: Context): String {
+    val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+    if (resId != 0) {
+        val candidate = runCatching { context.getString(resId) }.getOrNull().orEmpty().trim()
+        if (candidate.endsWith(".apps.googleusercontent.com")) {
+            return candidate
+        }
+    }
+    return FALLBACK_GOOGLE_WEB_CLIENT_ID
+}
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -178,10 +190,11 @@ fun AuthScreen(
             errorMsg = null
             scope.launch {
                 try {
+                    val webClientId = resolveWebClientId(activity)
                     val credentialManager = CredentialManager.create(activity)
                     val googleIdOption = GetGoogleIdOption.Builder()
                         .setFilterByAuthorizedAccounts(false)
-                        .setServerClientId(GOOGLE_WEB_CLIENT_ID)
+                        .setServerClientId(webClientId)
                         .setAutoSelectEnabled(false)
                         .build()
                     val primaryRequest = GetCredentialRequest.Builder()
@@ -194,14 +207,14 @@ fun AuthScreen(
                         )
                     } catch (primaryEx: GetCredentialException) {
                         val msg = primaryEx.message.orEmpty()
-                        val isReauthOrNoCred = primaryEx is NoCredentialException ||
+                        val shouldFallback = primaryEx is NoCredentialException ||
                             msg.contains("reauth", ignoreCase = true) ||
                             msg.contains("16") ||
                             primaryEx !is GetCredentialCancellationException
-                        if (!isReauthOrNoCred) throw primaryEx
+                        if (!shouldFallback) throw primaryEx
                         Log.w("Auth", "Primary GetGoogleIdOption failed (${primaryEx.javaClass.simpleName}: $msg), retrying with GetSignInWithGoogleOption")
                         val fallbackOption = GetSignInWithGoogleOption.Builder(
-                            serverClientId = GOOGLE_WEB_CLIENT_ID,
+                            serverClientId = webClientId,
                         ).build()
                         val fallbackRequest = GetCredentialRequest.Builder()
                             .addCredentialOption(fallbackOption)
@@ -243,6 +256,15 @@ fun AuthScreen(
                             .addOnFailureListener { e ->
                                 isGoogleLoading = false
                                 Log.e("Auth", "Firebase signInWithCredential failed", e)
+                                AppDiagnosticLog.logRecoverable(
+                                    toolName = "GoogleSignIn",
+                                    titleAr = "فشل مصادقة Firebase بعد اختيار حساب جوجل",
+                                    titleEn = "Firebase Auth Sign-In Failed",
+                                    causeAr = e.localizedMessage ?: e.javaClass.simpleName,
+                                    causeEn = e.localizedMessage ?: e.javaClass.simpleName,
+                                    errorCode = e.javaClass.simpleName,
+                                    throwable = e,
+                                )
                                 errorMsg = "${e.javaClass.simpleName}: ${e.message}"
                             }
                     } else {
@@ -255,6 +277,15 @@ fun AuthScreen(
                 } catch (e: Exception) {
                     isGoogleLoading = false
                     Log.e("Auth", "Google Sign-In failed", e)
+                    AppDiagnosticLog.logRecoverable(
+                        toolName = "GoogleSignIn",
+                        titleAr = "تعذر إتمام تسجيل الدخول بحساب جوجل",
+                        titleEn = "Google Sign-In Failed",
+                        causeAr = e.localizedMessage ?: e.javaClass.simpleName,
+                        causeEn = e.localizedMessage ?: e.javaClass.simpleName,
+                        errorCode = e.javaClass.simpleName,
+                        throwable = e,
+                    )
                     errorMsg = "${e.javaClass.simpleName}: ${e.message}"
                 }
             }

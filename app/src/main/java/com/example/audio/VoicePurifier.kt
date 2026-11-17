@@ -249,6 +249,7 @@ class SpectralVoiceCleaner {
 
 class NoiseReductionProcessor(private val sampleRate: Int = 44100) {
     private val hpf = StereoBiquadFilter()
+    private val lpf = StereoBiquadFilter()
     private val humNotch50 = StereoBiquadFilter()
     private val sibilanceBand = StereoBiquadFilter()
     private val clarityShelf = StereoBiquadFilter()
@@ -258,16 +259,22 @@ class NoiseReductionProcessor(private val sampleRate: Int = 44100) {
     private var env = 0.0
     private var deEssEnv = 0.0
     private var lastConfigKey = ""
+    private var lpfEnabled = false
 
     var currentSuppressionDb: Float = 0f
         private set
 
     fun configure(params: NoiseReductionParams) {
-        val key = "$sampleRate|${params.highPassHz}|${params.clarityBoostDb}"
+        val key = "$sampleRate|${params.highPassHz}|${params.lowPassHz}|${params.clarityBoostDb}"
         if (key == lastConfigKey) return
         lastConfigKey = key
 
-        hpf.configureHighPass(sampleRate, clamp(params.highPassHz, 20f, 300f).toDouble(), 0.707)
+        hpf.configureHighPass(sampleRate, clamp(params.highPassHz, 20f, 450f).toDouble(), 0.707)
+        val clampedLpf = clamp(params.lowPassHz, 2200f, 16000f)
+        lpfEnabled = clampedLpf < 15800f
+        if (lpfEnabled) {
+            lpf.configureLowPass(sampleRate, clampedLpf.toDouble(), 0.707)
+        }
         humNotch50.configurePeaking(sampleRate, 60.0, 4.5, -9.0)
         sibilanceBand.configureBandPass(sampleRate, 6400.0, 1.4)
         clarityShelf.configureHighShelf(sampleRate, 3400.0, 0.7, clamp(params.clarityBoostDb, -3f, 12f).toDouble())
@@ -281,9 +288,12 @@ class NoiseReductionProcessor(private val sampleRate: Int = 44100) {
     ) {
         configure(params)
 
-        // 1. Subsonic rumble removal + hum tame
+        // 1. Annoying frequency filter (subsonic HPF, AC 60Hz notch, harsh hiss LPF)
         hpf.processStereo(left, right, count)
         humNotch50.processStereo(left, right, count)
+        if (lpfEnabled) {
+            lpf.processStereo(left, right, count)
+        }
 
         // 2. STFT Wiener spectral denoiser
         val gateFloor = 10.0.pow(-clamp(params.reductionDb, 0f, 36f) / 20.0).toFloat()
@@ -360,6 +370,7 @@ class NoiseReductionProcessor(private val sampleRate: Int = 44100) {
 
     fun reset() {
         hpf.reset()
+        lpf.reset()
         humNotch50.reset()
         sibilanceBand.reset()
         clarityShelf.reset()

@@ -86,7 +86,7 @@ object EdgeTtsClient {
         pitch: Float = 1.0f,
         pitchOffsetHz: Int = 0,
     ): ByteArray? {
-        val cleanInput = text.trim()
+        val cleanInput = com.example.audio.tts.ArabicTextDiacritizer.normalizeAndHintForTts(text.trim())
         if (cleanInput.isEmpty()) return null
 
         val combinedRate = clamp(speechRate, 0.5f, 1.8f)
@@ -130,6 +130,10 @@ object EdgeTtsClient {
                 val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
                 socket = (factory.createSocket(HOST, PORT) as SSLSocket).apply {
                     soTimeout = 12_000
+                    val supported = supportedProtocols?.filter { it == "TLSv1.3" || it == "TLSv1.2" }
+                    if (!supported.isNullOrEmpty()) {
+                        enabledProtocols = supported.toTypedArray()
+                    }
                     startHandshake()
                 }
                 val input = BufferedInputStream(socket.inputStream, 16384)

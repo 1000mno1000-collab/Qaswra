@@ -4,6 +4,8 @@ import android.content.Context
 import com.example.audio.EdgeTtsClient
 import com.example.audio.EdgeTtsSynthResult
 import com.example.audio.OnlineGuard
+import com.example.audio.network.NetworkFetchOutcome
+import com.example.audio.network.NetworkImmunityManager
 import com.example.model.AppLanguage
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
@@ -13,8 +15,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 
 sealed interface VoiceRouteOutcome {
@@ -27,7 +27,7 @@ class SmartVoiceRouter {
 
     /**
      * يوجّه النص مباشرة إلى محرك الصوت البشري السحابي المجاني المفتوح (100% أونلاين، بدون مفتاح API):
-     * [TtsEngineMode.FREE_EMOTIONAL_NEURAL]: Edge-TTS WebSocket + SSML بالمشاعر مع تحسين الفخامة الاستوديو.
+     * [TtsEngineMode.FREE_EMOTIONAL_NEURAL]: Pollinations OpenAI Audio مع لهجات ومشاعر وتنفس طبيعي.
      */
     suspend fun synthesizeStudioVoiceWithStatus(
         context: Context,
@@ -67,18 +67,22 @@ class SmartVoiceRouter {
     }
 
     /**
-     * يوجّه النص تلقائياً لمزود الصوت الطبيعي المتاح عند استدعائه مباشرة
-     * ولا يعود أبداً إلى الصوت الآلي الروبوتي المحلي.
+     * يوجّه النص لمحركات الصوت البشري السحابية المتاحة (Pollinations OpenAI Audio ثم EdgeTTS / StreamElements)
+     * دون أي استخدام لمحرك أوفلاين أو روابط translate_tts.
      */
     suspend fun generateNaturalVoice(
         text: String,
-        voiceCode: String = "ar-IQ-BasselNeural", // يدعم: ar-IQ, ar-SA, ar-EG, ar-SY, en-US, fa-IR, tr-TR
+        voiceCode: String = "ar-IQ-BasselNeural",
         outputFile: File,
     ): Boolean = withContext(Dispatchers.IO) {
-        val cleanText = text.trim()
+        val cleanText = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim())
         if (cleanText.isEmpty()) return@withContext false
 
         outputFile.parentFile?.mkdirs()
+
+        if (tryPollinationsOpenAiAudio(cleanText, voiceCode, outputFile) && outputFile.length() > 512L) {
+            return@withContext true
+        }
 
         val localeTag = voiceCode.split("-").take(2).joinToString("-").ifBlank { "ar-IQ" }
         val edgeBytes = EdgeTtsClient.synthesizeRawMp3(
@@ -94,11 +98,8 @@ class SmartVoiceRouter {
             if (wrote) return@withContext true
         }
 
-        val primarySuccess = tryStreamElementsNeural(cleanText, voiceCode, outputFile)
-        if (primarySuccess && outputFile.length() > 512L) return@withContext true
-
-        val lang = voiceCode.substringBefore("-").lowercase().ifBlank { "ar" }
-        return@withContext tryGoogleFallbackTts(cleanText, lang, outputFile)
+        val streamOk = tryStreamElementsNeural(cleanText, voiceCode, outputFile)
+        streamOk && outputFile.length() > 512L
     }
 
     suspend fun synthesizeStudioVoice(
@@ -126,7 +127,32 @@ class SmartVoiceRouter {
         }
     }
 
-    private fun tryStreamElementsNeural(text: String, voiceCode: String, out: File): Boolean {
+    private suspend fun tryPollinationsOpenAiAudio(text: String, voiceCode: String, out: File): Boolean {
+        val lower = voiceCode.lowercase()
+        val isFemale = lower.contains("rana") || lower.contains("zariyah") ||
+            lower.contains("salma") || lower.contains("amany") ||
+            lower.contains("sana") || lower.contains("mouna") ||
+            lower.contains("fatima") || lower.contains("reem") ||
+            lower.contains("ava") || lower.contains("emel") ||
+            lower.contains("dilara") || lower.contains("female")
+        val voice = if (isFemale) "nova" else "onyx"
+        val prompt = "Read ONLY this text naturally with clear human articulation and zero commentary: $text"
+        val encoded = URLEncoder.encode(prompt, "UTF-8").replace("+", "%20")
+        val primaryUrl = "https://text.pollinations.ai/$encoded?model=openai-audio&voice=$voice"
+        val fallbackUrl = "https://text.pollinations.ai/$encoded?model=openai-audio&voice=alloy"
+        val outcome = NetworkImmunityManager.fetchAudioWithFallback(
+            urls = listOf(primaryUrl, fallbackUrl),
+            headers = mapOf("Referer" to "https://pollinations.ai/"),
+            providerLabel = "SmartVoiceRouter.Pollinations",
+        )
+        val bytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes ?: return false
+        return runCatching {
+            out.writeBytes(bytes)
+            true
+        }.getOrDefault(false)
+    }
+
+    private suspend fun tryStreamElementsNeural(text: String, voiceCode: String, out: File): Boolean {
         val seVoices = resolveStreamElementsVoices(voiceCode)
         if (seVoices.isEmpty()) return false
 
@@ -137,15 +163,19 @@ class SmartVoiceRouter {
             for (chunk in chunks) {
                 val encoded = URLEncoder.encode(chunk, "UTF-8")
                 val apiUrl = "https://api.streamelements.com/kappa/v2/speech?voice=$seVoice&text=$encoded"
-                val chunkBytes = fetchHttpAudioBytes(apiUrl, connectTimeoutMs = 7000, readTimeoutMs = 10000)
-                if (chunkBytes == null || !isLikelyAudioPayload(chunkBytes)) {
+                val outcome = NetworkImmunityManager.fetchAudioWithFallback(
+                    urls = listOf(apiUrl),
+                    providerLabel = "StreamElements($seVoice)",
+                )
+                val chunkBytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes
+                if (chunkBytes == null) {
                     allChunksOk = false
                     break
                 }
                 combined.write(chunkBytes)
             }
             val payload = combined.toByteArray()
-            if (allChunksOk && payload.size > 512) {
+            if (allChunksOk && payload.size > 1024) {
                 return runCatching {
                     out.writeBytes(payload)
                     true
@@ -153,62 +183,6 @@ class SmartVoiceRouter {
             }
         }
         return false
-    }
-
-    private fun tryGoogleFallbackTts(text: String, lang: String, out: File): Boolean {
-        val chunks = splitTextIntoChunks(text, maxChars = 180)
-        val combined = ByteArrayOutputStream()
-        for (chunk in chunks) {
-            val encoded = URLEncoder.encode(chunk, "UTF-8")
-            val apiUrl = "https://translate.google.com/translate_tts?ie=UTF-8&tl=$lang&client=tw-ob&q=$encoded"
-            val chunkBytes = fetchHttpAudioBytes(
-                apiUrl = apiUrl,
-                connectTimeoutMs = 7000,
-                readTimeoutMs = 10000,
-                referer = "https://translate.google.com/",
-            ) ?: return false
-            if (!isLikelyAudioPayload(chunkBytes)) return false
-            combined.write(chunkBytes)
-        }
-        val payload = combined.toByteArray()
-        if (payload.size <= 512) return false
-        return runCatching {
-            out.writeBytes(payload)
-            true
-        }.getOrDefault(false)
-    }
-
-    private fun fetchHttpAudioBytes(
-        apiUrl: String,
-        connectTimeoutMs: Int,
-        readTimeoutMs: Int,
-        referer: String? = null,
-    ): ByteArray? {
-        var conn: HttpURLConnection? = null
-        return try {
-            conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                instanceFollowRedirects = true
-                setRequestProperty(
-                    "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                )
-                setRequestProperty("Accept", "audio/mpeg, audio/*;q=0.9, */*;q=0.5")
-                if (referer != null) setRequestProperty("Referer", referer)
-                connectTimeout = connectTimeoutMs
-                readTimeout = readTimeoutMs
-            }
-            if (conn.responseCode != HttpURLConnection.HTTP_OK) return null
-            val contentType = conn.contentType?.lowercase().orEmpty()
-            if (contentType.contains("text/html") || contentType.contains("application/json")) {
-                return null
-            }
-            conn.inputStream.use { it.readBytes() }
-        } catch (_: Throwable) {
-            null
-        } finally {
-            runCatching { conn?.disconnect() }
-        }
     }
 
     private fun resolveStreamElementsVoices(voiceCode: String): List<String> {

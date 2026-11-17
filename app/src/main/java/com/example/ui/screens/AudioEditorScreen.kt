@@ -10,6 +10,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -35,11 +36,15 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.material.icons.rounded.SpatialAudioOff
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.ZoomIn
+import androidx.compose.material.icons.rounded.ZoomOut
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -54,13 +59,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,8 +82,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.audio.formatDurationCentisMs
+import com.example.audio.AudioSignalAnalyzer
 import com.example.audio.formatDurationMs
 import com.example.i18n.t
 import com.example.model.AppLanguage
@@ -82,6 +97,7 @@ import com.example.model.TtsGender
 import com.example.model.VOICE_CHARACTER_PRESETS
 import com.example.studio.ui.lit
 import com.example.ui.components.ExportFormatDialog
+import com.example.ui.components.PreviewAndApplyActionRow
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
@@ -106,8 +122,10 @@ fun AudioEditorScreen(
     val endMs = (durationMs * uiState.trimEnd).roundToInt().toLong()
     val selLenMs = (endMs - startMs).coerceAtLeast(0L)
 
-    var fadeInSec by remember { mutableFloatStateOf(2.0f) }
-    var fadeOutSec by remember { mutableFloatStateOf(2.5f) }
+    var zoomLevel by remember { mutableFloatStateOf(1.0f) }
+    var autoFadeEdges by remember { mutableStateOf(true) }
+    var fadeInSec by remember { mutableFloatStateOf(0.0f) }
+    var fadeOutSec by remember { mutableFloatStateOf(0.0f) }
     var mainMixGain by remember { mutableFloatStateOf(1.0f) }
     var bgMixGain by remember { mutableFloatStateOf(0.45f) }
 
@@ -124,10 +142,65 @@ fun AudioEditorScreen(
     var exportDialogOpen by remember { mutableStateOf(false) }
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
+    LaunchedEffect(uiState.restoredToolSession?.id) {
+        val restored = viewModel.consumeRestoredToolSession("editor")
+        if (restored != null) {
+            val fp = restored.floatParams
+            zoomLevel = (fp["zoomLevel"] ?: 1.0f).coerceIn(1f, 8f)
+            autoFadeEdges = (fp["autoFadeEdges"] ?: 1f) >= 0.5f
+            fadeInSec = (fp["fadeInSec"] ?: 0f).coerceIn(0f, 10f)
+            fadeOutSec = (fp["fadeOutSec"] ?: 0f).coerceIn(0f, 10f)
+            mainMixGain = (fp["mainMixGain"] ?: 1f).coerceIn(0f, 1.5f)
+            bgMixGain = (fp["bgMixGain"] ?: 0.45f).coerceIn(0f, 1.5f)
+            val savedStart = fp["trimStart"]
+            val savedEnd = fp["trimEnd"]
+            if (savedStart != null && savedEnd != null) {
+                viewModel.updateTrimRange(savedStart, savedEnd)
+            }
+        }
+    }
+
+    val latestState by rememberUpdatedState(uiState)
+    val latestZoom by rememberUpdatedState(zoomLevel)
+    val latestAutoFade by rememberUpdatedState(autoFadeEdges)
+    val latestFadeIn by rememberUpdatedState(fadeInSec)
+    val latestFadeOut by rememberUpdatedState(fadeOutSec)
+    val latestMainMix by rememberUpdatedState(mainMixGain)
+    val latestBgMix by rememberUpdatedState(bgMixGain)
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopToolPreview()
+            val cur = latestState
+            if (cur.hasAudio) {
+                val curDur = cur.durationMs.coerceAtLeast(0L)
+                val sMs = (curDur * cur.trimStart).roundToInt().toLong()
+                val eMs = (curDur * cur.trimEnd).roundToInt().toLong()
+                viewModel.saveToolSessionToCache(
+                    toolId = "editor",
+                    titleAr = "محرر القص والدمج",
+                    titleEn = "Trim & Editor",
+                    summaryAr = "${formatDurationCentisMs(sMs)} → ${formatDurationCentisMs(eMs)}",
+                    summaryEn = "${formatDurationCentisMs(sMs)} → ${formatDurationCentisMs(eMs)}",
+                    floatParams = mapOf(
+                        "zoomLevel" to latestZoom,
+                        "autoFadeEdges" to if (latestAutoFade) 1f else 0f,
+                        "fadeInSec" to latestFadeIn,
+                        "fadeOutSec" to latestFadeOut,
+                        "mainMixGain" to latestMainMix,
+                        "bgMixGain" to latestBgMix,
+                        "trimStart" to cur.trimStart,
+                        "trimEnd" to cur.trimEnd,
+                    ),
+                )
+            }
+        }
+    }
+
     StudioScrollColumn {
         StudioFocusTopBar(
             title = t(lang, "section_editor_title"),
-            subtitle = "${formatDurationMs(startMs)} -> ${formatDurationMs(endMs)} (${formatDurationMs(selLenMs)})",
+            subtitle = "${formatDurationCentisMs(startMs)} → ${formatDurationCentisMs(endMs)} (${formatDurationCentisMs(selLenMs)})",
             language = lang,
             onBack = onBack,
             trailing = {
@@ -275,125 +348,343 @@ fun AudioEditorScreen(
                     }
                 }
 
-                Box(
+                // Zoom Bar (1.0x .. 8.0x)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    IconButton(
+                        onClick = { zoomLevel = (zoomLevel - 0.5f).coerceAtLeast(1f) },
+                        enabled = zoomLevel > 1f,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("editor_zoom_out_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ZoomOut,
+                            contentDescription = t(lang, "editor_zoom_label"),
+                            tint = StudioColors.Cyan,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = t(lang, "editor_zoom_label"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioColors.TextSecondary,
+                            )
+                            Text(
+                                text = "${"%.1f".format(zoomLevel)}x",
+                                style = TelemetryTextStyle.copy(fontSize = 11.sp),
+                                color = StudioColors.Cyan,
+                            )
+                        }
+                        Slider(
+                            value = zoomLevel,
+                            onValueChange = { zoomLevel = it.coerceIn(1f, 8f) },
+                            valueRange = 1f..8f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = StudioColors.Cyan,
+                                activeTrackColor = StudioColors.Cyan,
+                                inactiveTrackColor = StudioColors.BgTop,
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("editor_zoom_slider"),
+                        )
+                    }
+                    IconButton(
+                        onClick = { zoomLevel = (zoomLevel + 0.5f).coerceAtMost(8f) },
+                        enabled = zoomLevel < 8f,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("editor_zoom_in_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ZoomIn,
+                            contentDescription = t(lang, "editor_zoom_label"),
+                            tint = StudioColors.Cyan,
+                        )
+                    }
+                }
+
+                // Zoomable Horizontally Scrollable Waveform Canvas
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(150.dp)
+                        .height(154.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(StudioColors.BgTop)
-                        .border(1.dp, StudioColors.BorderBright.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
-                        .pointerInput(uiState.trimStart, uiState.trimEnd, uiState.hasAudio) {
-                            if (!uiState.hasAudio) return@pointerInput
-                            detectTapGestures { offset ->
-                                val nx = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
-                                val distStart = abs(nx - uiState.trimStart)
-                                val distEnd = abs(nx - uiState.trimEnd)
-                                if (distStart <= distEnd) {
-                                    viewModel.updateTrimRange(nx, uiState.trimEnd)
-                                } else {
-                                    viewModel.updateTrimRange(uiState.trimStart, nx)
+                        .border(1.dp, StudioColors.BorderBright.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
+                ) {
+                    val baseWidth = maxWidth
+                    val zoomedWidth = (baseWidth * zoomLevel).coerceAtLeast(baseWidth)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(zoomedWidth)
+                                .height(154.dp)
+                                .pointerInput(uiState.trimStart, uiState.trimEnd, uiState.hasAudio) {
+                                    if (!uiState.hasAudio) return@pointerInput
+                                    detectTapGestures { offset ->
+                                        val nx = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                        val distStart = abs(nx - uiState.trimStart)
+                                        val distEnd = abs(nx - uiState.trimEnd)
+                                        if (distStart <= distEnd) {
+                                            viewModel.updateTrimRange(nx, uiState.trimEnd)
+                                        } else {
+                                            viewModel.updateTrimRange(uiState.trimStart, nx)
+                                        }
+                                    }
                                 }
+                                .pointerInput(uiState.hasAudio) {
+                                    if (!uiState.hasAudio) return@pointerInput
+                                    var draggingStart = true
+                                    detectDragGestures(
+                                        onDragStart = { startOffset ->
+                                            val nx = (startOffset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                            val st = viewModel.uiState.value
+                                            draggingStart = abs(nx - st.trimStart) <= abs(nx - st.trimEnd)
+                                        },
+                                        onDrag = { change, _ ->
+                                            change.consume()
+                                            val nx = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                            val st = viewModel.uiState.value
+                                            if (draggingStart) {
+                                                viewModel.updateTrimRange(nx, st.trimEnd)
+                                            } else {
+                                                viewModel.updateTrimRange(st.trimStart, nx)
+                                            }
+                                        },
+                                    )
+                                }
+                                .testTag("editor_waveform_canvas"),
+                        ) {
+                            val peaks = if (uiState.waveformPeaks.isNotEmpty()) {
+                                uiState.waveformPeaks
+                            } else {
+                                List(80) { 0.08f }
+                            }
+                            val playFrac = if (durationMs > 0L) {
+                                (uiState.playback.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            }
+
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val sx = uiState.trimStart * size.width
+                                val ex = uiState.trimEnd * size.width
+
+                                drawRect(
+                                    color = StudioColors.Cyan.copy(alpha = 0.12f),
+                                    topLeft = Offset(sx, 0f),
+                                    size = Size((ex - sx).coerceAtLeast(1f), size.height),
+                                )
+
+                                val count = peaks.size
+                                val stepW = size.width / count
+                                val barW = (stepW * 0.6f).coerceAtLeast(2.dp.toPx())
+                                val cy = size.height / 2f
+
+                                for (i in 0 until count) {
+                                    val barFrac = (i + 0.5f) / count
+                                    val inSelection = barFrac in uiState.trimStart..uiState.trimEnd
+                                    val h = peaks[i].coerceIn(0.06f, 1f) * size.height * 0.84f
+                                    val x = i * stepW + (stepW - barW) / 2f
+                                    drawRoundRect(
+                                        color = if (inSelection) StudioColors.Cyan else StudioColors.WaveformInactive.copy(alpha = 0.5f),
+                                        topLeft = Offset(x, cy - h / 2f),
+                                        size = Size(barW, h),
+                                        cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+                                    )
+                                }
+
+                                val px = playFrac * size.width
+                                drawLine(
+                                    color = StudioColors.Rose,
+                                    start = Offset(px, 0f),
+                                    end = Offset(px, size.height),
+                                    strokeWidth = 2.dp.toPx(),
+                                )
+
+                                drawLine(
+                                    color = StudioColors.Emerald,
+                                    start = Offset(sx, 0f),
+                                    end = Offset(sx, size.height),
+                                    strokeWidth = 2.5.dp.toPx(),
+                                )
+                                drawCircle(
+                                    color = StudioColors.Emerald,
+                                    radius = 7.dp.toPx(),
+                                    center = Offset(sx, 14.dp.toPx()),
+                                )
+
+                                drawLine(
+                                    color = StudioColors.Amber,
+                                    start = Offset(ex, 0f),
+                                    end = Offset(ex, size.height),
+                                    strokeWidth = 2.5.dp.toPx(),
+                                )
+                                drawCircle(
+                                    color = StudioColors.Amber,
+                                    radius = 7.dp.toPx(),
+                                    center = Offset(ex, size.height - 14.dp.toPx()),
+                                )
                             }
                         }
-                        .pointerInput(uiState.hasAudio) {
-                            if (!uiState.hasAudio) return@pointerInput
-                            var draggingStart = true
-                            detectDragGestures(
-                                onDragStart = { startOffset ->
-                                    val nx = (startOffset.x / size.width.toFloat()).coerceIn(0f, 1f)
-                                    val st = viewModel.uiState.value
-                                    draggingStart = abs(nx - st.trimStart) <= abs(nx - st.trimEnd)
-                                },
-                                onDrag = { change, _ ->
-                                    change.consume()
-                                    val nx = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
-                                    val st = viewModel.uiState.value
-                                    if (draggingStart) {
-                                        viewModel.updateTrimRange(nx, st.trimEnd)
-                                    } else {
-                                        viewModel.updateTrimRange(st.trimStart, nx)
-                                    }
-                                },
-                            )
-                        }
-                        .testTag("editor_waveform_canvas"),
+                    }
+                }
+
+                // Centisecond Readouts + (-0.1s / +0.1s) Nudge Controls
+                val nudgeStepFrac = if (durationMs > 0L) (100f / durationMs.toFloat()).coerceAtLeast(0.0005f) else 0.01f
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    val peaks = if (uiState.waveformPeaks.isNotEmpty()) {
-                        uiState.waveformPeaks
-                    } else {
-                        List(80) { 0.08f }
-                    }
-                    val playFrac = if (durationMs > 0L) {
-                        (uiState.playback.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                    } else {
-                        0f
-                    }
-
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val sx = uiState.trimStart * size.width
-                        val ex = uiState.trimEnd * size.width
-
-                        // Selection tint highlight box
-                        drawRect(
-                            color = StudioColors.Cyan.copy(alpha = 0.12f),
-                            topLeft = Offset(sx, 0f),
-                            size = Size((ex - sx).coerceAtLeast(1f), size.height),
-                        )
-
-                        // Waveform bars
-                        val count = peaks.size
-                        val stepW = size.width / count
-                        val barW = (stepW * 0.6f).coerceAtLeast(2.dp.toPx())
-                        val cy = size.height / 2f
-
-                        for (i in 0 until count) {
-                            val barFrac = (i + 0.5f) / count
-                            val inSelection = barFrac in uiState.trimStart..uiState.trimEnd
-                            val h = peaks[i].coerceIn(0.06f, 1f) * size.height * 0.84f
-                            val x = i * stepW + (stepW - barW) / 2f
-                            drawRoundRect(
-                                color = if (inSelection) StudioColors.Cyan else StudioColors.WaveformInactive.copy(alpha = 0.5f),
-                                topLeft = Offset(x, cy - h / 2f),
-                                size = Size(barW, h),
-                                cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = StudioColors.BgMid,
+                        border = BorderStroke(1.dp, StudioColors.Emerald.copy(alpha = 0.4f)),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = formatDurationCentisMs(startMs),
+                                style = TelemetryTextStyle.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.Emerald,
                             )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(
+                                    onClick = { viewModel.updateTrimRange(uiState.trimStart - nudgeStepFrac, uiState.trimEnd) },
+                                    enabled = uiState.hasAudio,
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .testTag("editor_start_minus_button"),
+                                ) { Text("-0.1s", fontSize = 11.sp) }
+                                OutlinedButton(
+                                    onClick = { viewModel.updateTrimRange(uiState.trimStart + nudgeStepFrac, uiState.trimEnd) },
+                                    enabled = uiState.hasAudio,
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .testTag("editor_start_plus_button"),
+                                ) { Text("+0.1s", fontSize = 11.sp) }
+                            }
                         }
-
-                        // Playhead cursor
-                        val px = playFrac * size.width
-                        drawLine(
-                            color = StudioColors.Rose,
-                            start = Offset(px, 0f),
-                            end = Offset(px, size.height),
-                            strokeWidth = 2.dp.toPx(),
-                        )
-
-                        // Start handle (Emerald)
-                        drawLine(
-                            color = StudioColors.Emerald,
-                            start = Offset(sx, 0f),
-                            end = Offset(sx, size.height),
-                            strokeWidth = 2.5.dp.toPx(),
-                        )
-                        drawCircle(
-                            color = StudioColors.Emerald,
-                            radius = 7.dp.toPx(),
-                            center = Offset(sx, 14.dp.toPx()),
-                        )
-
-                        // End handle (Amber)
-                        drawLine(
-                            color = StudioColors.Amber,
-                            start = Offset(ex, 0f),
-                            end = Offset(ex, size.height),
-                            strokeWidth = 2.5.dp.toPx(),
-                        )
-                        drawCircle(
-                            color = StudioColors.Amber,
-                            radius = 7.dp.toPx(),
-                            center = Offset(ex, size.height - 14.dp.toPx()),
-                        )
                     }
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = StudioColors.BgMid,
+                        border = BorderStroke(1.dp, StudioColors.Amber.copy(alpha = 0.4f)),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = formatDurationCentisMs(endMs),
+                                style = TelemetryTextStyle.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.Amber,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(
+                                    onClick = { viewModel.updateTrimRange(uiState.trimStart, uiState.trimEnd - nudgeStepFrac) },
+                                    enabled = uiState.hasAudio,
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .testTag("editor_end_minus_button"),
+                                ) { Text("-0.1s", fontSize = 11.sp) }
+                                OutlinedButton(
+                                    onClick = { viewModel.updateTrimRange(uiState.trimStart, uiState.trimEnd + nudgeStepFrac) },
+                                    enabled = uiState.hasAudio,
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .testTag("editor_end_plus_button"),
+                                ) { Text("+0.1s", fontSize = 11.sp) }
+                            }
+                        }
+                    }
+                }
+
+                // Auto-Fade 0.2s Click-Prevention Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = t(lang, "editor_auto_fade_toggle"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.TextSecondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Switch(
+                        checked = autoFadeEdges,
+                        onCheckedChange = { autoFadeEdges = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = StudioColors.BgTop,
+                            checkedTrackColor = StudioColors.Cyan,
+                        ),
+                        modifier = Modifier.testTag("editor_auto_fade_toggle"),
+                    )
+                }
+
+                // Preview Edit FIRST Button
+                val previewSelInteraction = remember { MutableInteractionSource() }
+                Button(
+                    onClick = {
+                        viewModel.previewEditorSelectionOrFade(
+                            fadeInSec = fadeInSec,
+                            fadeOutSec = fadeOutSec,
+                            autoFadeEdges = autoFadeEdges,
+                            previewSelectionOnly = true,
+                        )
+                    },
+                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = previewSelInteraction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Cyan,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .lit(previewSelInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                        .testTag("editor_preview_button"),
+                ) {
+                    Icon(
+                        imageVector = if (uiState.isToolPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (uiState.isToolPreviewPlaying) t(lang, "stop_preview_edit") else t(lang, "preview_edit"),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
                 }
 
                 // 4 Trim / Cut / Select All / Normalize Buttons
@@ -403,7 +694,7 @@ fun AudioEditorScreen(
                 ) {
                     val trimInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
-                        onClick = { viewModel.trimKeepSelection() },
+                        onClick = { viewModel.trimKeepSelection(autoFadeEdges) },
                         enabled = uiState.hasAudio,
                         interactionSource = trimInteraction,
                         shape = RoundedCornerShape(12.dp),
@@ -419,7 +710,7 @@ fun AudioEditorScreen(
                     }
                     val cutInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
-                        onClick = { viewModel.cutSelectedRange() },
+                        onClick = { viewModel.cutSelectedRange(autoFadeEdges) },
                         enabled = uiState.hasAudio,
                         interactionSource = cutInteraction,
                         shape = RoundedCornerShape(12.dp),
@@ -475,7 +766,7 @@ fun AudioEditorScreen(
             }
         }
 
-        // Clip Gain Card
+        // Clip Gain Card (Instant real-time feedback + Math-based true clipping warning)
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -496,30 +787,52 @@ fun AudioEditorScreen(
                     formattedValue = "${if (uiState.clipGainDb >= 0f) "+" else ""}${"%.1f".format(uiState.clipGainDb)} dB",
                     accentColor = StudioColors.Amber,
                     testTag = "editor_clip_gain_slider",
-                    onValueChange = { viewModel.setClipGainDb(it) },
+                    onValueChange = {
+                        viewModel.setClipGainDb(it)
+                        viewModel.ensureLivePreviewPlaying()
+                    },
                 )
-                val clipGainInteraction = remember { MutableInteractionSource() }
+
+                if (uiState.hasAudio && AudioSignalAnalyzer.willGainCauseClipping(uiState.originalPeakDbfs, uiState.clipGainDb)) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = StudioColors.Rose.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, StudioColors.RoseBright.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("editor_clipping_warning"),
+                    ) {
+                        Text(
+                            text = t(lang, "clipping_warning"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioColors.RoseBright,
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
+                }
+
+                val applyClipGainInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.bakeClipGainDb(uiState.clipGainDb) },
-                    enabled = uiState.hasAudio && abs(uiState.clipGainDb) > 0.05f,
-                    interactionSource = clipGainInteraction,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = StudioColors.Amber,
-                        contentColor = StudioColors.BgTop,
-                    ),
-                    shape = RoundedCornerShape(12.dp),
+                    enabled = uiState.hasAudio && abs(uiState.clipGainDb) > 0.05f && !uiState.isBusy,
+                    interactionSource = applyClipGainInteraction,
+                    colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Amber, contentColor = StudioColors.BgTop),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
-                        .lit(clipGainInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
+                        .lit(applyClipGainInteraction, StudioColors.Amber, cornerRadius = 14.dp)
                         .testTag("editor_apply_clip_gain_button"),
                 ) {
-                    Text(if (lang == AppLanguage.EN) "Apply Clip Gain" else "تطبيق مستوى الصوت على المقطع")
+                    Text(
+                        text = if (lang == AppLanguage.EN) "Apply Clip Gain" else "تطبيق مستوى الصوت على المقطع",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
                 }
             }
         }
 
-        // Fade In & Fade Out Card
+        // Fade In & Fade Out Card (starts at 0.0s, Preview FIRST, preserves sliders)
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -535,51 +848,91 @@ fun AudioEditorScreen(
                 StudioParamSlider(
                     label = t(lang, "fade_in_title"),
                     value = fadeInSec,
-                    min = 0.5f,
+                    min = 0.0f,
                     max = 10f,
-                    formattedValue = "${"%.1f".format(fadeInSec)} s",
+                    formattedValue = "${"%.2f".format(fadeInSec)} s",
                     accentColor = StudioColors.Emerald,
                     testTag = "editor_fade_in_slider",
                     onValueChange = { fadeInSec = it },
                 )
-                val fadeInInteraction = remember { MutableInteractionSource() }
-                OutlinedButton(
-                    onClick = { viewModel.applyFadeInSeconds(fadeInSec) },
-                    enabled = uiState.hasAudio,
-                    interactionSource = fadeInInteraction,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(fadeInInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
-                        .testTag("editor_apply_fade_in_button"),
-                ) {
-                    Text(t(lang, "fade_in_title"))
-                }
-
                 StudioParamSlider(
                     label = t(lang, "fade_out_title"),
                     value = fadeOutSec,
-                    min = 0.5f,
+                    min = 0.0f,
                     max = 10f,
-                    formattedValue = "${"%.1f".format(fadeOutSec)} s",
+                    formattedValue = "${"%.2f".format(fadeOutSec)} s",
                     accentColor = StudioColors.Violet,
                     testTag = "editor_fade_out_slider",
                     onValueChange = { fadeOutSec = it },
                 )
-                val fadeOutInteraction = remember { MutableInteractionSource() }
-                OutlinedButton(
-                    onClick = { viewModel.applyFadeOutSeconds(fadeOutSec) },
-                    enabled = uiState.hasAudio,
-                    interactionSource = fadeOutInteraction,
-                    shape = RoundedCornerShape(12.dp),
+
+                val previewFadeInteraction = remember { MutableInteractionSource() }
+                Button(
+                    onClick = {
+                        viewModel.previewEditorSelectionOrFade(
+                            fadeInSec = fadeInSec,
+                            fadeOutSec = fadeOutSec,
+                            autoFadeEdges = autoFadeEdges,
+                            previewSelectionOnly = false,
+                        )
+                    },
+                    enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = previewFadeInteraction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Cyan,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
-                        .lit(fadeOutInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
-                        .testTag("editor_apply_fade_out_button"),
+                        .lit(previewFadeInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                        .testTag("editor_fade_preview_button"),
                 ) {
-                    Text(t(lang, "fade_out_title"))
+                    Icon(
+                        imageVector = if (uiState.isToolPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (uiState.isToolPreviewPlaying) t(lang, "stop_preview_edit") else t(lang, "preview_edit"),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val fadeInInteraction = remember { MutableInteractionSource() }
+                    OutlinedButton(
+                        onClick = { viewModel.applyFadeInSeconds(fadeInSec) },
+                        enabled = uiState.hasAudio && fadeInSec > 0.02f,
+                        interactionSource = fadeInInteraction,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(fadeInInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
+                            .testTag("editor_apply_fade_in_button"),
+                    ) {
+                        Text(t(lang, "fade_in_title"), maxLines = 1)
+                    }
+                    val fadeOutInteraction = remember { MutableInteractionSource() }
+                    OutlinedButton(
+                        onClick = { viewModel.applyFadeOutSeconds(fadeOutSec) },
+                        enabled = uiState.hasAudio && fadeOutSec > 0.02f,
+                        interactionSource = fadeOutInteraction,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(fadeOutInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
+                            .testTag("editor_apply_fade_out_button"),
+                    ) {
+                        Text(t(lang, "fade_out_title"), maxLines = 1)
+                    }
                 }
             }
         }

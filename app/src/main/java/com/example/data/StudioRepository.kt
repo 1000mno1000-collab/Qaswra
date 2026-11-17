@@ -42,6 +42,7 @@ class StudioRepository(private val context: Context) {
     val languageFlow: Flow<AppLanguage> = prefs.languageFlow
     val autoLoopFlow: Flow<Boolean> = prefs.autoLoopFlow
     val authSessionFlow: Flow<AuthSession> = prefs.authSessionFlow
+    val defaultSaveFolderFlow: Flow<Pair<String?, String?>> = prefs.defaultSaveFolderFlow
 
     val projectsFlow: Flow<List<StudioProject>> = dao.observeProjects().map { list ->
         list.map { entity ->
@@ -107,6 +108,9 @@ class StudioRepository(private val context: Context) {
     suspend fun saveLanguage(lang: AppLanguage) = prefs.saveLanguage(lang)
     suspend fun saveAutoLoop(enabled: Boolean) = prefs.saveAutoLoop(enabled)
     suspend fun saveAuthSession(session: AuthSession) = prefs.saveAuthSession(session)
+    suspend fun saveDefaultSaveFolder(uriString: String, folderName: String) =
+        prefs.saveDefaultSaveFolder(uriString, folderName)
+    suspend fun clearDefaultSaveFolder() = prefs.clearDefaultSaveFolder()
 
     suspend fun signInLocalEmail(email: String, password: String): AuthResult {
         val cleanEmail = email.trim().lowercase()

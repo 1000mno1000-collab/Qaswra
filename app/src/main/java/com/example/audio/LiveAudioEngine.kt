@@ -4,10 +4,13 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.os.Build
 import androidx.core.content.ContextCompat
 import com.example.model.DspConfig
 import com.example.model.EffectType
@@ -26,6 +29,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
+import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -34,6 +38,7 @@ import kotlin.math.sqrt
 
 class StudioAudioPlayer(
     initialConfig: DspConfig,
+    private val context: Context? = null,
     private val onTelemetry: (PlaybackTelemetry) -> Unit,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -46,13 +51,29 @@ class StudioAudioPlayer(
     @Volatile private var loopEnabled = false
     @Volatile private var loopStartFrac = 0f
     @Volatile private var loopEndFrac = 1f
+    @Volatile private var liveClipGainDb = 0f
+    @Volatile private var monitoringSpeed = 1.0f
 
     private var playbackJob: Job? = null
     private var audioTrack: AudioTrack? = null
 
+    private val audioManager: AudioManager? =
+        context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    private var focusRequest: AudioFocusRequest? = null
+    private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                if (isPlaying.get()) pause()
+            }
+        }
+    }
+
     private var latestBars = List(48) { 0.06f }
     private var latestSpectrum = List(32) { 0.03f }
     private var latestLevel = 0f
+    private var latestDbfs = -60f
     private val spectrumAnalyzer = RealTimeSpectrumAnalyzer()
 
     fun setBuffer(buffer: StereoAudioBuffer?, resetPosition: Boolean = true) {
@@ -70,6 +91,15 @@ class StudioAudioPlayer(
         val norm = config.normalized()
         this.config = norm
         pipeline?.updateConfig(norm)
+    }
+
+    fun setClipGainDb(db: Float) {
+        liveClipGainDb = clamp(db, -24f, 24f)
+    }
+
+    fun setMonitoringSpeed(speed: Float) {
+        monitoringSpeed = speed.coerceIn(0.5f, 2.0f)
+        emitTelemetry()
     }
 
     fun setLoop(enabled: Boolean, startFrac: Float = 0f, endFrac: Float = 1f) {
@@ -91,6 +121,7 @@ class StudioAudioPlayer(
         if (buf.frameCount == 0) return
 
         stopAudioThreadOnly()
+        requestAudioFocusSafely()
 
         val sr = buf.sampleRate.coerceAtLeast(8000)
         if (pipeline == null) {
@@ -160,11 +191,12 @@ class StudioAudioPlayer(
 
                     val cfg = config
                     val tsSlot = cfg.chain.firstOrNull { it.type == EffectType.TIME_STRETCH }
-                    val rateRatio = if (!cfg.bypassAll && tsSlot?.enabled == true) {
+                    val dspTempo = if (!cfg.bypassAll && tsSlot?.enabled == true) {
                         clamp(cfg.timeStretch.tempoRatio, 0.5f, 2.0f).toDouble()
                     } else {
                         1.0
                     }
+                    val rateRatio = (dspTempo * monitoringSpeed.toDouble()).coerceIn(0.4, 3.0)
 
                     var reachedEnd = false
                     for (i in 0 until blockFrames) {
@@ -187,6 +219,15 @@ class StudioAudioPlayer(
                     }
 
                     activePipeline.processStereoBlock(tmpL, tmpR, blockFrames)
+
+                    val clipGain = liveClipGainDb
+                    if (!cfg.bypassAll && abs(clipGain) > 0.05f) {
+                        val lin = 10.0.pow(clipGain / 20.0).toFloat()
+                        for (i in 0 until blockFrames) {
+                            tmpL[i] = clamp(tmpL[i] * lin, -0.98f, 0.98f)
+                            tmpR[i] = clamp(tmpR[i] * lin, -0.98f, 0.98f)
+                        }
+                    }
 
                     var peak = 0f
                     val barCount = 48
@@ -215,6 +256,11 @@ class StudioAudioPlayer(
                     latestBars = newBars
                     latestSpectrum = spectrumAnalyzer.analyzeStereo(tmpL, tmpR, blockFrames, sr)
                     latestLevel = peak
+                    latestDbfs = if (peak > 1e-4f) {
+                        (20.0 * log10(peak.toDouble())).toFloat().coerceIn(-60f, 0f)
+                    } else {
+                        -60f
+                    }
 
                     if (reachedEnd && !loopEnabled) {
                         if (tailFlushRemaining == 0) {
@@ -227,8 +273,10 @@ class StudioAudioPlayer(
                             isPlaying.set(false)
                             playhead = 0.0
                             latestLevel = 0f
+                            latestDbfs = -60f
                             latestBars = List(48) { 0.06f }
                             latestSpectrum = List(32) { 0.03f }
+                            abandonAudioFocusSafely()
                             break
                         }
                     }
@@ -239,6 +287,7 @@ class StudioAudioPlayer(
                 runCatching { track.flush() }
                 runCatching { track.release() }
                 if (audioTrack === track) audioTrack = null
+                abandonAudioFocusSafely()
                 emitTelemetry()
             }
         }
@@ -247,7 +296,9 @@ class StudioAudioPlayer(
     fun pause() {
         isPlaying.set(false)
         latestLevel = 0f
+        latestDbfs = -60f
         stopAudioThreadOnly()
+        abandonAudioFocusSafely()
         emitTelemetry()
     }
 
@@ -255,15 +306,55 @@ class StudioAudioPlayer(
         isPlaying.set(false)
         playhead = 0.0
         latestLevel = 0f
+        latestDbfs = -60f
         latestBars = List(48) { 0.06f }
         latestSpectrum = List(32) { 0.03f }
         pipeline?.reset()
         stopAudioThreadOnly()
+        abandonAudioFocusSafely()
         emitTelemetry()
     }
 
     fun dispose() {
         stop()
+    }
+
+    private fun requestAudioFocusSafely() {
+        val am = audioManager ?: return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(attrs)
+                    .setOnAudioFocusChangeListener(focusChangeListener)
+                    .build()
+                focusRequest = req
+                am.requestAudioFocus(req)
+            } else {
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(
+                    focusChangeListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN,
+                )
+            }
+        }
+    }
+
+    private fun abandonAudioFocusSafely() {
+        val am = audioManager ?: return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                focusRequest?.let { am.abandonAudioFocusRequest(it) }
+                focusRequest = null
+            } else {
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(focusChangeListener)
+            }
+        }
     }
 
     private fun stopAudioThreadOnly() {
@@ -290,6 +381,8 @@ class StudioAudioPlayer(
                 positionMs = posMs,
                 durationMs = durationMs,
                 outputLevel = latestLevel,
+                outputDbfs = latestDbfs,
+                monitoringSpeed = monitoringSpeed,
                 gainReductionDb = pipeline?.currentGainReductionDb ?: 0f,
                 noiseSuppressionDb = pipeline?.currentNoiseSuppressionDb ?: 0f,
                 waveformBars = latestBars,
@@ -465,12 +558,18 @@ class StudioAudioRecorder(
 
     private fun emit() {
         val elapsedMs = if (sampleRate > 0) (capturedFrames * 1000L) / sampleRate else 0L
+        val dbfs = if (level > 1e-4f) {
+            (20.0 * log10(level.toDouble())).toFloat().coerceIn(-60f, 0f)
+        } else {
+            -60f
+        }
         onTelemetry(
             RecorderTelemetry(
                 isRecording = isRecording,
                 isPaused = isPaused,
                 elapsedMs = elapsedMs,
                 micLevel = level,
+                micDbfs = dbfs,
                 waveformBars = bars,
                 spectrumBands = spectrum,
             ),

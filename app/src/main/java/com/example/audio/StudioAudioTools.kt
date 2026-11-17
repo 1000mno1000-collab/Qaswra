@@ -2,19 +2,14 @@ package com.example.audio
 
 import android.content.ContentValues
 import android.content.Context
-import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaExtractor
-import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
-import com.example.model.CompressorParams
-import com.example.model.EqualizerParams
+import com.example.diagnostics.AppDiagnosticLog
+import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.GlobalProPreset
 import com.example.model.GlobalProPresetId
 import com.example.model.PitchShiftParams
@@ -23,8 +18,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import java.util.Locale
+import java.util.Random
+import java.util.UUID
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -34,6 +30,7 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.math.tanh
 
 /**
@@ -50,8 +47,7 @@ fun applyStudioWarmth(
 )
 
 /**
- * Applies a Global Pro Preset with dedicated post-DSP shaping (8D autopan, walkie 8-bit bitcrusher,
- * vibrato synth, or crystal voice purification).
+ * Applies a Global Pro Preset with dedicated post-DSP shaping.
  */
 suspend fun renderGlobalProPreset(
     buffer: StereoAudioBuffer,
@@ -90,6 +86,63 @@ fun generateSilence(
     )
 }
 
+/**
+ * Inserts or generates silence on Dispatchers.IO via 64KB chunked disk streaming in context.cacheDir,
+ * avoiding massive heap allocations or blocking the main thread.
+ */
+suspend fun insertSilenceStreaming(
+    context: Context,
+    currentBuffer: StereoAudioBuffer?,
+    durationSeconds: Float,
+    appendToCurrent: Boolean,
+): StereoAudioBuffer = withContext(Dispatchers.IO) {
+    val sr = currentBuffer?.sampleRate?.coerceAtLeast(8000) ?: TARGET_SAMPLE_RATE
+    val workDir = File(context.cacheDir, "silence_stream").apply { mkdirs() }
+    val id = UUID.randomUUID().toString().take(8)
+    val silenceWav = File(workDir, "sil_$id.wav")
+    val curWav = File(workDir, "cur_$id.wav")
+    val outWav = File(workDir, "sil_out_$id.wav")
+
+    try {
+        writeSilenceWavStreaming(silenceWav, durationSeconds, sr)
+        if (!appendToCurrent || currentBuffer == null || currentBuffer.frameCount <= 0) {
+            return@withContext AudioDecoder.decodeFile(silenceWav) ?: generateSilence(durationSeconds, sr)
+        }
+        writeStereoWavFile(curWav, currentBuffer)
+        val mergedOk = mergeWavFilesStreaming(curWav, silenceWav, outWav, crossfadeMs = 5, sampleRate = sr)
+        if (mergedOk && outWav.exists() && outWav.length() > 44L) {
+            AudioDecoder.decodeFile(outWav) ?: mergeClips(currentBuffer, generateSilence(durationSeconds, sr), crossfadeMs = 5)
+        } else {
+            mergeClips(currentBuffer, generateSilence(durationSeconds, sr), crossfadeMs = 5)
+        }
+    } finally {
+        runCatching { silenceWav.delete() }
+        runCatching { curWav.delete() }
+        runCatching { outWav.delete() }
+    }
+}
+
+/**
+ * Surround Stereo M/S processor whose sliders start cleanly at 0% (neutral).
+ * - midAdjustPct: -60f .. +60f (default 0% -> 1.0x center)
+ * - sideBoostPct: 0f .. +120f (default 0% -> 1.0x side)
+ * - widthPct: 0f .. 100f (default 0% -> 0ms Haas width)
+ */
+fun convertToSurroundStereoFromOffsets(
+    buffer: StereoAudioBuffer,
+    midAdjustPct: Float = 0f,
+    sideBoostPct: Float = 0f,
+    widthPct: Float = 0f,
+): StereoAudioBuffer {
+    if (abs(midAdjustPct) < 0.05f && abs(sideBoostPct) < 0.05f && abs(widthPct) < 0.05f) {
+        return buffer
+    }
+    val midLevel = (1f + midAdjustPct / 100f).coerceIn(0.35f, 1.65f)
+    val sideLevel = (1f + sideBoostPct / 100f).coerceIn(0.5f, 2.3f)
+    val stereoWidth = (widthPct / 100f).coerceIn(0f, 1f)
+    return convertToSurroundStereo(buffer, midLevel, sideLevel, stereoWidth)
+}
+
 fun convertToSurroundStereo(
     buffer: StereoAudioBuffer,
     midLevel: Float = 1.0f,
@@ -98,17 +151,22 @@ fun convertToSurroundStereo(
 ): StereoAudioBuffer {
     val n = buffer.frameCount
     if (n == 0) return buffer
-    val haasSamples = max(1, (0.011f * buffer.sampleRate * clamp(stereoWidth, 0f, 1f)).roundToInt())
+    val haasSamples = if (stereoWidth <= 0.005f) {
+        0
+    } else {
+        max(1, (0.011f * buffer.sampleRate * clamp(stereoWidth, 0f, 1f)).roundToInt())
+    }
     val outL = FloatArray(n)
     val outR = FloatArray(n)
 
     for (i in 0 until n) {
         val rawL = buffer.left[i]
-        val delayedR = buffer.right[max(0, i - haasSamples)]
-        val mid = 0.5f * (rawL + buffer.right[i]) * midLevel
-        val naturalSide = 0.5f * (rawL - buffer.right[i])
-        val haasSide = 0.5f * (rawL - delayedR) * clamp(stereoWidth, 0f, 1f)
-        val side = (naturalSide * 0.65f + haasSide * 0.55f) * sideLevel
+        val rawR = buffer.right[i]
+        val delayedR = if (haasSamples == 0) rawR else buffer.right[max(0, i - haasSamples)]
+        val mid = 0.5f * (rawL + rawR) * midLevel
+        val naturalSide = 0.5f * (rawL - rawR)
+        val haasSide = if (haasSamples == 0) 0f else 0.5f * (rawL - delayedR) * clamp(stereoWidth, 0f, 1f)
+        val side = (naturalSide + haasSide * 0.65f) * sideLevel
         outL[i] = clamp(mid + side, -1f, 1f)
         outR[i] = clamp(mid - side, -1f, 1f)
     }
@@ -164,10 +222,351 @@ suspend fun applyPitchAndSpeedOffline(
     renderOfflineDsp(buffer, base)
 }
 
+enum class MergeStudioMode {
+    SEQUENTIAL,
+    CROSSFADE,
+    OVERLAY,
+}
+
+data class MergeStudioParams(
+    val mode: MergeStudioMode = MergeStudioMode.SEQUENTIAL,
+    val crossfadeSec: Float = 2.0f,         // 0.1 .. 15.0s
+    val overlayFadeInSec: Float = 0.0f,     // 0.0 .. 15.0s
+    val overlayFadeOutSec: Float = 0.0f,    // 0.0 .. 15.0s
+    val overlayStartOffsetSec: Float = 0.0f,// 0.0 .. 60.0s
+    val primaryLevelPct: Float = 0.0f,      // -60% .. +60% (0% = 1.0x)
+    val secondaryLevelPct: Float = 0.0f,    // -60% .. +60% (0% = 1.0x overlay/bg or clip2)
+    val autoDuckingEnabled: Boolean = false,
+    val duckingStrengthPct: Float = 0.0f,   // 0% .. 100%
+    val autoLevelingEnabled: Boolean = false,
+    val levelingStrengthPct: Float = 0.0f,  // 0% .. 100%
+    val echoTransitionEnabled: Boolean = false,
+    val echoTransitionPct: Float = 0.0f,    // 0% .. 100%
+    val gapWhooshEnabled: Boolean = false,
+    val transitionGapSec: Float = 0.0f,     // 0.0 .. 10.0s
+    val whooshIntensityPct: Float = 0.0f,   // 0% .. 100%
+)
+
 /**
- * Smart Background Music Mixer with Sidechain Auto-Ducking:
- * Mirrors `[1:a][0:a]sidechaincompress=threshold=0.02:ratio=6:attack=200:release=1000[bg];[0:a][bg]amix=inputs=2:duration=first`.
- * Lowers background music cleanly whenever voice activity crosses threshold and swells smoothly during pauses.
+ * Unified Merge & Overlay Studio processor:
+ * - Sequential merge (with optional Echo transition & Gap + Whoosh transition)
+ * - Smart End-to-Start Crossfade (0.1s..15.0s via FFmpegKit `acrossfade` or smooth Kotlin crossfade)
+ * - Free Overlay & Mix with Fade-In, Fade-Out, Start-Offset, Auto-Ducking, & Auto-Leveling (`loudnorm`)
+ */
+suspend fun executeUnifiedMergeOverlay(
+    context: Context,
+    primary: StereoAudioBuffer,
+    secondary: StereoAudioBuffer,
+    params: MergeStudioParams,
+): StereoAudioBuffer = withContext(Dispatchers.Default) {
+    val normPrimary = normalizeToStudioStereo44100(primary)
+    val alignedSec = normalizeToStudioStereo44100(secondary)
+    val sr = TARGET_SAMPLE_RATE
+
+    val gain1 = (1f + params.primaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
+    val gain2 = (1f + params.secondaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
+
+    var p1 = if (abs(gain1 - 1f) > 0.01f) StereoAudioBuffer(
+        FloatArray(normPrimary.frameCount) { clamp(normPrimary.left[it] * gain1, -1f, 1f) },
+        FloatArray(normPrimary.frameCount) { clamp(normPrimary.right[it] * gain1, -1f, 1f) },
+        sr,
+    ) else normPrimary
+
+    var p2 = if (abs(gain2 - 1f) > 0.01f) StereoAudioBuffer(
+        FloatArray(alignedSec.frameCount) { clamp(alignedSec.left[it] * gain2, -1f, 1f) },
+        FloatArray(alignedSec.frameCount) { clamp(alignedSec.right[it] * gain2, -1f, 1f) },
+        sr,
+    ) else alignedSec
+
+    // Service 2: Smart Auto-Leveling (equalize perceived loudness of both clips before combining)
+    if (params.autoLevelingEnabled) {
+        val blend = clamp(params.levelingStrengthPct / 100f, 0f, 1f).let { if (it < 0.01f) 0.7f else it }
+        p1 = applySmartAutoLevel(p1, strength = blend)
+        p2 = applySmartAutoLevel(p2, strength = blend)
+    }
+
+    // Service 3: Echo & Beat Transition on tail of clip 1
+    if (params.echoTransitionEnabled && params.mode != MergeStudioMode.OVERLAY) {
+        val mix = clamp(params.echoTransitionPct / 100f, 0f, 1f).let { if (it < 0.01f) 0.55f else it }
+        p1 = applyTailEchoTransition(p1, intensity = mix)
+    }
+
+    val combined = when (params.mode) {
+        MergeStudioMode.SEQUENTIAL -> {
+            val midGap = if (params.gapWhooshEnabled && params.transitionGapSec > 0.05f) {
+                synthesizeTransitionGapWhoosh(
+                    durationSec = params.transitionGapSec,
+                    whooshIntensity = clamp(params.whooshIntensityPct / 100f, 0f, 1f),
+                    sampleRate = sr,
+                )
+            } else {
+                null
+            }
+            if (midGap != null) {
+                val p1PlusGap = mergeClipsStreamingOnDisk(context, p1, midGap, crossfadeMs = 40)
+                mergeClipsStreamingOnDisk(context, p1PlusGap, p2, crossfadeMs = 40)
+            } else {
+                mergeClipsStreamingOnDisk(context, p1, p2, crossfadeMs = 20)
+            }
+        }
+
+        MergeStudioMode.CROSSFADE -> {
+            val xfadeMs = (clamp(params.crossfadeSec, 0.1f, 15.0f) * 1000f).roundToInt()
+            if (params.gapWhooshEnabled && params.whooshIntensityPct > 2f) {
+                val merged = mergeClipsStreamingOnDisk(context, p1, p2, crossfadeMs = xfadeMs)
+                overlayWhooshAtFrame(
+                    target = merged,
+                    centerFrame = (p1.frameCount - (xfadeMs * sr / 2000)).coerceIn(0, merged.frameCount - 1),
+                    whooshIntensity = clamp(params.whooshIntensityPct / 100f, 0f, 1f),
+                )
+            } else {
+                mergeClipsStreamingOnDisk(context, p1, p2, crossfadeMs = xfadeMs)
+            }
+        }
+
+        MergeStudioMode.OVERLAY -> {
+            var shapedSec = p2
+            if (params.overlayFadeInSec > 0.05f) {
+                shapedSec = applyFadeIn(shapedSec, params.overlayFadeInSec)
+            }
+            if (params.overlayFadeOutSec > 0.05f) {
+                shapedSec = applyFadeOut(shapedSec, params.overlayFadeOutSec)
+            }
+            val offsetFrames = (clamp(params.overlayStartOffsetSec, 0f, 60f) * sr).roundToInt()
+            if (params.autoDuckingEnabled) {
+                val duckStrength = clamp(params.duckingStrengthPct / 100f, 0f, 1f).let { if (it < 0.01f) 0.7f else it }
+                mixWithSidechainAutoDuckingWithOffset(
+                    context = context,
+                    voice = p1,
+                    music = shapedSec,
+                    offsetFrames = offsetFrames,
+                    musicBaseVolume = (0.45f * gain2).coerceIn(0.1f, 1.3f),
+                    duckDepth = duckStrength,
+                )
+            } else {
+                overlayWithOffset(p1, shapedSec, offsetFrames = offsetFrames)
+            }
+        }
+    }
+
+    if (params.autoLevelingEnabled) {
+        val id = UUID.randomUUID().toString().take(8)
+        val dir = File(context.cacheDir, "stream_ops").apply { mkdirs() }
+        val inF = File(dir, "ln_in_$id.wav")
+        val outF = File(dir, "ln_out_$id.wav")
+        try {
+            writeStereoWavFile(inF, combined)
+            val cmd = "-y -i \"${inF.absolutePath}\" -af \"loudnorm=I=-14:TP=-1.0:LRA=11\" -ar $sr -ac 2 \"${outF.absolutePath}\""
+            val ok = FfmpegKitBridge.execute(cmd, toolName = "AutoLeveling", logNonZeroFailure = false)
+            if (ok && outF.exists() && outF.length() > 44L) {
+                AudioDecoder.decodeFile(outF) ?: normalizeAudio(combined, -1.0f)
+            } else {
+                normalizeAudio(combined, -1.0f)
+            }
+        } finally {
+            runCatching { inF.delete() }
+            runCatching { outF.delete() }
+        }
+    } else {
+        combined
+    }
+}
+
+private fun applySmartAutoLevel(buffer: StereoAudioBuffer, strength: Float): StereoAudioBuffer {
+    val n = buffer.frameCount
+    if (n <= 0 || strength <= 0.01f) return buffer
+    var sumSq = 0.0
+    for (i in 0 until n) {
+        val m = 0.5f * (buffer.left[i] + buffer.right[i])
+        sumSq += m * m
+    }
+    val rms = sqrt(sumSq / n).toFloat().coerceAtLeast(1e-4f)
+    val targetRms = 0.22f
+    val rawGain = (targetRms / rms).coerceIn(0.35f, 3.2f)
+    val gain = 1f + (rawGain - 1f) * strength
+    val outL = FloatArray(n) { i -> tanh((buffer.left[i] * gain).toDouble()).toFloat() }
+    val outR = FloatArray(n) { i -> tanh((buffer.right[i] * gain).toDouble()).toFloat() }
+    return StereoAudioBuffer(outL, outR, buffer.sampleRate)
+}
+
+private fun applyTailEchoTransition(buffer: StereoAudioBuffer, intensity: Float): StereoAudioBuffer {
+    val n = buffer.frameCount
+    val sr = buffer.sampleRate.coerceAtLeast(8000)
+    if (n < sr / 4 || intensity <= 0.01f) return buffer
+    val tailStart = max(0, n - (1.8f * sr).roundToInt())
+    val extraTail = (1.1f * sr).roundToInt()
+    val outFrames = n + extraTail
+    val outL = FloatArray(outFrames)
+    val outR = FloatArray(outFrames)
+    System.arraycopy(buffer.left, 0, outL, 0, n)
+    System.arraycopy(buffer.right, 0, outR, 0, n)
+
+    val taps = listOf(
+        (0.24f * sr).roundToInt() to 0.52f * intensity,
+        (0.48f * sr).roundToInt() to 0.34f * intensity,
+        (0.76f * sr).roundToInt() to 0.20f * intensity,
+    )
+    for ((delay, gain) in taps) {
+        for (i in tailStart until n) {
+            val dst = i + delay
+            if (dst < outFrames) {
+                val env = (i - tailStart).toFloat() / max(1, n - tailStart)
+                outL[dst] = clamp(outL[dst] + buffer.left[i] * gain * env, -1f, 1f)
+                outR[dst] = clamp(outR[dst] + buffer.right[i] * gain * env, -1f, 1f)
+            }
+        }
+    }
+    return StereoAudioBuffer(outL, outR, sr)
+}
+
+private fun synthesizeTransitionGapWhoosh(
+    durationSec: Float,
+    whooshIntensity: Float,
+    sampleRate: Int,
+): StereoAudioBuffer {
+    val frames = max(sampleRate / 10, (clamp(durationSec, 0.05f, 10f) * sampleRate).roundToInt())
+    val outL = FloatArray(frames)
+    val outR = FloatArray(frames)
+    if (whooshIntensity <= 0.02f) return StereoAudioBuffer(outL, outR, sampleRate)
+
+    val rng = Random(42L)
+    var lpL = 0f
+    var lpR = 0f
+    for (i in 0 until frames) {
+        val pos = i.toFloat() / max(1, frames - 1)
+        val env = sin(pos * PI).toFloat().pow(1.4f)
+        val alpha = 0.03f + 0.32f * env
+        val nL = rng.nextFloat() * 2f - 1f
+        val nR = rng.nextFloat() * 2f - 1f
+        lpL += alpha * (nL - lpL)
+        lpR += alpha * (nR - lpR)
+        val panL = cos(pos * PI * 0.5).toFloat()
+        val panR = sin(pos * PI * 0.5).toFloat()
+        val scale = 0.28f * whooshIntensity * env
+        outL[i] = clamp(lpL * scale * (0.6f + panL * 0.6f), -1f, 1f)
+        outR[i] = clamp(lpR * scale * (0.6f + panR * 0.6f), -1f, 1f)
+    }
+    return StereoAudioBuffer(outL, outR, sampleRate)
+}
+
+private fun overlayWhooshAtFrame(
+    target: StereoAudioBuffer,
+    centerFrame: Int,
+    whooshIntensity: Float,
+): StereoAudioBuffer {
+    val sr = target.sampleRate
+    val whoosh = synthesizeTransitionGapWhoosh(1.1f, whooshIntensity, sr)
+    val start = max(0, centerFrame - whoosh.frameCount / 2)
+    val outL = target.left.copyOf()
+    val outR = target.right.copyOf()
+    for (i in 0 until whoosh.frameCount) {
+        val dst = start + i
+        if (dst >= outL.size) break
+        outL[dst] = tanh((outL[dst] + whoosh.left[i]).toDouble()).toFloat()
+        outR[dst] = tanh((outR[dst] + whoosh.right[i]).toDouble()).toFloat()
+    }
+    return StereoAudioBuffer(outL, outR, sr)
+}
+
+private fun overlayWithOffset(
+    primary: StereoAudioBuffer,
+    secondary: StereoAudioBuffer,
+    offsetFrames: Int,
+): StereoAudioBuffer {
+    val safeOffset = max(0, offsetFrames)
+    val outFrames = max(primary.frameCount, safeOffset + secondary.frameCount)
+    val outL = FloatArray(outFrames)
+    val outR = FloatArray(outFrames)
+    System.arraycopy(primary.left, 0, outL, 0, primary.frameCount)
+    System.arraycopy(primary.right, 0, outR, 0, primary.frameCount)
+    for (i in 0 until secondary.frameCount) {
+        val dst = safeOffset + i
+        outL[dst] = tanh((outL[dst] + secondary.left[i]).toDouble()).toFloat()
+        outR[dst] = tanh((outR[dst] + secondary.right[i]).toDouble()).toFloat()
+    }
+    return StereoAudioBuffer(outL, outR, primary.sampleRate)
+}
+
+suspend fun mixWithSidechainAutoDuckingWithOffset(
+    context: Context,
+    voice: StereoAudioBuffer,
+    music: StereoAudioBuffer,
+    offsetFrames: Int,
+    musicBaseVolume: Float = 0.4f,
+    duckDepth: Float = 0.7f,
+): StereoAudioBuffer = withContext(Dispatchers.Default) {
+    val sr = voice.sampleRate.coerceAtLeast(8000)
+    val safeOffset = max(0, offsetFrames)
+    val totalFrames = max(voice.frameCount, safeOffset + music.frameCount)
+    val alignedMusic = if (music.sampleRate == sr) music else resampleStereo(music, sr)
+
+    // Attempt FFmpegKit sidechaincompress when offset is 0 and FFmpegKit is bundled
+    if (safeOffset == 0 && FfmpegKitBridge.isAvailable()) {
+        val id = UUID.randomUUID().toString().take(8)
+        val dir = File(context.cacheDir, "stream_ops").apply { mkdirs() }
+        val vWav = File(dir, "sc_v_$id.wav")
+        val mWav = File(dir, "sc_m_$id.wav")
+        val outWav = File(dir, "sc_out_$id.wav")
+        try {
+            writeStereoWavFile(vWav, voice)
+            writeStereoWavFile(mWav, alignedMusic)
+            val ratio = (2.0f + 8.0f * duckDepth).coerceIn(2f, 12f)
+            val cmd = "-y -i \"${vWav.absolutePath}\" -i \"${mWav.absolutePath}\" " +
+                "-filter_complex \"[1:a]volume=${"%.2f".format(Locale.US, musicBaseVolume)}[bg0];" +
+                "[bg0][0:a]sidechaincompress=threshold=0.02:ratio=${"%.1f".format(Locale.US, ratio)}:attack=180:release=900[bg];" +
+                "[0:a][bg]amix=inputs=2:duration=longest:normalize=0\" -ar $sr -ac 2 \"${outWav.absolutePath}\""
+            val ok = FfmpegKitBridge.execute(cmd, toolName = "AutoDucking", logNonZeroFailure = false)
+            if (ok && outWav.exists() && outWav.length() > 44L) {
+                AudioDecoder.decodeFile(outWav)?.let { return@withContext it }
+            }
+        } finally {
+            runCatching { vWav.delete() }
+            runCatching { mWav.delete() }
+            runCatching { outWav.delete() }
+        }
+    }
+
+    val outL = FloatArray(totalFrames)
+    val outR = FloatArray(totalFrames)
+    val attackCoeff = kotlin.math.exp(-1.0 / (180f * 0.001f * sr)).toFloat()
+    val releaseCoeff = kotlin.math.exp(-1.0 / (900f * 0.001f * sr)).toFloat()
+    val safeThresh = 0.02f
+    val minGain = (1f - duckDepth * 0.85f).coerceIn(0.12f, 1.0f)
+
+    var env = 0f
+    var duckGain = 1.0f
+    val gainAttack = kotlin.math.exp(-1.0 / (0.045f * sr)).toFloat()
+    val gainRelease = kotlin.math.exp(-1.0 / (0.350f * sr)).toFloat()
+
+    for (i in 0 until totalFrames) {
+        if (i % 16384 == 0) yield()
+        val vL = if (i < voice.frameCount) voice.left[i] else 0f
+        val vR = if (i < voice.frameCount) voice.right[i] else 0f
+        val det = max(abs(vL), abs(vR))
+        env = if (det > env) attackCoeff * env + (1f - attackCoeff) * det else releaseCoeff * env + (1f - releaseCoeff) * det
+        val targetDuck = if (env > safeThresh) {
+            val comp = (env / safeThresh).toDouble().pow(1.0 / (2.0 + 6.0 * duckDepth) - 1.0).toFloat()
+            clamp(comp, minGain, 1.0f)
+        } else {
+            1.0f
+        }
+        duckGain = if (targetDuck < duckGain) {
+            gainAttack * duckGain + (1f - gainAttack) * targetDuck
+        } else {
+            gainRelease * duckGain + (1f - gainRelease) * targetDuck
+        }
+
+        val mIdx = i - safeOffset
+        val bgL = if (mIdx in 0 until alignedMusic.frameCount) alignedMusic.left[mIdx] * musicBaseVolume * duckGain else 0f
+        val bgR = if (mIdx in 0 until alignedMusic.frameCount) alignedMusic.right[mIdx] * musicBaseVolume * duckGain else 0f
+        outL[i] = tanh((vL + bgL).toDouble()).toFloat()
+        outR[i] = tanh((vR + bgR).toDouble()).toFloat()
+    }
+    StereoAudioBuffer(outL, outR, sr)
+}
+
+/**
+ * Smart Background Music Mixer with Sidechain Auto-Ducking.
  */
 suspend fun mixWithSidechainAutoDucking(
     voice: StereoAudioBuffer,
@@ -248,198 +647,6 @@ suspend fun mixWithSidechainAutoDucking(
     }
 
     StereoAudioBuffer(outL, outR, sr)
-}
-
-/**
- * Replaces or mixes the audio track of an MP4/MOV video with processed studio audio
- * while copying the compressed video track losslessly without video re-encoding (`-c:v copy -c:a aac -shortest`).
- */
-suspend fun replaceOrMixVideoAudio(
-    context: Context,
-    videoUri: Uri,
-    newAudio: StereoAudioBuffer,
-    mixWithOriginal: Boolean,
-    originalGain: Float,
-    newGain: Float,
-    outputMp4File: File,
-    onProgress: ((Float) -> Unit)? = null,
-): Boolean = withContext(Dispatchers.IO) {
-    val preparedAudio = if (mixWithOriginal) {
-        val originalAudio = AudioDecoder.decodeUri(context, videoUri)
-        if (originalAudio != null && originalAudio.frameCount > 0) {
-            mixTracks(
-                main = newAudio,
-                background = originalAudio,
-                mainGain = newGain,
-                bgGain = originalGain,
-            )
-        } else {
-            applyGainDb(newAudio, (20.0 * kotlin.math.log10(max(newGain, 0.01f))).toFloat())
-        }
-    } else {
-        applyGainDb(newAudio, (20.0 * kotlin.math.log10(max(newGain, 0.01f))).toFloat())
-    }
-
-    val extractor = MediaExtractor()
-    var muxer: MediaMuxer? = null
-    var muxerStarted = false
-    var aacCodec: MediaCodec? = null
-
-    try {
-        extractor.setDataSource(context, videoUri, null)
-        var videoTrackIndex = -1
-        var videoFormat: MediaFormat? = null
-        var videoDurationUs = 0L
-
-        for (i in 0 until extractor.trackCount) {
-            val fmt = extractor.getTrackFormat(i)
-            val mime = fmt.getString(MediaFormat.KEY_MIME) ?: continue
-            if (mime.startsWith("video/")) {
-                videoTrackIndex = i
-                videoFormat = fmt
-                if (fmt.containsKey(MediaFormat.KEY_DURATION)) {
-                    videoDurationUs = fmt.getLong(MediaFormat.KEY_DURATION)
-                }
-                break
-            }
-        }
-        if (videoTrackIndex < 0 || videoFormat == null) return@withContext false
-
-        val audioDurationUs = (preparedAudio.frameCount * 1_000_000L) / preparedAudio.sampleRate.coerceAtLeast(8000)
-        val targetMaxUs = if (videoDurationUs > 0L) min(videoDurationUs, audioDurationUs) else audioDurationUs
-
-        val aacMime = MediaFormat.MIMETYPE_AUDIO_AAC
-        val aacFormat = MediaFormat.createAudioFormat(aacMime, preparedAudio.sampleRate, 2).apply {
-            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, 320_000)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
-        }
-        aacCodec = MediaCodec.createEncoderByType(aacMime).apply {
-            configure(aacFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            start()
-        }
-
-        muxer = MediaMuxer(outputMp4File.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        val muxVideoTrack = muxer.addTrack(videoFormat)
-        var muxAudioTrack = -1
-
-        val bufferInfo = MediaCodec.BufferInfo()
-        val numFramesToEncode = if (targetMaxUs > 0L) {
-            min(preparedAudio.frameCount, ((targetMaxUs * preparedAudio.sampleRate) / 1_000_000L).toInt())
-        } else {
-            preparedAudio.frameCount
-        }.coerceAtLeast(1)
-
-        var frameOffset = 0
-        var inputDone = false
-        var outputDone = false
-        val encodedAudioPackets = mutableListOf<Pair<ByteArray, MediaCodec.BufferInfo>>()
-
-        while (!outputDone) {
-            if (!inputDone) {
-                val inIdx = aacCodec.dequeueInputBuffer(10_000L)
-                if (inIdx >= 0) {
-                    val inBuf = aacCodec.getInputBuffer(inIdx)
-                    if (frameOffset >= numFramesToEncode || inBuf == null) {
-                        aacCodec.queueInputBuffer(
-                            inIdx,
-                            0,
-                            0,
-                            (frameOffset * 1_000_000L) / preparedAudio.sampleRate,
-                            MediaCodec.BUFFER_FLAG_END_OF_STREAM,
-                        )
-                        inputDone = true
-                    } else {
-                        inBuf.clear()
-                        val maxFrames = inBuf.remaining() / 4
-                        val chunkFrames = minOf(1024, maxFrames, numFramesToEncode - frameOffset)
-                        val bytes = ByteArray(chunkFrames * 4)
-                        val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-                        for (i in 0 until chunkFrames) {
-                            bb.putShort((clamp(preparedAudio.left[frameOffset + i], -1f, 1f) * 32767f).roundToInt().toShort())
-                            bb.putShort((clamp(preparedAudio.right[frameOffset + i], -1f, 1f) * 32767f).roundToInt().toShort())
-                        }
-                        inBuf.put(bytes)
-                        val ptsUs = (frameOffset * 1_000_000L) / preparedAudio.sampleRate
-                        aacCodec.queueInputBuffer(inIdx, 0, bytes.size, ptsUs, 0)
-                        frameOffset += chunkFrames
-                        onProgress?.invoke(min(0.55f, (frameOffset.toFloat() / numFramesToEncode) * 0.55f))
-                    }
-                }
-            }
-
-            val outIdx = aacCodec.dequeueOutputBuffer(bufferInfo, 10_000L)
-            when {
-                outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    if (muxAudioTrack == -1) {
-                        muxAudioTrack = muxer.addTrack(aacCodec.outputFormat)
-                    }
-                }
-                outIdx >= 0 -> {
-                    val encoded = aacCodec.getOutputBuffer(outIdx)
-                    if (encoded != null && bufferInfo.size > 0 &&
-                        (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
-                    ) {
-                        encoded.position(bufferInfo.offset)
-                        encoded.limit(bufferInfo.offset + bufferInfo.size)
-                        val pktBytes = ByteArray(bufferInfo.size)
-                        encoded.get(pktBytes)
-                        val infoCopy = MediaCodec.BufferInfo().apply {
-                            set(0, pktBytes.size, bufferInfo.presentationTimeUs, bufferInfo.flags)
-                        }
-                        encodedAudioPackets.add(pktBytes to infoCopy)
-                    }
-                    aacCodec.releaseOutputBuffer(outIdx, false)
-                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                        outputDone = true
-                    }
-                }
-            }
-        }
-
-        if (muxAudioTrack == -1) return@withContext false
-        muxer.start()
-        muxerStarted = true
-
-        // Copy video packets (-c:v copy) up to -shortest duration
-        extractor.selectTrack(videoTrackIndex)
-        val vidBuf = ByteBuffer.allocate(512 * 1024)
-        val vidInfo = MediaCodec.BufferInfo()
-        while (true) {
-            vidInfo.offset = 0
-            val sampleSize = extractor.readSampleData(vidBuf, 0)
-            if (sampleSize < 0) break
-            val ptsUs = extractor.sampleTime
-            if (targetMaxUs > 0L && ptsUs > targetMaxUs) break
-            vidInfo.size = sampleSize
-            vidInfo.presentationTimeUs = ptsUs
-            vidInfo.flags = extractor.sampleFlags
-            vidBuf.position(0)
-            vidBuf.limit(sampleSize)
-            muxer.writeSampleData(muxVideoTrack, vidBuf, vidInfo)
-            extractor.advance()
-        }
-        onProgress?.invoke(0.8f)
-
-        // Write encoded AAC packets
-        for ((idx, pair) in encodedAudioPackets.withIndex()) {
-            val (pktBytes, pktInfo) = pair
-            muxer.writeSampleData(muxAudioTrack, ByteBuffer.wrap(pktBytes), pktInfo)
-            if (idx % 20 == 0) {
-                onProgress?.invoke(0.8f + (idx.toFloat() / max(1, encodedAudioPackets.size)) * 0.2f)
-            }
-        }
-        onProgress?.invoke(1f)
-        true
-    } catch (_: Throwable) {
-        false
-    } finally {
-        runCatching { aacCodec?.stop() }
-        runCatching { aacCodec?.release() }
-        runCatching { extractor.release() }
-        if (muxerStarted) runCatching { muxer?.stop() }
-        runCatching { muxer?.release() }
-    }
 }
 
 sealed interface RingtoneSaveResult {

@@ -85,9 +85,6 @@ sealed interface StudioRoute {
     data object ExtractVideoAudio : StudioRoute
 
     @Serializable
-    data object VideoAudioEditor : StudioRoute
-
-    @Serializable
     data object CompressAudio : StudioRoute
 
     @Serializable
@@ -103,5 +100,23 @@ sealed interface StudioRoute {
     data object SmartAssistant : StudioRoute
 
     @Serializable
-    data object CinematicVideoReels : StudioRoute
+    data object ReelsAudioTemplates : StudioRoute
+
+    @Serializable
+    data object Notifications : StudioRoute
+
+    @Serializable
+    data class NotificationDetail(val entryId: String) : StudioRoute
+
+    @Serializable
+    data object SmartQaLab : StudioRoute
+
+    @Serializable
+    data object AutoSilenceRemover : StudioRoute
+
+    @Serializable
+    data object AutoCompressor : StudioRoute
+
+    @Serializable
+    data object VocalSplitter : StudioRoute
 }
