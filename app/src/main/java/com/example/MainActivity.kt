@@ -155,6 +155,7 @@ import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioSideEffect
 import com.example.viewmodel.StudioViewModel
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 
 private class CreateTypedDocumentContract : ActivityResultContract<Pair<String, String>, Uri?>() {
     override fun createIntent(context: Context, input: Pair<String, String>): Intent {
@@ -184,14 +185,7 @@ class MainActivity : ComponentActivity() {
             Log.e("MainActivity", "Failed to register uncaught exception handler", t)
         }
 
-        try {
-            if (FirebaseApp.getApps(this).isEmpty()) {
-                FirebaseApp.initializeApp(this)
-            }
-            SonixCrashGuard.safeInitializeFirebase(this)
-        } catch (t: Throwable) {
-            Log.w("MainActivity", "Firebase startup initialization skipped safely: ${t.message}")
-        }
+        initializeFirebaseSafely()
 
         try {
             AppDiagnosticLog.init(this)
@@ -303,6 +297,20 @@ class MainActivity : ComponentActivity() {
             }
         } catch (t: Throwable) {
             Log.w("MainActivity", "Background drawable post skipped safely: ${t.message}")
+        }
+    }
+
+    private fun initializeFirebaseSafely() {
+        try {
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                SonixCrashGuard.safeInitializeFirebase(this)
+            }
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                val options = SonixCrashGuard.buildFallbackFirebaseOptions()
+                FirebaseApp.initializeApp(this, options)
+            }
+        } catch (t: Throwable) {
+            Log.w("MainActivity", "Manual FirebaseApp initialization skipped safely: ${t.message}", t)
         }
     }
 }

@@ -152,58 +152,102 @@ class StudioRepository(private val context: Context) {
         prefs.saveOnlineListeningHistory(emptyList())
     }
 
-    suspend fun signInLocalEmail(email: String, password: String): AuthResult {
+    suspend fun signInLocalEmail(
+        email: String,
+        password: String,
+        lang: AppLanguage = AppLanguage.AR,
+    ): AuthResult {
+        val isEn = lang == AppLanguage.EN
         val cleanEmail = email.trim().lowercase()
         if (!Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$").matches(cleanEmail)) {
-            return AuthResult.Error("يرجى إدخال بريد إلكتروني صحيح.")
+            return AuthResult.Error(
+                if (isEn) "Please enter a valid email address."
+                else "يرجى إدخال بريد إلكتروني صحيح.",
+            )
         }
         if (password.length < 6) {
-            return AuthResult.Error("يرجى إدخال كلمة المرور (6 أحرف فأكثر).")
+            return AuthResult.Error(
+                if (isEn) "Password must be at least 6 characters."
+                else "يرجى إدخال كلمة المرور (6 أحرف فأكثر).",
+            )
         }
-        val account = dao.findAccountByEmail(cleanEmail)
-            ?: return AuthResult.Error("لا يوجد حساب مسجل بهذا البريد الإلكتروني.")
-        if (account.passwordHash != sha256(password)) {
-            return AuthResult.Error("البريد الإلكتروني أو كلمة المرور غير صحيحة.")
+        return try {
+            val account = dao.findAccountByEmail(cleanEmail)
+                ?: return AuthResult.Error(
+                    if (isEn) "No account found for this email address."
+                    else "لا يوجد حساب مسجل بهذا البريد الإلكتروني.",
+                )
+            if (account.passwordHash != sha256(password)) {
+                return AuthResult.Error(
+                    if (isEn) "Incorrect email or password."
+                    else "البريد الإلكتروني أو كلمة المرور غير صحيحة.",
+                )
+            }
+            val session = AuthSession.SignedIn(
+                uid = account.uid,
+                displayName = account.displayName,
+                email = account.email,
+            )
+            prefs.saveAuthSession(session)
+            AuthResult.Success(session)
+        } catch (e: Exception) {
+            AuthResult.Error(
+                e.localizedMessage
+                    ?: if (isEn) "Unable to sign in right now." else "تعذر إتمام تسجيل الدخول حالياً.",
+            )
         }
-        val session = AuthSession.SignedIn(
-            uid = account.uid,
-            displayName = account.displayName,
-            email = account.email,
-        )
-        prefs.saveAuthSession(session)
-        return AuthResult.Success(session)
     }
 
     suspend fun registerLocalEmail(
         displayName: String,
         email: String,
         password: String,
+        lang: AppLanguage = AppLanguage.AR,
     ): AuthResult {
+        val isEn = lang == AppLanguage.EN
         val cleanEmail = email.trim().lowercase()
-        val cleanName = displayName.trim().ifEmpty { cleanEmail.substringBefore('@') }.ifEmpty { "مستخدم Sonix ✦" }
+        val cleanName = displayName.trim()
+            .ifEmpty { cleanEmail.substringBefore('@') }
+            .ifEmpty { if (isEn) "Sonix ✦ User" else "مستخدم Sonix ✦" }
         if (!Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$").matches(cleanEmail)) {
-            return AuthResult.Error("يرجى إدخال بريد إلكتروني صحيح.")
+            return AuthResult.Error(
+                if (isEn) "Please enter a valid email address."
+                else "يرجى إدخال بريد إلكتروني صحيح.",
+            )
         }
         if (password.length < 6) {
-            return AuthResult.Error("كلمة المرور يجب أن تكون 6 أحرف على الأقل.")
+            return AuthResult.Error(
+                if (isEn) "Password must be at least 6 characters."
+                else "كلمة المرور يجب أن تكون 6 أحرف على الأقل.",
+            )
         }
-        if (dao.findAccountByEmail(cleanEmail) != null) {
-            return AuthResult.Error("هذا البريد الإلكتروني مستخدم بالفعل بحساب آخر.")
+        return try {
+            if (dao.findAccountByEmail(cleanEmail) != null) {
+                return AuthResult.Error(
+                    if (isEn) "This email is already registered to another account."
+                    else "هذا البريد الإلكتروني مستخدم بالفعل بحساب آخر.",
+                )
+            }
+            val newAccount = LocalAccountEntity(
+                uid = "local_${System.currentTimeMillis()}",
+                displayName = cleanName,
+                email = cleanEmail,
+                passwordHash = sha256(password),
+            )
+            dao.insertAccount(newAccount)
+            val session = AuthSession.SignedIn(
+                uid = newAccount.uid,
+                displayName = newAccount.displayName,
+                email = newAccount.email,
+            )
+            prefs.saveAuthSession(session)
+            AuthResult.Success(session)
+        } catch (e: Exception) {
+            AuthResult.Error(
+                e.localizedMessage
+                    ?: if (isEn) "Unable to create account right now." else "تعذر إنشاء الحساب حالياً.",
+            )
         }
-        val newAccount = LocalAccountEntity(
-            uid = "local_${System.currentTimeMillis()}",
-            displayName = cleanName,
-            email = cleanEmail,
-            passwordHash = sha256(password),
-        )
-        dao.insertAccount(newAccount)
-        val session = AuthSession.SignedIn(
-            uid = newAccount.uid,
-            displayName = newAccount.displayName,
-            email = newAccount.email,
-        )
-        prefs.saveAuthSession(session)
-        return AuthResult.Success(session)
     }
 
     suspend fun saveProject(

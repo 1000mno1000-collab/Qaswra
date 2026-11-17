@@ -689,12 +689,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun continueAsGuest() {
+        _uiState.update { it.copy(authSession = AuthSession.Guest) }
         viewModelScope.launch {
             repository.saveAuthSession(AuthSession.Guest)
         }
     }
 
     fun requestSignIn() {
+        _uiState.update { it.copy(authSession = AuthSession.SignedOut) }
         viewModelScope.launch {
             repository.saveAuthSession(AuthSession.SignedOut)
         }
@@ -736,6 +738,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 // Stop active Firestore snapshot collectors BEFORE Firebase.auth.signOut()
                 // to avoid spurious PERMISSION_DENIED race conditions.
                 attachCloudListeners(null)
+                _uiState.update {
+                    it.copy(
+                        authSession = AuthSession.SignedOut,
+                        activeCloudDraftId = null,
+                    )
+                }
                 runCatching {
                     CredentialManager.create(getApplication()).clearCredentialState(ClearCredentialStateRequest())
                 }.onFailure { err ->
@@ -752,15 +760,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     suspend fun signInWithEmail(email: String, password: String): String? {
-        return when (val res = repository.signInLocalEmail(email, password)) {
-            is AuthResult.Success -> null
+        return when (val res = repository.signInLocalEmail(email, password, _uiState.value.language)) {
+            is AuthResult.Success -> {
+                _uiState.update { it.copy(authSession = res.session) }
+                null
+            }
             is AuthResult.Error -> res.message
         }
     }
 
     suspend fun createAccountWithEmail(name: String, email: String, password: String): String? {
-        return when (val res = repository.registerLocalEmail(name, email, password)) {
-            is AuthResult.Success -> null
+        return when (val res = repository.registerLocalEmail(name, email, password, _uiState.value.language)) {
+            is AuthResult.Success -> {
+                _uiState.update { it.copy(authSession = res.session) }
+                null
+            }
             is AuthResult.Error -> res.message
         }
     }

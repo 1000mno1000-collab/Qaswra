@@ -11,6 +11,7 @@ import com.example.data.RecentEditsCacheManager
 import com.example.diagnostics.AppDiagnosticLog
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.firestoreSettings
@@ -18,6 +19,7 @@ import com.google.firebase.firestore.persistentCacheSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
 
@@ -74,11 +76,68 @@ object SonixCrashGuard {
         _uncaughtError.value = null
     }
 
+    private fun parseFirebaseOptionsFromAssetsOrNull(context: Context): FirebaseOptions? {
+        return runCatching {
+            val rawJson = context.assets.open("google-services.json").bufferedReader().use { it.readText() }
+            val root = JSONObject(rawJson)
+            val projectInfo = root.optJSONObject("project_info") ?: return@runCatching null
+            val projectId = projectInfo.optString("project_id").takeIf { it.isNotBlank() } ?: return@runCatching null
+            val projectNumber = projectInfo.optString("project_number").takeIf { it.isNotBlank() }
+            val storageBucket = projectInfo.optString("storage_bucket").takeIf { it.isNotBlank() }
+
+            val clients = root.optJSONArray("client") ?: return@runCatching null
+            var matchedClient: JSONObject? = null
+            for (i in 0 until clients.length()) {
+                val c = clients.optJSONObject(i) ?: continue
+                val pkg = c.optJSONObject("client_info")
+                    ?.optJSONObject("android_client_info")
+                    ?.optString("package_name")
+                if (pkg == context.packageName) {
+                    matchedClient = c
+                    break
+                }
+            }
+            val chosenClient = matchedClient ?: clients.optJSONObject(0) ?: return@runCatching null
+            val appId = chosenClient.optJSONObject("client_info")
+                ?.optString("mobilesdk_app_id")
+                ?.takeIf { it.isNotBlank() } ?: return@runCatching null
+            val apiKey = chosenClient.optJSONArray("api_key")
+                ?.optJSONObject(0)
+                ?.optString("current_key")
+                ?.takeIf { it.isNotBlank() } ?: return@runCatching null
+
+            FirebaseOptions.Builder()
+                .setApplicationId(appId)
+                .setApiKey(apiKey)
+                .setProjectId(projectId)
+                .apply {
+                    if (!projectNumber.isNullOrBlank()) setGcmSenderId(projectNumber)
+                    if (!storageBucket.isNullOrBlank()) setStorageBucket(storageBucket)
+                }
+                .build()
+        }.getOrNull()
+    }
+
+    fun buildFallbackFirebaseOptions(): FirebaseOptions =
+        FirebaseOptions.Builder()
+            .setApplicationId("1:749543557478:android:ed8d57155636dc60eae0a7")
+            .setApiKey("AIzaSyC_xjAvAQ5AmFLUXJYwBz5V2fnNecozqKA")
+            .setProjectId("gen-lang-client-0741838748")
+            .setGcmSenderId("749543557478")
+            .setStorageBucket("gen-lang-client-0741838748.firebasestorage.app")
+            .build()
+
     fun safeInitializeFirebase(context: Context) {
         val appCtx = context.applicationContext ?: context
         try {
             if (FirebaseApp.getApps(appCtx).isEmpty()) {
-                FirebaseApp.initializeApp(appCtx)
+                val autoInitialized = runCatching { FirebaseApp.initializeApp(appCtx) }.getOrNull()
+                if (autoInitialized == null && FirebaseApp.getApps(appCtx).isEmpty()) {
+                    val options = parseFirebaseOptionsFromAssetsOrNull(appCtx)
+                        ?: buildFallbackFirebaseOptions()
+                    FirebaseApp.initializeApp(appCtx, options)
+                    Log.i("SonixStartup", "FirebaseApp initialized manually via FirebaseOptions.")
+                }
             }
         } catch (t: Throwable) {
             Log.w("SonixStartup", "FirebaseApp.initializeApp failed safely: ${t.message}")

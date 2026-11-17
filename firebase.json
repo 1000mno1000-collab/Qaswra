@@ -10,7 +10,7 @@
   },
   "firestore": [
     {
-      "database": "ai-studio-android-qaswra-189f3ff6-014b-4614-aaf4-197ca7d94841",
+      "database": "ai-studio-android-qaswra-a727683b-62b2-4a20-98d6-e685d70637eb",
       "rules": "firestore.rules"
     }
   ]
