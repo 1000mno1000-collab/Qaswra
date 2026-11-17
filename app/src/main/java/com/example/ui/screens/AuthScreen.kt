@@ -100,9 +100,9 @@ import com.example.viewmodel.StudioViewModel
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.CancellationException
@@ -165,21 +165,21 @@ fun AuthScreen(
     }
 
     fun formatGoogleAuthFailure(e: Exception): String {
-        val raw = e.localizedMessage ?: e.javaClass.simpleName
-        val isCanceled = raw.contains("canceled", ignoreCase = true) ||
-            raw.contains("cancelled", ignoreCase = true)
-        return if (isCanceled) {
-            if (isEn) {
-                "Google Sign-In was canceled before completion. Please try again."
-            } else {
-                "تم إلغاء تسجيل الدخول بحساب Google قبل إتمامه. يرجى المحاولة مرة أخرى."
+        val raw = e.localizedMessage?.takeIf { it.isNotBlank() }
+            ?: e.message?.takeIf { it.isNotBlank() }
+            ?: e.javaClass.simpleName
+        val technicalDetail = when (e) {
+            is FirebaseAuthException -> "[${e.errorCode}] $raw"
+            is GetCredentialException -> {
+                val msg = e.errorMessage?.toString()?.takeIf { it.isNotBlank() } ?: raw
+                "[${e.type}] $msg"
             }
+            else -> "${e.javaClass.simpleName}: $raw"
+        }
+        return if (isEn) {
+            "Google Sign-In failed: $technicalDetail"
         } else {
-            if (isEn) {
-                "Google Sign-In failed: $raw"
-            } else {
-                "تعذر تسجيل الدخول عبر Google: $raw"
-            }
+            "تعذر تسجيل الدخول عبر Google: $technicalDetail"
         }
     }
 
@@ -333,46 +333,90 @@ fun AuthScreen(
                         cm.getCredential(activity, fallbackRequest)
                     }
                     val credential = result.credential
-                    if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                        val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
-                        val authResult = auth.signInWithCredential(
-                            GoogleAuthProvider.getCredential(idToken, null),
-                        ).await()
-                        finishFirebaseGoogleUser(authResult.user ?: auth.currentUser)
+                    if (credential is CustomCredential &&
+                        credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
+                    ) {
+                        val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                        val idToken = googleIdTokenCredential.idToken
+                        val authResult = FirebaseAuth.getInstance()
+                            .signInWithCredential(GoogleAuthProvider.getCredential(idToken, null))
+                            .await()
+                        finishFirebaseGoogleUser(
+                            authResult.user ?: FirebaseAuth.getInstance().currentUser,
+                        )
                     } else {
                         isGoogleLoading = false
+                        val credType = credential.type
+                        AppDiagnosticLog.logRecoverable(
+                            toolName = "GoogleSignIn",
+                            titleAr = "نوع بيانات اعتماد غير متوقع من جوجل",
+                            titleEn = "Unexpected Google Credential Type",
+                            causeAr = "Unexpected credential type: $credType",
+                            causeEn = "Unexpected credential type: $credType",
+                            errorCode = "UnexpectedCredentialType",
+                        )
                         errorMsg = if (isEn) {
-                            "Unexpected credential type returned by Google Sign-In."
+                            "Unexpected credential type returned by Google Sign-In ($credType)."
                         } else {
-                            "تم استلام نوع بيانات اعتماد غير متوقع من Google."
+                            "تم استلام نوع بيانات اعتماد غير متوقع من Google ($credType)."
                         }
                     }
                 } catch (e: GetCredentialCancellationException) {
-                    Log.w("Auth", "Google Sign-In flow cancelled or dismissed: ${e.message}", e)
+                    val cancelDetail = (e.errorMessage?.toString() ?: e.localizedMessage ?: e.message)
+                        ?.takeIf { it.isNotBlank() }
+                    Log.w("Auth", "Google Sign-In cancelled: $cancelDetail", e)
+                    AppDiagnosticLog.logRecoverable(
+                        toolName = "GoogleSignIn",
+                        titleAr = "إلغاء أو تعليق نافذة تسجيل الدخول بجوجل",
+                        titleEn = "Google Sign-In Cancelled",
+                        causeAr = cancelDetail ?: e.javaClass.simpleName,
+                        causeEn = cancelDetail ?: e.javaClass.simpleName,
+                        errorCode = e.type,
+                        throwable = e,
+                    )
                     isGoogleLoading = false
                     errorMsg = if (isEn) {
-                        "Sign-in was cancelled. Please select a Google account to continue."
+                        if (cancelDetail != null) {
+                            "Sign-in was cancelled ($cancelDetail). Please select a Google account to continue."
+                        } else {
+                            "Sign-in was cancelled. Please select a Google account to continue."
+                        }
                     } else {
-                        "تم إلغاء تسجيل الدخول. يرجى اختيار حساب Google للمتابعة."
+                        if (cancelDetail != null) {
+                            "تم إلغاء تسجيل الدخول ($cancelDetail). يرجى اختيار حساب Google للمتابعة."
+                        } else {
+                            "تم إلغاء تسجيل الدخول. يرجى اختيار حساب Google للمتابعة."
+                        }
                     }
                 } catch (e: NoCredentialException) {
-                    Log.w("Auth", "No Google credentials found on device: ${e.message}", e)
+                    val detail = e.errorMessage?.toString() ?: e.localizedMessage ?: e.message ?: e.javaClass.simpleName
+                    Log.w("Auth", "No Google credentials found on device: $detail", e)
+                    AppDiagnosticLog.logRecoverable(
+                        toolName = "GoogleSignIn",
+                        titleAr = "لا توجد بيانات اعتماد متاحة من جوجل",
+                        titleEn = "No Google Credentials Found",
+                        causeAr = detail,
+                        causeEn = detail,
+                        errorCode = e.type,
+                        throwable = e,
+                    )
                     isGoogleLoading = false
                     errorMsg = if (isEn) {
-                        "No Google account is signed in on this device. Add one in Settings, or use Email / Guest mode."
+                        "No Google credential available ($detail). Add a Google account in Settings or use Email / Guest mode."
                     } else {
-                        "لا يوجد حساب Google مسجل على هذا الجهاز. أضف حساباً من إعدادات الجهاز أو ادخل بالبريد الإلكتروني أو كضيف."
+                        "لا يوجد حساب Google متاح على هذا الجهاز ($detail). أضف حساباً من إعدادات الجهاز أو ادخل بالبريد الإلكتروني أو كضيف."
                     }
                 } catch (e: GetCredentialException) {
-                    Log.e("Auth", "Google Credential Manager error", e)
+                    val detail = e.errorMessage?.toString() ?: e.localizedMessage ?: e.message ?: e.javaClass.simpleName
+                    Log.e("Auth", "Google Credential Manager error: $detail", e)
                     isGoogleLoading = false
                     AppDiagnosticLog.logRecoverable(
                         toolName = "GoogleSignIn",
                         titleAr = "تعذر إتمام تسجيل الدخول بحساب جوجل",
                         titleEn = "Google Sign-In Failed",
-                        causeAr = e.localizedMessage ?: e.javaClass.simpleName,
-                        causeEn = e.localizedMessage ?: e.javaClass.simpleName,
-                        errorCode = e.javaClass.simpleName,
+                        causeAr = detail,
+                        causeEn = detail,
+                        errorCode = e.type,
                         throwable = e,
                     )
                     errorMsg = formatGoogleAuthFailure(e)
@@ -380,15 +424,16 @@ fun AuthScreen(
                     isGoogleLoading = false
                     throw e
                 } catch (e: Exception) {
-                    Log.e("Auth", "Google Sign-In failed", e)
+                    val detail = e.localizedMessage ?: e.message ?: e.javaClass.simpleName
+                    Log.e("Auth", "Google Sign-In failed: $detail", e)
                     isGoogleLoading = false
                     AppDiagnosticLog.logRecoverable(
                         toolName = "GoogleSignIn",
                         titleAr = "تعذر إتمام تسجيل الدخول بحساب جوجل",
                         titleEn = "Google Sign-In Failed",
-                        causeAr = e.localizedMessage ?: e.javaClass.simpleName,
-                        causeEn = e.localizedMessage ?: e.javaClass.simpleName,
-                        errorCode = e.javaClass.simpleName,
+                        causeAr = detail,
+                        causeEn = detail,
+                        errorCode = (e as? FirebaseAuthException)?.errorCode ?: e.javaClass.simpleName,
                         throwable = e,
                     )
                     errorMsg = formatGoogleAuthFailure(e)
