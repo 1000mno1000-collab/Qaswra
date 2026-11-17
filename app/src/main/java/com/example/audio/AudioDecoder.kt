@@ -413,7 +413,7 @@ object AudioDecoder {
         return AudioDecodeOutcome.Success(resampled)
     }
 
-    private fun tryDecodeViaFfmpegKitReflection(sourceFile: File): AudioDecodeOutcome {
+    private suspend fun tryDecodeViaFfmpegKitReflection(sourceFile: File): AudioDecodeOutcome {
         val parent = sourceFile.parentFile ?: return AudioDecodeOutcome.Failure("No cache dir")
         val id = UUID.randomUUID().toString().take(8)
         val needsStaging = sourceFile.absolutePath.any { ch ->

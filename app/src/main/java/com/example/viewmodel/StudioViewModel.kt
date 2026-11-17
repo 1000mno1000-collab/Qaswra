@@ -3826,25 +3826,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val existing = _uiState.value.audioMarkers
         val marker = AudioMarker(
             id = UUID.randomUUID().toString().take(8),
+            positionFrac = frac,
             label = "#${existing.size + 1} (${formatDurationMs(posMs)})",
-            positionFraction = frac,
-            timeMs = posMs,
+            colorIndex = existing.size % 4,
         )
         _uiState.update { cur ->
-            cur.copy(audioMarkers = (cur.audioMarkers + marker).sortedBy { it.positionFraction })
+            cur.copy(audioMarkers = (cur.audioMarkers + marker).sortedBy { it.positionFrac })
         }
     }
 
     fun jumpToMarker(marker: AudioMarker) {
         if (!_uiState.value.hasAudio) return
-        seekTo(marker.positionFraction)
+        seekToFraction(marker.positionFrac)
     }
 
     fun selectRangeFromMarkers(first: AudioMarker, second: AudioMarker) {
-        val a = minOf(first.positionFraction, second.positionFraction).coerceIn(0f, 0.99f)
-        val b = maxOf(first.positionFraction, second.positionFraction).coerceIn(0.01f, 1f)
+        val a = minOf(first.positionFrac, second.positionFrac).coerceIn(0f, 0.99f)
+        val b = maxOf(first.positionFrac, second.positionFrac).coerceIn(0.01f, 1f)
         if (b - a < 0.01f) return
-        setTrimRange(a, b)
+        updateTrimRange(a, b)
     }
 
     fun removeMarker(id: String) {

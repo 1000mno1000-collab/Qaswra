@@ -202,16 +202,19 @@ object SmartQaBotEngine {
                             val proc = EchoReverbProcessor(44100)
                             val sampleL = FloatArray(128) { i -> sin(i * 0.1f) * 0.5f }
                             val sampleR = sampleL.copyOf()
-                            proc.processStereo(
-                                left = sampleL,
-                                right = sampleR,
-                                count = 128,
-                                params = com.example.model.EchoReverbParams(
+                            proc.configure(
+                                com.example.model.EchoReverbParams(
                                     echoStrength = 0.8f,
                                     feedback = 0.72f,
                                     reverbSize = 0.8f,
                                     reverbDecay = 0.75f,
+                                    wetDryMix = 0.5f,
                                 ),
+                            )
+                            proc.processStereo(
+                                left = sampleL,
+                                right = sampleR,
+                                count = 128,
                             )
                             if (sampleL.any { it.isNaN() || it.isInfinite() }) {
                                 recordIssue(
@@ -603,7 +606,9 @@ object SmartQaBotEngine {
 
     fun formatFullReport(language: AppLanguage): String {
         val st = _state.value
-        val diagText = AppDiagnosticLog.formatFullReport(language)
+        val diagText = AppDiagnosticLog.entries.value
+            .take(10)
+            .joinToString("\n") { AppDiagnosticLog.formatFullReport(it) }
         return buildString {
             appendLine("=== Sonix ✦ Smart QA & Audio Diagnostics Report ===")
             appendLine("Scenarios Tested: ${st.scenariosChecked} | Passed: ${st.passedChecksCount} | Issues Found: ${st.issues.size}")
