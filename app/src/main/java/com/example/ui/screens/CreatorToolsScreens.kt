@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,6 +56,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -74,6 +76,7 @@ import com.example.audio.formatDurationMs
 import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.AudioPickerTarget
+import com.example.studio.ui.lit
 import com.example.ui.components.ExportFormatDialog
 import com.example.ui.components.InfoBadgeButton
 import com.example.ui.components.StudioFocusTopBar
@@ -86,6 +89,7 @@ import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
 import kotlin.math.roundToInt
 
+@Immutable
 private data class SpeechLocaleChoice(
     val tag: String,
     val labelAr: String,
@@ -208,7 +212,8 @@ fun SpeechToTextScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 4.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     locales.forEach { loc ->
@@ -218,9 +223,11 @@ fun SpeechToTextScreen(
                             AppLanguage.FA -> loc.labelFa
                         }
                         val selected = stt.localeTag == loc.tag
+                        val localeInteraction = remember { MutableInteractionSource() }
                         FilterChip(
                             selected = selected,
                             onClick = { viewModel.setSpeechLocale(loc.tag) },
+                            interactionSource = localeInteraction,
                             label = { Text(label) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.22f),
@@ -228,6 +235,7 @@ fun SpeechToTextScreen(
                             ),
                             modifier = Modifier
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(localeInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 10.dp)
                                 .testTag("stt_locale_${loc.tag}"),
                         )
                     }
@@ -304,8 +312,10 @@ fun SpeechToTextScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (stt.isListening) {
+                        val stopInteraction = remember { MutableInteractionSource() }
                         Button(
                             onClick = { viewModel.stopSpeechTranscription() },
+                            interactionSource = stopInteraction,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.Rose,
                                 contentColor = StudioColors.TextPrimary,
@@ -314,6 +324,7 @@ fun SpeechToTextScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(stopInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("stt_stop_button"),
                         ) {
                             Icon(Icons.Rounded.Stop, contentDescription = null)
@@ -321,9 +332,11 @@ fun SpeechToTextScreen(
                             Text(t(lang, "stt_stop_dictate"), style = MaterialTheme.typography.labelLarge)
                         }
                     } else {
+                        val dictateInteraction = remember { MutableInteractionSource() }
                         Button(
                             onClick = { launchWithMicPermission(isClip = false) },
                             enabled = recognizerAvailable,
+                            interactionSource = dictateInteraction,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.Cyan,
                                 contentColor = StudioColors.BgTop,
@@ -332,6 +345,7 @@ fun SpeechToTextScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(dictateInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("stt_mic_dictate_button"),
                         ) {
                             Icon(Icons.Rounded.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -343,6 +357,7 @@ fun SpeechToTextScreen(
                             )
                         }
 
+                        val clipInteraction = remember { MutableInteractionSource() }
                         OutlinedButton(
                             onClick = {
                                 if (uiState.hasAudio) {
@@ -352,12 +367,14 @@ fun SpeechToTextScreen(
                                 }
                             },
                             enabled = recognizerAvailable,
+                            interactionSource = clipInteraction,
                             border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(clipInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("stt_clip_transcribe_button"),
                         ) {
                             Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -397,10 +414,13 @@ fun SpeechToTextScreen(
                         color = StudioColors.TextPrimary,
                     )
                     if (stt.displayText.isNotBlank()) {
+                        val clearInteraction = remember { MutableInteractionSource() }
                         IconButton(
                             onClick = { viewModel.clearSpeechTranscription() },
+                            interactionSource = clearInteraction,
                             modifier = Modifier
                                 .size(48.dp)
+                                .lit(clearInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                 .testTag("stt_clear_button"),
                         ) {
                             Icon(
@@ -439,6 +459,7 @@ fun SpeechToTextScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val copyInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
                             if (stt.displayText.isNotBlank()) {
@@ -447,6 +468,7 @@ fun SpeechToTextScreen(
                             }
                         },
                         enabled = stt.displayText.isNotBlank(),
+                        interactionSource = copyInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
@@ -455,6 +477,7 @@ fun SpeechToTextScreen(
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(copyInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("stt_copy_text_button"),
                     ) {
                         Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -462,6 +485,7 @@ fun SpeechToTextScreen(
                         Text(t(lang, "stt_copy_text"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
 
+                    val shareInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = {
                             if (stt.displayText.isNotBlank()) {
@@ -473,12 +497,14 @@ fun SpeechToTextScreen(
                             }
                         },
                         enabled = stt.displayText.isNotBlank(),
+                        interactionSource = shareInteraction,
                         border = BorderStroke(1.dp, StudioColors.Emerald),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Emerald),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(shareInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("stt_share_text_button"),
                     ) {
                         Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -587,12 +613,15 @@ fun SmartMusicMixerScreen(
                     )
                 }
 
+                val pickVoiceInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) },
+                    interactionSource = pickVoiceInteraction,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(pickVoiceInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("smart_mixer_pick_voice_button"),
                 ) {
                     Icon(Icons.Rounded.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -635,10 +664,13 @@ fun SmartMusicMixerScreen(
                         )
                     }
                     if (hasMusic) {
+                        val clearMusicInteraction = remember { MutableInteractionSource() }
                         IconButton(
                             onClick = { viewModel.clearMixBackgroundTrack() },
+                            interactionSource = clearMusicInteraction,
                             modifier = Modifier
                                 .size(48.dp)
+                                .lit(clearMusicInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                 .testTag("smart_mixer_clear_music_button"),
                         ) {
                             Icon(
@@ -673,8 +705,10 @@ fun SmartMusicMixerScreen(
                     }
                 }
 
+                val pickMusicInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { onOpenPicker(AudioPickerTarget.MIX_BACKGROUND) },
+                    interactionSource = pickMusicInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Amber.copy(alpha = 0.22f),
                         contentColor = StudioColors.Amber,
@@ -684,6 +718,7 @@ fun SmartMusicMixerScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(pickMusicInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("smart_mixer_pick_music_button"),
                 ) {
                     Icon(Icons.Rounded.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -756,15 +791,18 @@ fun SmartMusicMixerScreen(
                     )
                 }
 
+                val mixPreviewInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { viewModel.toggleSmartDuckingPreviewPlayback() },
                     enabled = canMix && !uiState.isBusy,
+                    interactionSource = mixPreviewInteraction,
                     border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.65f)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(mixPreviewInteraction, MaterialTheme.colorScheme.primary, selected = uiState.isSmartMixPreviewActive, cornerRadius = 14.dp)
                         .testTag("smart_mixer_preview_button"),
                 ) {
                     Icon(
@@ -775,9 +813,11 @@ fun SmartMusicMixerScreen(
                     Text(t(lang, "smart_mixer_preview_duck"))
                 }
 
+                val mixApplyInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.applySmartDuckingMixToStudio() },
                     enabled = canMix && !uiState.isBusy,
+                    interactionSource = mixApplyInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Violet,
                         contentColor = StudioColors.BgTop,
@@ -786,6 +826,7 @@ fun SmartMusicMixerScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(mixApplyInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("smart_mixer_apply_button"),
                 ) {
                     Icon(Icons.Rounded.AutoFixHigh, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -793,9 +834,11 @@ fun SmartMusicMixerScreen(
                     Text(t(lang, "smart_mixer_apply_mix"), style = MaterialTheme.typography.labelLarge)
                 }
 
+                val mixExportInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { exportDialogOpen = true },
                     enabled = hasVoice && !uiState.isBusy,
+                    interactionSource = mixExportInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Cyan,
                         contentColor = StudioColors.BgTop,
@@ -804,6 +847,7 @@ fun SmartMusicMixerScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 52.dp)
+                        .lit(mixExportInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("smart_mixer_export_final_button"),
                 ) {
                     Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))

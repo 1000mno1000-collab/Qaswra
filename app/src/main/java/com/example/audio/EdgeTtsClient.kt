@@ -33,7 +33,8 @@ data class EdgeTtsSynthResult(
 
 /**
  * Pure-Kotlin TLS RFC-6455 WebSocket client for Microsoft Edge Read Aloud Neural TTS.
- * Requires no API key and gracefully returns null if offline so the app can fall back to on-device TTS.
+ * Requires no API key and gracefully returns null if the WebSocket endpoint cannot be reached
+ * so [com.example.audio.tts.SmartVoiceRouter] can try alternative cloud HD voice providers.
  */
 object EdgeTtsClient {
     private const val HOST = "speech.platform.bing.com"
@@ -70,17 +71,25 @@ object EdgeTtsClient {
         .replace("\"", "&quot;")
         .replace("'", "&apos;")
 
-    suspend fun synthesize(
-        context: Context,
+    private fun formatNaturalSsmlText(rawText: String): String {
+        val escaped = escapeXml(rawText)
+        return escaped
+            .replace(Regex("([،,])\\s*"), "$1 <break time='140ms'/> ")
+            .replace(Regex("([.!؟?])\\s+"), "$1 <break time='220ms'/> ")
+    }
+
+    suspend fun synthesizeRawMp3(
         text: String,
-        dialect: TtsDialect,
-        gender: TtsGender,
-        style: TtsDeliveryStyle,
-        speechRate: Float,
-        pitch: Float,
-    ): EdgeTtsSynthResult? = withTimeoutOrNull(14_000L) {
+        voiceName: String,
+        localeTag: String = voiceName.split("-").take(2).joinToString("-").ifBlank { "ar-IQ" },
+        speechRate: Float = 1.0f,
+        pitch: Float = 1.0f,
+        pitchOffsetHz: Int = 0,
+    ): ByteArray? = withTimeoutOrNull(14_000L) {
         withContext(Dispatchers.IO) {
-            val voiceName = if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
+            val cleanInput = text.trim()
+            if (cleanInput.isEmpty()) return@withContext null
+
             val connectionId = UUID.randomUUID().toString().replace("-", "")
             val requestId = UUID.randomUUID().toString().replace("-", "")
             val secMsGec = generateSecMsGec()
@@ -134,17 +143,17 @@ object EdgeTtsClient {
                         """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
                 sendTextFrame(output, configMsg)
 
-                val combinedRate = clamp(speechRate * style.rateFactor, 0.5f, 1.8f)
+                val combinedRate = clamp(speechRate, 0.5f, 1.8f)
                 val ratePercent = ((combinedRate - 1.0f) * 100f).roundToInt()
                 val rateStr = if (ratePercent >= 0) "+$ratePercent%" else "$ratePercent%"
 
                 val pitchFromSliderHz = ((pitch - 1.0f) * 36f).roundToInt()
-                val totalPitchHz = (pitchFromSliderHz + style.pitchOffsetHz).coerceIn(-60, 60)
+                val totalPitchHz = (pitchFromSliderHz + pitchOffsetHz).coerceIn(-60, 60)
                 val pitchStr = if (totalPitchHz >= 0) "+${totalPitchHz}Hz" else "${totalPitchHz}Hz"
 
-                val cleanText = escapeXml(text.trim())
+                val cleanText = formatNaturalSsmlText(cleanInput)
                 val ssml =
-                    "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${dialect.localeTag}'>" +
+                    "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='$localeTag'>" +
                         "<voice name='$voiceName'>" +
                         "<prosody pitch='$pitchStr' rate='$rateStr' volume='+0%'>$cleanText</prosody>" +
                         "</voice></speak>"
@@ -190,27 +199,47 @@ object EdgeTtsClient {
                 }
 
                 val mp3Bytes = mp3Out.toByteArray()
-                if (mp3Bytes.size < 256) return@withContext null
-
-                val cacheDir = File(context.cacheDir, "edge_tts").apply { mkdirs() }
-                val mp3File = File(cacheDir, "tts_${UUID.randomUUID()}.mp3")
-                mp3File.writeBytes(mp3Bytes)
-                val decoded = AudioDecoder.decodeFile(mp3File) ?: run {
-                    mp3File.delete()
-                    return@withContext null
-                }
-                val warmed = applyStudioWarmth(
-                    buffer = decoded,
-                    warmthDb = style.warmthDb,
-                    presenceDb = if (style == TtsDeliveryStyle.RADIO_ANCHOR) 3.0f else 2.2f,
-                )
-                EdgeTtsSynthResult(buffer = warmed, mp3File = mp3File)
+                if (mp3Bytes.size < 256) null else mp3Bytes
             } catch (_: Throwable) {
                 null
             } finally {
                 runCatching { socket?.close() }
             }
         }
+    }
+
+    suspend fun synthesize(
+        context: Context,
+        text: String,
+        dialect: TtsDialect,
+        gender: TtsGender,
+        style: TtsDeliveryStyle,
+        speechRate: Float,
+        pitch: Float,
+    ): EdgeTtsSynthResult? = withContext(Dispatchers.IO) {
+        val voiceName = if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
+        val mp3Bytes = synthesizeRawMp3(
+            text = text,
+            voiceName = voiceName,
+            localeTag = dialect.localeTag,
+            speechRate = speechRate * style.rateFactor,
+            pitch = pitch,
+            pitchOffsetHz = style.pitchOffsetHz,
+        ) ?: return@withContext null
+
+        val cacheDir = File(context.cacheDir, "edge_tts").apply { mkdirs() }
+        val mp3File = File(cacheDir, "tts_${UUID.randomUUID()}.mp3")
+        mp3File.writeBytes(mp3Bytes)
+        val decoded = AudioDecoder.decodeFile(mp3File) ?: run {
+            mp3File.delete()
+            return@withContext null
+        }
+        val mastered = com.example.audio.fx.AudioSkillsPresets.applyStudioVocalMastering(
+            buffer = decoded,
+            extraWarmthDb = (style.warmthDb - 2.0f).coerceAtLeast(0f),
+            extraPresenceDb = if (style == TtsDeliveryStyle.RADIO_ANCHOR) 1.6f else 0.8f,
+        )
+        EdgeTtsSynthResult(buffer = mastered, mp3File = mp3File)
     }
 
     private fun readHttpHandshake(input: InputStream): String {

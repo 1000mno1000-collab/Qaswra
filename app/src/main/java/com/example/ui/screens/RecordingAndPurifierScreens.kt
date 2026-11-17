@@ -16,7 +16,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,7 +63,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -71,7 +71,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,6 +85,7 @@ import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.EffectType
 import com.example.model.VOICE_PURIFY_PRESETS
+import com.example.studio.ui.lit
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
@@ -157,14 +160,17 @@ fun RecordingStudioScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = StudioColors.TextPrimary,
                     )
+                    val grantMicInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                        interactionSource = grantMicInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Rose,
                             contentColor = StudioColors.TextPrimary,
                         ),
                         modifier = Modifier
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(grantMicInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("grant_mic_permission_button"),
                     ) {
                         Text(t(lang, "grant_permission"))
@@ -189,7 +195,10 @@ fun RecordingStudioScreen(
                 Box(
                     modifier = Modifier
                         .size(72.dp)
-                        .scale(pulseScale)
+                        .graphicsLayer {
+                            scaleX = pulseScale
+                            scaleY = pulseScale
+                        }
                         .clip(CircleShape)
                         .background(
                             if (uiState.recorder.isRecording) {
@@ -275,6 +284,7 @@ fun RecordingStudioScreen(
                 }
 
                 if (!uiState.recorder.isRecording) {
+                    val startRecInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
                             val hasPerm = ContextCompat.checkSelfPermission(
@@ -287,6 +297,7 @@ fun RecordingStudioScreen(
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         },
+                        interactionSource = startRecInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Rose,
                             contentColor = StudioColors.TextPrimary,
@@ -295,6 +306,7 @@ fun RecordingStudioScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 52.dp)
+                            .lit(startRecInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp)
                             .testTag("record_start_button"),
                     ) {
                         Icon(Icons.Rounded.Mic, contentDescription = null, modifier = Modifier.size(20.dp))
@@ -306,10 +318,12 @@ fun RecordingStudioScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
+                        val pauseRecInteraction = remember { MutableInteractionSource() }
                         Button(
                             onClick = {
                                 if (uiState.recorder.isPaused) viewModel.resumeRecording() else viewModel.pauseRecording()
                             },
+                            interactionSource = pauseRecInteraction,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.Amber,
                                 contentColor = StudioColors.BgTop,
@@ -318,6 +332,7 @@ fun RecordingStudioScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(pauseRecInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("record_pause_resume_button"),
                         ) {
                             Icon(
@@ -332,22 +347,27 @@ fun RecordingStudioScreen(
                             )
                         }
 
+                        val discardRecInteraction = remember { MutableInteractionSource() }
                         OutlinedButton(
                             onClick = { viewModel.discardRecording() },
+                            interactionSource = discardRecInteraction,
                             border = BorderStroke(1.dp, StudioColors.Rose),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(discardRecInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("record_discard_button"),
                         ) {
                             Text(t(lang, "record_discard"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
 
+                    val finishRecInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { viewModel.finishRecording() },
+                        interactionSource = finishRecInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Emerald,
                             contentColor = StudioColors.BgTop,
@@ -356,6 +376,7 @@ fun RecordingStudioScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 52.dp)
+                            .lit(finishRecInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp)
                             .testTag("record_finish_button"),
                     ) {
                         Icon(Icons.Rounded.Stop, contentDescription = null)
@@ -364,14 +385,17 @@ fun RecordingStudioScreen(
                     }
                 }
 
+                val importAudioInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = onOpenAudioPicker,
+                    interactionSource = importAudioInteraction,
                     border = BorderStroke(1.dp, StudioColors.Cyan),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(importAudioInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("record_import_audio_button"),
                 ) {
                     Icon(Icons.Rounded.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -433,27 +457,33 @@ fun RecordingStudioScreen(
                                     )
                                 }
 
+                                val loadRecInteraction = remember { MutableInteractionSource() }
                                 IconButton(
                                     onClick = { viewModel.loadRecordingIntoStudio(rec) },
+                                    interactionSource = loadRecInteraction,
                                     colors = IconButtonDefaults.iconButtonColors(
                                         containerColor = StudioColors.ElevatedSurface,
                                         contentColor = StudioColors.Cyan,
                                     ),
                                     modifier = Modifier
                                         .size(48.dp)
+                                        .lit(loadRecInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                         .testTag("recording_load_${rec.id}"),
                                 ) {
                                     Icon(Icons.Rounded.FileOpen, contentDescription = t(lang, "load"))
                                 }
 
+                                val deleteRecInteraction = remember { MutableInteractionSource() }
                                 IconButton(
                                     onClick = { viewModel.deleteRecording(rec) },
+                                    interactionSource = deleteRecInteraction,
                                     colors = IconButtonDefaults.iconButtonColors(
                                         containerColor = StudioColors.ElevatedSurface,
                                         contentColor = StudioColors.RoseBright,
                                     ),
                                     modifier = Modifier
                                         .size(48.dp)
+                                        .lit(deleteRecInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                         .testTag("recording_delete_${rec.id}"),
                                 ) {
                                     Icon(Icons.Rounded.Delete, contentDescription = t(lang, "delete"))
@@ -605,8 +635,10 @@ fun VoicePurifierScreen(
                 VOICE_PURIFY_PRESETS.forEach { preset ->
                     val isMatched = kotlin.math.abs(nr.spectralStrength - preset.spectralStrength) < 0.03f &&
                         kotlin.math.abs(nr.reductionDb - preset.reductionDb) < 1f
+                    val presetInteraction = remember { MutableInteractionSource() }
                     Surface(
                         onClick = { viewModel.applyVoicePurifyPreset(preset) },
+                        interactionSource = presetInteraction,
                         shape = RoundedCornerShape(14.dp),
                         color = if (isMatched) StudioColors.ElevatedSurface else StudioColors.BgMid,
                         border = BorderStroke(
@@ -616,6 +648,7 @@ fun VoicePurifierScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 56.dp)
+                            .lit(presetInteraction, MaterialTheme.colorScheme.primary, selected = isMatched, cornerRadius = 14.dp)
                             .testTag("purify_preset_${preset.id}"),
                     ) {
                         Row(
@@ -775,9 +808,11 @@ fun VoicePurifierScreen(
                     )
                 }
 
+                val deepCleanInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.purifyAudioOffline() },
                     enabled = !uiState.isBusy,
+                    interactionSource = deepCleanInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Emerald,
                         contentColor = StudioColors.BgTop,
@@ -786,6 +821,7 @@ fun VoicePurifierScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 52.dp)
+                        .lit(deepCleanInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("purifier_deep_clean_button"),
                 ) {
                     Icon(Icons.Rounded.AutoFixHigh, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -868,19 +904,34 @@ fun LiquidAudioWavePreview(
     val indigoDeep = Color(0xFF6366F1)
     val indigoSoft = Color(0xFF818CF8)
 
+    val density = LocalDensity.current
+    val fillPath = remember { Path() }
+    val crestPath = remember { Path() }
+    val borderStroke = remember(density) { Stroke(width = with(density) { 1.dp.toPx() }) }
+    val borderCornerRadiusPx = with(density) { 20.dp.toPx() }
+    val rimGlowStroke1 = remember(density) {
+        Stroke(width = with(density) { 1.4.dp.toPx() * 3.0f }, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    }
+    val rimStroke1 = remember(density) {
+        Stroke(width = with(density) { 1.4.dp.toPx() }, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    }
+    val rimGlowStroke2 = remember(density) {
+        Stroke(width = with(density) { 1.8.dp.toPx() * 3.0f }, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    }
+    val rimStroke2 = remember(density) {
+        Stroke(width = with(density) { 1.8.dp.toPx() }, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    }
+    val rimGlowStroke3 = remember(density) {
+        Stroke(width = with(density) { 2.2.dp.toPx() * 3.0f }, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    }
+    val rimStroke3 = remember(density) {
+        Stroke(width = with(density) { 2.2.dp.toPx() }, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    }
+
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(boxBg)
-            .border(
-                width = 1.dp,
-                color = if (isActive) {
-                    crestSky.copy(alpha = 0.35f + 0.35f * smoothAmp)
-                } else {
-                    StudioColors.BorderBright.copy(alpha = 0.45f)
-                },
-                shape = RoundedCornerShape(20.dp),
-            ),
+            .background(boxBg),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
@@ -927,10 +978,11 @@ fun LiquidAudioWavePreview(
                 fillBrush: Brush,
                 rimColor: Color,
                 glowColor: Color?,
-                rimWidthPx: Float,
+                rimGlowStroke: Stroke,
+                rimStroke: Stroke,
             ) {
-                val fillPath = Path()
-                val crestPath = Path()
+                fillPath.reset()
+                crestPath.reset()
 
                 val baseY = h * (baseFraction - riseFraction * smoothAmp - 0.022f * breathPulse)
                 val ampPx = h * (0.042f + waveAmpRatio * smoothAmp + 0.012f * breathPulse)
@@ -969,22 +1021,14 @@ fun LiquidAudioWavePreview(
                     drawPath(
                         path = crestPath,
                         color = glowColor,
-                        style = Stroke(
-                            width = rimWidthPx * 3.0f,
-                            cap = StrokeCap.Round,
-                            join = StrokeJoin.Round,
-                        ),
+                        style = rimGlowStroke,
                     )
                 }
 
                 drawPath(
                     path = crestPath,
                     color = rimColor,
-                    style = Stroke(
-                        width = rimWidthPx,
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                    ),
+                    style = rimStroke,
                 )
             }
 
@@ -1008,7 +1052,8 @@ fun LiquidAudioWavePreview(
                 ),
                 rimColor = indigoSoft.copy(alpha = 0.45f + 0.25f * smoothAmp),
                 glowColor = null,
-                rimWidthPx = 1.4.dp.toPx(),
+                rimGlowStroke = rimGlowStroke1,
+                rimStroke = rimStroke1,
             )
 
             // Layer 2 (Middle): Electric cyan-to-indigo flowing wave
@@ -1031,7 +1076,8 @@ fun LiquidAudioWavePreview(
                 ),
                 rimColor = crestSky.copy(alpha = 0.72f + 0.22f * smoothAmp),
                 glowColor = crestSky.copy(alpha = 0.18f + 0.18f * smoothAmp),
-                rimWidthPx = 1.8.dp.toPx(),
+                rimGlowStroke = rimGlowStroke2,
+                rimStroke = rimStroke2,
             )
 
             // Layer 3 (Front): Luminous teal-cyan crest blending into electric indigo
@@ -1055,7 +1101,19 @@ fun LiquidAudioWavePreview(
                 ),
                 rimColor = crestTeal.copy(alpha = 0.92f),
                 glowColor = crestTeal.copy(alpha = 0.28f + 0.22f * smoothAmp),
-                rimWidthPx = 2.2.dp.toPx(),
+                rimGlowStroke = rimGlowStroke3,
+                rimStroke = rimStroke3,
+            )
+
+            val borderColor = if (isActive) {
+                crestSky.copy(alpha = 0.35f + 0.35f * smoothAmp)
+            } else {
+                StudioColors.BorderBright.copy(alpha = 0.45f)
+            }
+            drawRoundRect(
+                color = borderColor,
+                cornerRadius = CornerRadius(borderCornerRadiusPx, borderCornerRadiusPx),
+                style = borderStroke,
             )
         }
     }

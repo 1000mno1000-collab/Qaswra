@@ -13,6 +13,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -66,6 +67,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -77,6 +79,7 @@ import com.example.model.DistortionMode
 import com.example.model.EchoDetailGroup
 import com.example.model.EchoPadAxisMode
 import com.example.model.EffectType
+import com.example.studio.ui.lit
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
@@ -105,6 +108,8 @@ fun EchoReverbScreen(
     val (padX, padY) = viewModel.getEchoPadAxes()
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
+    val density = LocalDensity.current
+    val rippleStroke = remember(density) { Stroke(width = with(density) { 1.5.dp.toPx() }) }
     val trailPoints = remember { mutableStateListOf<Offset>() }
     val rippleTransition = rememberInfiniteTransition(label = "echoRipple")
     val ripplePhase by rippleTransition.animateFloat(
@@ -151,14 +156,17 @@ fun EchoReverbScreen(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            val simpleInteraction = remember { MutableInteractionSource() }
             Surface(
                 onClick = { viewModel.setSimpleEchoMode(true) },
+                interactionSource = simpleInteraction,
                 shape = RoundedCornerShape(14.dp),
                 color = if (uiState.isSimpleEchoMode) StudioColors.Cyan else StudioColors.CardSurface,
                 border = BorderStroke(1.dp, if (uiState.isSimpleEchoMode) StudioColors.Cyan else StudioColors.Border),
                 modifier = Modifier
                     .weight(1f)
                     .defaultMinSize(minHeight = 48.dp)
+                    .lit(simpleInteraction, MaterialTheme.colorScheme.primary, selected = uiState.isSimpleEchoMode, cornerRadius = 14.dp)
                     .testTag("echo_mode_simple"),
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(10.dp)) {
@@ -169,14 +177,17 @@ fun EchoReverbScreen(
                     )
                 }
             }
+            val proInteraction = remember { MutableInteractionSource() }
             Surface(
                 onClick = { viewModel.setSimpleEchoMode(false) },
+                interactionSource = proInteraction,
                 shape = RoundedCornerShape(14.dp),
                 color = if (!uiState.isSimpleEchoMode) StudioColors.Violet else StudioColors.CardSurface,
                 border = BorderStroke(1.dp, if (!uiState.isSimpleEchoMode) StudioColors.Violet else StudioColors.Border),
                 modifier = Modifier
                     .weight(1f)
                     .defaultMinSize(minHeight = 48.dp)
+                    .lit(proInteraction, MaterialTheme.colorScheme.primary, selected = !uiState.isSimpleEchoMode, cornerRadius = 14.dp)
                     .testTag("echo_mode_pro"),
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(10.dp)) {
@@ -193,7 +204,8 @@ fun EchoReverbScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             EchoPadAxisMode.entries.forEach { mode ->
@@ -204,9 +216,11 @@ fun EchoReverbScreen(
                     EchoPadAxisMode.WIDTH -> if (lang == AppLanguage.EN) "Width & Diffusion" else "الاتساع والانتشار"
                     EchoPadAxisMode.DAMPING -> if (lang == AppLanguage.EN) "Damping & Pre" else "التخميد والتمهيد"
                 }
+                val chipInteraction = remember { MutableInteractionSource() }
                 FilterChip(
                     selected = selected,
                     onClick = { viewModel.setEchoPadAxisMode(mode) },
+                    interactionSource = chipInteraction,
                     label = { Text(label, maxLines = 1) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.2f),
@@ -222,6 +236,7 @@ fun EchoReverbScreen(
                     ),
                     modifier = Modifier
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(chipInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 10.dp)
                         .testTag("echo_axis_${mode.name.lowercase()}"),
                 )
             }
@@ -319,7 +334,7 @@ fun EchoReverbScreen(
                                 color = StudioColors.Cyan.copy(alpha = alpha),
                                 radius = radius,
                                 center = orbPos,
-                                style = Stroke(width = 1.5.dp.toPx()),
+                                style = rippleStroke,
                             )
                         }
 
@@ -710,14 +725,17 @@ fun EffectsChainScreen(
                     onValueChange = { v -> viewModel.updateDspConfig { it.copy(masterGainDb = v) } },
                 )
 
+                val resetInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { viewModel.resetAllEffects() },
+                    interactionSource = resetInteraction,
                     border = BorderStroke(1.dp, StudioColors.Rose.copy(alpha = 0.6f)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(resetInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("chain_reset_all_button"),
                 ) {
                     Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -728,8 +746,10 @@ fun EffectsChainScreen(
         }
 
         chain.forEachIndexed { idx, slot ->
+            val slotInteraction = remember { MutableInteractionSource() }
             Card(
                 onClick = { onOpenEffect(slot.type) },
+                interactionSource = slotInteraction,
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = if (slot.enabled) StudioColors.ElevatedSurface else StudioColors.CardSurface,
@@ -740,6 +760,7 @@ fun EffectsChainScreen(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .lit(slotInteraction, MaterialTheme.colorScheme.primary, selected = slot.enabled, cornerRadius = 18.dp)
                     .testTag("chain_slot_${slot.type.name.lowercase()}"),
             ) {
                 Row(
@@ -785,29 +806,35 @@ fun EffectsChainScreen(
                         )
                     }
 
+                    val upInteraction = remember { MutableInteractionSource() }
                     IconButton(
                         onClick = { viewModel.moveEffectInChain(idx, idx - 1) },
                         enabled = idx > 0,
+                        interactionSource = upInteraction,
                         colors = IconButtonDefaults.iconButtonColors(
                             contentColor = StudioColors.TextSecondary,
                             disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
                         ),
                         modifier = Modifier
                             .size(48.dp)
+                            .lit(upInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                             .testTag("chain_up_${slot.type.name.lowercase()}"),
                     ) {
                         Icon(Icons.Rounded.ArrowUpward, contentDescription = t(lang, "move_up"), modifier = Modifier.size(18.dp))
                     }
 
+                    val downInteraction = remember { MutableInteractionSource() }
                     IconButton(
                         onClick = { viewModel.moveEffectInChain(idx, idx + 1) },
                         enabled = idx < chain.lastIndex,
+                        interactionSource = downInteraction,
                         colors = IconButtonDefaults.iconButtonColors(
                             contentColor = StudioColors.TextSecondary,
                             disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
                         ),
                         modifier = Modifier
                             .size(48.dp)
+                            .lit(downInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                             .testTag("chain_down_${slot.type.name.lowercase()}"),
                     ) {
                         Icon(Icons.Rounded.ArrowDownward, contentDescription = t(lang, "move_down"), modifier = Modifier.size(18.dp))
@@ -907,6 +934,15 @@ fun EffectDetailScreen(
                             eq.band14000HzDb,
                         )
                         // 5-band frequency response curve Canvas
+                        val eqPath = remember { Path() }
+                        val eqDensity = LocalDensity.current
+                        val eqStroke = remember(eqDensity) {
+                            Stroke(
+                                width = with(eqDensity) { 2.5.dp.toPx() },
+                                cap = StrokeCap.Round,
+                                join = StrokeJoin.Round,
+                            )
+                        }
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -924,19 +960,19 @@ fun EffectDetailScreen(
                                     end = Offset(size.width, midY),
                                     strokeWidth = 1.dp.toPx(),
                                 )
-                                val path = Path()
+                                eqPath.reset()
                                 val pts = bands.mapIndexed { idx, db ->
                                     val x = if (bands.size <= 1) 0f else size.width * (idx.toFloat() / (bands.size - 1))
                                     val y = midY - (db / 12f) * (size.height * 0.42f)
                                     Offset(x, y)
                                 }
                                 pts.forEachIndexed { idx, p ->
-                                    if (idx == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
+                                    if (idx == 0) eqPath.moveTo(p.x, p.y) else eqPath.lineTo(p.x, p.y)
                                 }
                                 drawPath(
-                                    path = path,
+                                    path = eqPath,
                                     color = StudioColors.Cyan,
-                                    style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+                                    style = eqStroke,
                                 )
                                 pts.forEach { p ->
                                     drawCircle(color = StudioColors.Violet, radius = 5.dp.toPx(), center = p)
@@ -1103,11 +1139,14 @@ fun EffectDetailScreen(
                     EffectType.DISTORTION -> {
                         val d = cfg.distortion
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             DistortionMode.entries.forEach { mode ->
                                 val selected = mode == d.mode
+                                val chipInteraction = remember { MutableInteractionSource() }
                                 FilterChip(
                                     selected = selected,
                                     onClick = {
@@ -1115,10 +1154,12 @@ fun EffectDetailScreen(
                                             it.copy(distortion = it.distortion.copy(mode = mode)).withSlotEnabled(EffectType.DISTORTION, true)
                                         }
                                     },
+                                    interactionSource = chipInteraction,
                                     label = { Text(mode.name.replace('_', ' '), maxLines = 1) },
                                     modifier = Modifier
                                         .weight(1f)
                                         .defaultMinSize(minHeight = 48.dp)
+                                        .lit(chipInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 10.dp)
                                         .testTag("distortion_mode_${mode.name.lowercase()}"),
                                 )
                             }

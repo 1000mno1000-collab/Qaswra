@@ -40,19 +40,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -149,18 +150,30 @@ fun SonixLuxuryLaunchOverlay(
             AppLanguage.EN -> "MASTER AUDIO ENGINEERING STUDIO"
         }
 
+        val bgBrush = remember {
+            Brush.verticalGradient(
+                colors = listOf(
+                    Color(0xFF04070F),
+                    Color(0xFF0A1124),
+                    Color(0xFF070B14),
+                ),
+            )
+        }
+        val logoBorderBrush = remember {
+            Brush.linearGradient(
+                colors = listOf(
+                    StudioColors.Cyan,
+                    StudioColors.Violet,
+                    StudioColors.CyanHover,
+                ),
+            )
+        }
+        val emblemBitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo)
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF04070F),
-                            Color(0xFF0A1124),
-                            Color(0xFF070B14),
-                        ),
-                    ),
-                )
+                .background(bgBrush)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -183,7 +196,7 @@ fun SonixLuxuryLaunchOverlay(
                     Canvas(
                         modifier = Modifier
                             .fillMaxSize()
-                            .alpha(emblemAlpha.value),
+                            .graphicsLayer { alpha = emblemAlpha.value },
                     ) {
                         val cx = size.width / 2f
                         val cy = size.height / 2f
@@ -245,24 +258,23 @@ fun SonixLuxuryLaunchOverlay(
                         shadowElevation = 20.dp,
                         border = BorderStroke(
                             width = 2.dp,
-                            brush = Brush.linearGradient(
-                                colors = listOf(
-                                    StudioColors.Cyan,
-                                    StudioColors.Violet,
-                                    StudioColors.CyanHover,
-                                ),
-                            ),
+                            brush = logoBorderBrush,
                         ),
                         modifier = Modifier
                             .size(116.dp)
-                            .scale(emblemScale.value)
-                            .alpha(emblemAlpha.value),
+                            .graphicsLayer {
+                                val sc = emblemScale.value
+                                scaleX = sc
+                                scaleY = sc
+                                alpha = emblemAlpha.value
+                            },
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             Image(
-                                painter = painterResource(R.drawable.sonix_primary_logo),
+                                bitmap = emblemBitmap,
                                 contentDescription = t(language, "app_name"),
                                 contentScale = ContentScale.Crop,
+                                filterQuality = FilterQuality.High,
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .clip(RoundedCornerShape(30.dp)),
@@ -292,9 +304,10 @@ fun SonixLuxuryLaunchOverlay(
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier
-                        .offset(y = titleOffsetY.value.dp)
-                        .alpha(titleAlpha.value),
+                    modifier = Modifier.graphicsLayer {
+                        translationY = titleOffsetY.value.dp.toPx()
+                        alpha = titleAlpha.value
+                    },
                 ) {
                     Text(
                         text = t(language, "app_name"),

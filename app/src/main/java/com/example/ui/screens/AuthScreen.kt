@@ -6,6 +6,7 @@ import android.content.ContextWrapper
 import android.util.Log
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,11 +57,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -76,6 +79,7 @@ import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
 import com.example.i18n.t
 import com.example.model.AppLanguage
+import com.example.studio.ui.lit
 import com.example.ui.components.LanguageBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
 import com.example.ui.theme.SonixTheme
@@ -304,22 +308,26 @@ private fun AuthScreenContent(
                 )
             }
 
+            val logoBorderBrush = remember {
+                Brush.linearGradient(
+                    colors = listOf(StudioColors.Cyan, StudioColors.Violet),
+                )
+            }
             Surface(
                 shape = RoundedCornerShape(26.dp),
                 color = Color(0xFFFFFFFE),
                 border = BorderStroke(
                     width = 1.8.dp,
-                    brush = Brush.linearGradient(
-                        colors = listOf(StudioColors.Cyan, StudioColors.Violet),
-                    ),
+                    brush = logoBorderBrush,
                 ),
                 shadowElevation = 14.dp,
                 modifier = Modifier.size(92.dp),
             ) {
                 Image(
-                    painter = painterResource(R.drawable.sonix_primary_logo),
+                    bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
                     contentDescription = t(lang, "app_name"),
                     contentScale = ContentScale.Crop,
+                    filterQuality = FilterQuality.High,
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(RoundedCornerShape(24.dp)),
@@ -363,13 +371,17 @@ private fun AuthScreenContent(
                     ) {
                         val signInColor = if (!isSignUp) StudioColors.Cyan else StudioColors.ElevatedSurface
                         val signUpColor = if (isSignUp) StudioColors.Cyan else StudioColors.ElevatedSurface
+                        val signInInteraction = remember { MutableInteractionSource() }
+                        val signUpInteraction = remember { MutableInteractionSource() }
                         Surface(
                             onClick = { onSelectMode(false) },
+                            interactionSource = signInInteraction,
                             shape = RoundedCornerShape(14.dp),
                             color = signInColor,
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(signInInteraction, MaterialTheme.colorScheme.primary, selected = !isSignUp, cornerRadius = 14.dp)
                                 .testTag("auth_mode_signin"),
                         ) {
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(10.dp)) {
@@ -382,11 +394,13 @@ private fun AuthScreenContent(
                         }
                         Surface(
                             onClick = { onSelectMode(true) },
+                            interactionSource = signUpInteraction,
                             shape = RoundedCornerShape(14.dp),
                             color = signUpColor,
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(signUpInteraction, MaterialTheme.colorScheme.primary, selected = isSignUp, cornerRadius = 14.dp)
                                 .testTag("auth_mode_signup"),
                         ) {
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(10.dp)) {
@@ -480,9 +494,11 @@ private fun AuthScreenContent(
                         }
                     }
 
+                    val submitInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = onSubmitEmail,
                         enabled = !isSubmitting && !isGoogleLoading,
+                        interactionSource = submitInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
@@ -491,6 +507,7 @@ private fun AuthScreenContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 50.dp)
+                            .lit(submitInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("auth_submit_button"),
                     ) {
                         if (isSubmitting) {
@@ -527,9 +544,11 @@ private fun AuthScreenContent(
                         )
                     }
 
+                    val googleInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = onGoogleSignIn,
                         enabled = !isSubmitting && !isGoogleLoading,
+                        interactionSource = googleInteraction,
                         border = BorderStroke(1.dp, StudioColors.BorderBright),
                         colors = ButtonDefaults.outlinedButtonColors(
                             containerColor = StudioColors.ElevatedSurface,
@@ -539,6 +558,7 @@ private fun AuthScreenContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 50.dp)
+                            .lit(googleInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("auth_google_button"),
                     ) {
                         if (isGoogleLoading) {
@@ -562,15 +582,18 @@ private fun AuthScreenContent(
                         )
                     }
 
+                    val guestInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = onContinueAsGuest,
                         enabled = !isSubmitting && !isGoogleLoading,
+                        interactionSource = guestInteraction,
                         border = BorderStroke(1.dp, StudioColors.Emerald.copy(alpha = 0.7f)),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Emerald),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 50.dp)
+                            .lit(guestInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("auth_guest_button"),
                     ) {
                         Icon(

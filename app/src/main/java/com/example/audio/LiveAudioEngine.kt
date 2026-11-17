@@ -8,27 +8,18 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
-import android.os.Bundle
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import androidx.core.content.ContextCompat
 import com.example.model.DspConfig
 import com.example.model.EffectType
 import com.example.model.PlaybackTelemetry
 import com.example.model.RecorderTelemetry
 import com.example.model.StereoAudioBuffer
-import com.example.model.TtsDialect
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.util.Locale
-import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.floor
@@ -469,119 +460,3 @@ class StudioAudioRecorder(
     }
 }
 
-class AndroidTtsEngine(private val context: Context) {
-    private var tts: TextToSpeech? = null
-    private var initReady = false
-    private val initDeferred = CompletableDeferred<Boolean>()
-    private var previewDoneCallback: (() -> Unit)? = null
-    private val synthWaiters = mutableMapOf<String, CompletableDeferred<Boolean>>()
-
-    init {
-        runCatching {
-            tts = TextToSpeech(context.applicationContext) { status ->
-                initReady = status == TextToSpeech.SUCCESS
-                if (!initDeferred.isCompleted) initDeferred.complete(initReady)
-            }
-            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
-                override fun onDone(utteranceId: String?) {
-                    if (utteranceId == "preview") {
-                        previewDoneCallback?.invoke()
-                    } else if (utteranceId != null) {
-                        synthWaiters.remove(utteranceId)?.complete(true)
-                    }
-                }
-
-                @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?) {
-                    if (utteranceId == "preview") {
-                        previewDoneCallback?.invoke()
-                    } else if (utteranceId != null) {
-                        synthWaiters.remove(utteranceId)?.complete(false)
-                    }
-                }
-
-                override fun onError(utteranceId: String?, errorCode: Int) {
-                    if (utteranceId == "preview") {
-                        previewDoneCallback?.invoke()
-                    } else if (utteranceId != null) {
-                        synthWaiters.remove(utteranceId)?.complete(false)
-                    }
-                }
-            })
-        }.onFailure {
-            initReady = false
-            if (!initDeferred.isCompleted) initDeferred.complete(false)
-        }
-    }
-
-    private fun resolveLocale(engine: TextToSpeech, dialect: TtsDialect) {
-        val primary = Locale.forLanguageTag(dialect.localeTag)
-        val res = engine.setLanguage(primary)
-        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-            engine.setLanguage(Locale.forLanguageTag(dialect.fallbackLocaleTag))
-        }
-    }
-
-    suspend fun preview(
-        text: String,
-        dialect: TtsDialect,
-        speechRate: Float,
-        pitch: Float,
-        onFinished: () -> Unit,
-    ): Boolean {
-        val ready = initDeferred.await()
-        val engine = tts ?: return false
-        if (!ready) return false
-        resolveLocale(engine, dialect)
-        engine.setSpeechRate(clamp(speechRate, 0.5f, 1.8f))
-        engine.setPitch(clamp(pitch, 0.6f, 1.6f))
-        previewDoneCallback = onFinished
-        val params = Bundle()
-        val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, "preview")
-        return result == TextToSpeech.SUCCESS
-    }
-
-    fun stopPreview() {
-        runCatching { tts?.stop() }
-        previewDoneCallback?.invoke()
-    }
-
-    suspend fun synthesizeToBuffer(
-        text: String,
-        dialect: TtsDialect,
-        speechRate: Float,
-        pitch: Float,
-    ): StereoAudioBuffer? = withContext(Dispatchers.IO) {
-        val ready = initDeferred.await()
-        val engine = tts ?: return@withContext null
-        if (!ready) return@withContext null
-
-        resolveLocale(engine, dialect)
-        engine.setSpeechRate(clamp(speechRate, 0.5f, 1.8f))
-        engine.setPitch(clamp(pitch, 0.6f, 1.6f))
-
-        val outFile = File(context.cacheDir, "tts_${UUID.randomUUID()}.wav")
-        val uttId = UUID.randomUUID().toString()
-        val waiter = CompletableDeferred<Boolean>()
-        synthWaiters[uttId] = waiter
-
-        val res = engine.synthesizeToFile(text, Bundle(), outFile, uttId)
-        if (res != TextToSpeech.SUCCESS) {
-            synthWaiters.remove(uttId)
-            outFile.delete()
-            return@withContext null
-        }
-
-        val ok = waiter.await()
-        val decoded = if (ok && outFile.exists()) AudioDecoder.decodeFile(outFile) else null
-        outFile.delete()
-        decoded
-    }
-
-    fun shutdown() {
-        runCatching { tts?.stop() }
-        runCatching { tts?.shutdown() }
-        tts = null
-    }
-}

@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -60,6 +61,7 @@ import com.example.model.BUILT_IN_PRESETS
 import com.example.model.ExportAudioFormat
 import com.example.model.GLOBAL_PRO_PRESETS
 import com.example.model.StudioPreset
+import com.example.studio.ui.lit
 import com.example.ui.components.ExportFormatDialog
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
@@ -105,8 +107,10 @@ fun PresetsScreen(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            val openSaveInteraction = remember { MutableInteractionSource() }
             Button(
                 onClick = { saveDialogOpen = true },
+                interactionSource = openSaveInteraction,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = StudioColors.Cyan,
                     contentColor = StudioColors.BgTop,
@@ -115,6 +119,7 @@ fun PresetsScreen(
                 modifier = Modifier
                     .weight(1f)
                     .defaultMinSize(minHeight = 48.dp)
+                    .lit(openSaveInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                     .testTag("preset_open_save_dialog_button"),
             ) {
                 Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -127,13 +132,16 @@ fun PresetsScreen(
                 )
             }
 
+            val openEchoInteraction = remember { MutableInteractionSource() }
             OutlinedButton(
                 onClick = onOpenEchoSpace,
+                interactionSource = openEchoInteraction,
                 border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.7f)),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .defaultMinSize(minHeight = 48.dp)
+                    .lit(openEchoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                     .testTag("preset_open_echo_3d_button"),
             ) {
                 Icon(Icons.Rounded.Waves, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -155,8 +163,10 @@ fun PresetsScreen(
         GLOBAL_PRO_PRESETS.forEach { proPreset ->
             val presetTitle = t(lang, proPreset.titleKey)
             val isSelected = uiState.selectedPresetLabel == presetTitle && !uiState.dspConfig.bypassAll
+            val proPresetInteraction = remember { MutableInteractionSource() }
             Card(
                 onClick = { viewModel.applyGlobalProPreset(proPreset, bakeOffline = false) },
+                interactionSource = proPresetInteraction,
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = if (isSelected) StudioColors.ElevatedSurface else StudioColors.CardSurface,
@@ -167,6 +177,7 @@ fun PresetsScreen(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .lit(proPresetInteraction, MaterialTheme.colorScheme.primary, selected = isSelected, cornerRadius = 18.dp)
                     .testTag("global_pro_preset_${proPreset.id.name}"),
             ) {
                 Row(
@@ -298,6 +309,7 @@ fun PresetsScreen(
                 }
             },
             confirmButton = {
+                val confirmInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = {
                         viewModel.saveCustomPreset(
@@ -311,14 +323,22 @@ fun PresetsScreen(
                         saveDialogOpen = false
                     },
                     enabled = newPresetName.isNotBlank(),
+                    interactionSource = confirmInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
-                    modifier = Modifier.testTag("preset_save_custom_button"),
+                    modifier = Modifier
+                        .lit(confirmInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
+                        .testTag("preset_save_custom_button"),
                 ) {
                     Text(t(lang, "confirm"))
                 }
             },
             dismissButton = {
-                TextButton(onClick = { saveDialogOpen = false }) {
+                val dismissInteraction = remember { MutableInteractionSource() }
+                TextButton(
+                    onClick = { saveDialogOpen = false },
+                    interactionSource = dismissInteraction,
+                    modifier = Modifier.lit(dismissInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp),
+                ) {
                     Text(t(lang, "cancel"), color = StudioColors.TextSecondary)
                 }
             },
@@ -335,8 +355,10 @@ private fun PresetRowCard(
     onDelete: (() -> Unit)?,
 ) {
     val activeCount = preset.config.chain.count { it.enabled }
+    val cardInteraction = remember { MutableInteractionSource() }
     Card(
         onClick = onApply,
+        interactionSource = cardInteraction,
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isActive) StudioColors.ElevatedSurface else StudioColors.CardSurface,
@@ -344,6 +366,7 @@ private fun PresetRowCard(
         border = BorderStroke(1.dp, if (isActive) StudioColors.Cyan else StudioColors.Border),
         modifier = Modifier
             .fillMaxWidth()
+            .lit(cardInteraction, MaterialTheme.colorScheme.primary, selected = isActive, cornerRadius = 18.dp)
             .testTag("preset_card_${preset.id}"),
     ) {
         Row(
@@ -390,11 +413,14 @@ private fun PresetRowCard(
                 )
             }
             if (onDelete != null) {
+                val deleteInteraction = remember { MutableInteractionSource() }
                 IconButton(
                     onClick = onDelete,
+                    interactionSource = deleteInteraction,
                     colors = IconButtonDefaults.iconButtonColors(contentColor = StudioColors.RoseBright),
                     modifier = Modifier
                         .size(48.dp)
+                        .lit(deleteInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                         .testTag("preset_delete_${preset.id}"),
                 ) {
                     Icon(Icons.Rounded.Delete, contentDescription = t(lang, "delete"))
@@ -460,9 +486,11 @@ fun ProjectsExportScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val saveProjInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { viewModel.saveCurrentProject() },
                         enabled = !uiState.isBusy,
+                        interactionSource = saveProjInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Emerald,
                             contentColor = StudioColors.BgTop,
@@ -471,6 +499,7 @@ fun ProjectsExportScreen(
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(saveProjInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("project_save_button"),
                     ) {
                         Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -478,13 +507,16 @@ fun ProjectsExportScreen(
                         Text(t(lang, "save_project"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
 
+                    val newProjInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.newProject() },
+                        interactionSource = newProjInteraction,
                         border = BorderStroke(1.dp, StudioColors.BorderBright),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(newProjInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("project_new_button"),
                     ) {
                         Icon(Icons.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -535,6 +567,7 @@ fun ProjectsExportScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val m4aInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
                             viewModel.exportRenderedAudio(
@@ -544,6 +577,7 @@ fun ProjectsExportScreen(
                             )
                         },
                         enabled = uiState.hasAudio && !uiState.isBusy,
+                        interactionSource = m4aInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
@@ -552,6 +586,7 @@ fun ProjectsExportScreen(
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(m4aInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("export_quick_m4a_button"),
                     ) {
                         Icon(Icons.Rounded.AudioFile, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -559,6 +594,7 @@ fun ProjectsExportScreen(
                         Text(t(lang, "export_mp3"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
 
+                    val wavInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = {
                             viewModel.exportRenderedAudio(
@@ -568,12 +604,14 @@ fun ProjectsExportScreen(
                             )
                         },
                         enabled = uiState.hasAudio && !uiState.isBusy,
+                        interactionSource = wavInteraction,
                         border = BorderStroke(1.dp, StudioColors.Emerald),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Emerald),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(wavInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("export_quick_wav_button"),
                     ) {
                         Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -582,15 +620,18 @@ fun ProjectsExportScreen(
                     }
                 }
 
+                val openExportInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { exportDialogOpen = true },
                     enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = openExportInteraction,
                     border = BorderStroke(1.dp, StudioColors.Violet),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(openExportInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("projects_open_export_dialog_button"),
                 ) {
                     Text(t(lang, "save_export_final"))
@@ -634,22 +675,27 @@ fun ProjectsExportScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = StudioColors.TextSecondary,
                     )
+                    val cloudSignInInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.requestSignIn() },
+                        interactionSource = cloudSignInInteraction,
                         border = BorderStroke(1.dp, StudioColors.Cyan),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(cloudSignInInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("cloud_drafts_signin_button"),
                     ) {
                         Text(t(lang, "auth_google_signin"))
                     }
                 } else {
+                    val saveDraftInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { viewModel.saveCloudDraft(uiState.activeProjectName.ifBlank { t(lang, "untitled_project") }) },
                         enabled = !uiState.isBusy,
+                        interactionSource = saveDraftInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Violet.copy(alpha = 0.22f),
                             contentColor = StudioColors.Violet,
@@ -659,6 +705,7 @@ fun ProjectsExportScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(saveDraftInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("cloud_draft_save_current_button"),
                     ) {
                         Text(t(lang, "save_to_drafts"))
@@ -716,27 +763,33 @@ fun ProjectsExportScreen(
                                         )
                                     }
 
+                                    val loadDraftInteraction = remember { MutableInteractionSource() }
                                     IconButton(
                                         onClick = { viewModel.loadCloudDraft(draft) },
+                                        interactionSource = loadDraftInteraction,
                                         colors = IconButtonDefaults.iconButtonColors(
                                             containerColor = StudioColors.ElevatedSurface,
                                             contentColor = StudioColors.Cyan,
                                         ),
                                         modifier = Modifier
                                             .size(48.dp)
+                                            .lit(loadDraftInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                             .testTag("cloud_draft_open_${draft.docId}"),
                                     ) {
                                         Icon(Icons.Rounded.FolderOpen, contentDescription = t(lang, "load"))
                                     }
 
+                                    val deleteDraftInteraction = remember { MutableInteractionSource() }
                                     IconButton(
                                         onClick = { viewModel.deleteCloudDraft(draft.docId) },
+                                        interactionSource = deleteDraftInteraction,
                                         colors = IconButtonDefaults.iconButtonColors(
                                             containerColor = StudioColors.ElevatedSurface,
                                             contentColor = StudioColors.RoseBright,
                                         ),
                                         modifier = Modifier
                                             .size(48.dp)
+                                            .lit(deleteDraftInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                             .testTag("cloud_draft_delete_${draft.docId}"),
                                     ) {
                                         Icon(Icons.Rounded.Delete, contentDescription = t(lang, "delete"))
@@ -810,27 +863,33 @@ fun ProjectsExportScreen(
                                     )
                                 }
 
+                                val openProjInteraction = remember { MutableInteractionSource() }
                                 IconButton(
                                     onClick = { viewModel.loadProject(proj) },
+                                    interactionSource = openProjInteraction,
                                     colors = IconButtonDefaults.iconButtonColors(
                                         containerColor = StudioColors.ElevatedSurface,
                                         contentColor = StudioColors.Cyan,
                                     ),
                                     modifier = Modifier
                                         .size(48.dp)
+                                        .lit(openProjInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                         .testTag("project_open_${proj.id}"),
                                 ) {
                                     Icon(Icons.Rounded.FolderOpen, contentDescription = t(lang, "load"))
                                 }
 
+                                val deleteProjInteraction = remember { MutableInteractionSource() }
                                 IconButton(
                                     onClick = { viewModel.deleteProject(proj) },
+                                    interactionSource = deleteProjInteraction,
                                     colors = IconButtonDefaults.iconButtonColors(
                                         containerColor = StudioColors.ElevatedSurface,
                                         contentColor = StudioColors.RoseBright,
                                     ),
                                     modifier = Modifier
                                         .size(48.dp)
+                                        .lit(deleteProjInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                         .testTag("project_delete_${proj.id}"),
                                 ) {
                                     Icon(Icons.Rounded.Delete, contentDescription = t(lang, "delete"))

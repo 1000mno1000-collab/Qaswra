@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -56,6 +57,7 @@ import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.ExportAudioFormat
 import com.example.model.SleepTimerOption
+import com.example.studio.ui.lit
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 
@@ -65,13 +67,16 @@ fun LanguageBadgeButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     Surface(
         onClick = onClick,
+        interactionSource = interaction,
         shape = RoundedCornerShape(999.dp),
         color = StudioColors.ElevatedSurface.copy(alpha = 0.9f),
         border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
         modifier = modifier
             .defaultMinSize(minHeight = 48.dp)
+            .lit(interaction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
             .testTag("language_badge_button"),
     ) {
         Row(
@@ -129,11 +134,13 @@ fun LanguageSelectorDialog(
 
                 AppLanguage.entries.forEach { lang ->
                     val selected = lang == currentLanguage
+                    val langInteraction = remember { MutableInteractionSource() }
                     Card(
                         onClick = {
                             onSelect(lang)
                             onDismiss()
                         },
+                        interactionSource = langInteraction,
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = if (selected) StudioColors.ElevatedSurface else StudioColors.BgMid,
@@ -145,6 +152,7 @@ fun LanguageSelectorDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 52.dp)
+                            .lit(langInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 16.dp)
                             .testTag("lang_option_${lang.tag}"),
                     ) {
                         Row(
@@ -182,10 +190,13 @@ fun LanguageSelectorDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
                 ) {
+                    val cancelInteraction = remember { MutableInteractionSource() }
                     TextButton(
                         onClick = onDismiss,
+                        interactionSource = cancelInteraction,
                         modifier = Modifier
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(cancelInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("lang_dialog_cancel"),
                     ) {
                         Text(t(currentLanguage, "cancel"), color = StudioColors.TextSecondary)
@@ -313,8 +324,10 @@ fun ExportFormatDialog(
                         ExportAudioFormat.M4A -> StudioColors.Cyan
                         else -> StudioColors.TextSecondary
                     }
+                    val fmtInteraction = remember { MutableInteractionSource() }
                     Card(
                         onClick = { selectedFormat = fmt },
+                        interactionSource = fmtInteraction,
                         shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = if (selected) StudioColors.ElevatedSurface else StudioColors.BgMid,
@@ -326,6 +339,7 @@ fun ExportFormatDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 52.dp)
+                            .lit(fmtInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 14.dp)
                             .testTag("export_format_${fmt.extension}"),
                     ) {
                         Row(
@@ -393,11 +407,13 @@ fun ExportFormatDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
+                            .horizontalScroll(rememberScrollState())
+                            .padding(vertical = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         shareTargets.forEach { target ->
                             val cleanOutName = fileName.ifBlank { initialFileName }
+                            val targetInteraction = remember { MutableInteractionSource() }
                             Surface(
                                 onClick = {
                                     onDismiss()
@@ -407,11 +423,13 @@ fun ExportFormatDialog(
                                         onShareAudio(selectedFormat, cleanOutName)
                                     }
                                 },
+                                interactionSource = targetInteraction,
                                 shape = RoundedCornerShape(14.dp),
                                 color = target.accent.copy(alpha = 0.14f),
                                 border = BorderStroke(1.dp, target.accent.copy(alpha = 0.45f)),
                                 modifier = Modifier
                                     .defaultMinSize(minHeight = 48.dp)
+                                    .lit(targetInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                     .testTag("quick_share_${target.id}"),
                             ) {
                                 Row(
@@ -438,11 +456,13 @@ fun ExportFormatDialog(
                 }
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val saveBtnInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
                             onDismiss()
                             onSaveToDevice(selectedFormat, fileName.ifBlank { initialFileName })
                         },
+                        interactionSource = saveBtnInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
@@ -451,6 +471,7 @@ fun ExportFormatDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(saveBtnInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("export_confirm_save_button"),
                     ) {
                         Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -462,17 +483,20 @@ fun ExportFormatDialog(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
+                        val shareBtnInteraction = remember { MutableInteractionSource() }
                         OutlinedButton(
                             onClick = {
                                 onDismiss()
                                 onShareAudio(selectedFormat, fileName.ifBlank { initialFileName })
                             },
+                            interactionSource = shareBtnInteraction,
                             border = BorderStroke(1.dp, StudioColors.Emerald),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Emerald),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(shareBtnInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("export_confirm_share_button"),
                         ) {
                             Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -480,10 +504,13 @@ fun ExportFormatDialog(
                             Text(t(language, "share_audio"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
 
+                        val cancelBtnInteraction = remember { MutableInteractionSource() }
                         TextButton(
                             onClick = onDismiss,
+                            interactionSource = cancelBtnInteraction,
                             modifier = Modifier
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(cancelBtnInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                                 .testTag("export_dialog_cancel"),
                         ) {
                             Text(t(language, "cancel"), color = StudioColors.TextSecondary)
@@ -562,11 +589,13 @@ fun SleepTimerDialog(
 
                 SleepTimerOption.entries.forEach { option ->
                     val selected = option == selectedOption && (option != SleepTimerOption.OFF || remainingSec == 0)
+                    val optInteraction = remember { MutableInteractionSource() }
                     Card(
                         onClick = {
                             onSelect(option)
                             onDismiss()
                         },
+                        interactionSource = optInteraction,
                         shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = if (selected) StudioColors.ElevatedSurface else StudioColors.BgMid,
@@ -578,6 +607,7 @@ fun SleepTimerDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 50.dp)
+                            .lit(optInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 14.dp)
                             .testTag("sleep_timer_option_${option.name.lowercase()}"),
                     ) {
                         Row(
@@ -608,9 +638,13 @@ fun SleepTimerDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
                 ) {
+                    val sleepCancelInteraction = remember { MutableInteractionSource() }
                     TextButton(
                         onClick = onDismiss,
-                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                        interactionSource = sleepCancelInteraction,
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(sleepCancelInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp),
                     ) {
                         Text(t(language, "cancel"), color = StudioColors.TextSecondary)
                     }
@@ -670,8 +704,10 @@ fun ToolInfoDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
                 ) {
+                    val closeInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = onDismiss,
+                        interactionSource = closeInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
@@ -679,6 +715,7 @@ fun ToolInfoDialog(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(closeInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("tool_info_close_button"),
                     ) {
                         Text(t(language, "tool_info_close"), style = MaterialTheme.typography.labelLarge)
@@ -787,10 +824,13 @@ fun SaveDraftDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val draftCancelInteraction = remember { MutableInteractionSource() }
                     TextButton(
                         onClick = onDismiss,
+                        interactionSource = draftCancelInteraction,
                         modifier = Modifier
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(draftCancelInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("save_draft_cancel_button"),
                     ) {
                         Text(t(language, "cancel"), color = StudioColors.TextSecondary)
@@ -798,11 +838,13 @@ fun SaveDraftDialog(
 
                     Spacer(Modifier.weight(1f))
 
+                    val draftConfirmInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
                             onDismiss()
                             onSaveDraft(draftName.trim().ifBlank { initialName })
                         },
+                        interactionSource = draftConfirmInteraction,
                         enabled = draftName.isNotBlank() && isCloudSignedIn,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Cyan,
@@ -811,6 +853,7 @@ fun SaveDraftDialog(
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(draftConfirmInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("save_draft_confirm_button"),
                     ) {
                         Text(t(language, "confirm"), style = MaterialTheme.typography.labelLarge)

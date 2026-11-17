@@ -98,4 +98,10 @@ sealed interface StudioRoute {
 
     @Serializable
     data object SmartMusicMixer : StudioRoute
+
+    @Serializable
+    data object SmartAssistant : StudioRoute
+
+    @Serializable
+    data object CinematicVideoReels : StudioRoute
 }

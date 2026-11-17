@@ -1,6 +1,11 @@
 package com.example.ui.screens
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -19,9 +25,11 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RecordVoiceOver
@@ -34,6 +42,9 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -46,6 +57,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,6 +74,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.audio.fx.VoiceEffect
 import com.example.i18n.t
 import com.example.model.AiToolType
 import com.example.model.AppLanguage
@@ -69,7 +82,10 @@ import com.example.model.TTS_DIALECTS
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsGender
 import com.example.model.VOICE_CHARACTER_PRESETS
+import com.example.model.VoiceCharacterCategory
 import com.example.model.VoiceCharacterPreset
+import com.example.studio.ui.lit
+import com.example.ui.components.InfoBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
@@ -77,6 +93,7 @@ import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
 import com.example.ui.components.StudioSectionCard
+import com.example.ui.components.ToolInfoDialog
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
@@ -170,9 +187,11 @@ fun AiToolDetailScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            val startInteraction = remember { MutableInteractionSource() }
                             Button(
                                 onClick = { viewModel.transcribeActiveAudio() },
                                 enabled = !st.isLoading,
+                                interactionSource = startInteraction,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = StudioColors.Cyan,
                                     contentColor = StudioColors.BgTop,
@@ -181,6 +200,7 @@ fun AiToolDetailScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .defaultMinSize(minHeight = 48.dp)
+                                    .lit(startInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                     .testTag("ai_transcribe_start_button"),
                             ) {
                                 if (st.isLoading) {
@@ -194,11 +214,14 @@ fun AiToolDetailScreen(
                                 Text(if (lang == AppLanguage.EN) "Transcribe Studio Audio" else "بدء تفريغ الصوت")
                             }
 
+                            val clearInteraction = remember { MutableInteractionSource() }
                             OutlinedButton(
                                 onClick = { viewModel.clearTranscription() },
+                                interactionSource = clearInteraction,
                                 shape = RoundedCornerShape(14.dp),
                                 modifier = Modifier
                                     .defaultMinSize(minHeight = 48.dp)
+                                    .lit(clearInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                     .testTag("ai_transcribe_clear_button"),
                             ) {
                                 Icon(Icons.Rounded.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -230,10 +253,13 @@ fun AiToolDetailScreen(
                                             style = MaterialTheme.typography.titleSmall,
                                             color = StudioColors.Cyan,
                                         )
+                                        val copyInteraction = remember { MutableInteractionSource() }
                                         IconButton(
                                             onClick = { clipboard.setText(AnnotatedString(st.outputText)) },
+                                            interactionSource = copyInteraction,
                                             modifier = Modifier
                                                 .size(48.dp)
+                                                .lit(copyInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                                 .testTag("ai_transcribe_copy_button"),
                                         ) {
                                             Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy", tint = StudioColors.Cyan)
@@ -265,9 +291,11 @@ fun AiToolDetailScreen(
                             .padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        val masterInteraction = remember { MutableInteractionSource() }
                         Button(
                             onClick = { viewModel.runSmartAutoMaster() },
                             enabled = !uiState.isBusy,
+                            interactionSource = masterInteraction,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.Emerald,
                                 contentColor = StudioColors.BgTop,
@@ -276,6 +304,7 @@ fun AiToolDetailScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = 52.dp)
+                                .lit(masterInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("ai_smart_master_run_button"),
                         ) {
                             Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -390,9 +419,11 @@ fun AiToolDetailScreen(
                                 .testTag("ai_search_query_input"),
                         )
 
+                        val searchInteraction = remember { MutableInteractionSource() }
                         Button(
                             onClick = { viewModel.askSearchAssistant(query) },
                             enabled = query.isNotBlank() && !st.isLoading,
+                            interactionSource = searchInteraction,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.Violet,
                                 contentColor = StudioColors.BgTop,
@@ -401,6 +432,7 @@ fun AiToolDetailScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(searchInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("ai_search_submit_button"),
                         ) {
                             if (st.isLoading) {
@@ -442,14 +474,17 @@ fun AiToolDetailScreen(
                                     color = StudioColors.Cyan,
                                 )
                                 st.sources.forEach { src ->
+                                    val srcInteraction = remember { MutableInteractionSource() }
                                     Surface(
                                         onClick = { runCatching { uriHandler.openUri(src.uri) } },
+                                        interactionSource = srcInteraction,
                                         shape = RoundedCornerShape(12.dp),
                                         color = StudioColors.ElevatedSurface,
                                         border = BorderStroke(1.dp, StudioColors.Border),
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .defaultMinSize(minHeight = 48.dp),
+                                            .defaultMinSize(minHeight = 48.dp)
+                                            .lit(srcInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp),
                                     ) {
                                         Row(
                                             modifier = Modifier.padding(10.dp),
@@ -528,6 +563,8 @@ fun TextToSpeechStudioScreen(
     var speechRate by remember { mutableFloatStateOf(TTS_DIALECTS.first().defaultRate) }
     var speechPitch by remember { mutableFloatStateOf(TTS_DIALECTS.first().defaultPitch) }
     var appendToExisting by remember { mutableStateOf(false) }
+    var articleUrl by remember { mutableStateOf("") }
+    var infoOpen by remember { mutableStateOf(false) }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -535,6 +572,14 @@ fun TextToSpeechStudioScreen(
             subtitle = t(lang, "section_tts_subtitle"),
             language = lang,
             onBack = onBack,
+            trailing = {
+                InfoBadgeButton(
+                    contentDescription = t(lang, "section_tts_title"),
+                    testTag = "tts_info_button",
+                    accentColor = StudioColors.Cyan,
+                    onClick = { infoOpen = true },
+                )
+            },
         )
 
         LiquidAudioWavePreview(
@@ -560,6 +605,82 @@ fun TextToSpeechStudioScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = t(lang, "tts_web_article_title"),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = StudioColors.Cyan,
+                )
+                OutlinedTextField(
+                    value = articleUrl,
+                    onValueChange = { articleUrl = it },
+                    placeholder = {
+                        Text(
+                            text = t(lang, "tts_web_article_hint"),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = StudioColors.Cyan,
+                        unfocusedBorderColor = StudioColors.Border,
+                        focusedTextColor = StudioColors.TextPrimary,
+                        unfocusedTextColor = StudioColors.TextPrimary,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("tts_article_url_input"),
+                )
+                val fetchArticleInteraction = remember { MutableInteractionSource() }
+                OutlinedButton(
+                    onClick = {
+                        viewModel.extractArticleTextForTts(articleUrl) { extracted ->
+                            textInput = extracted
+                        }
+                    },
+                    enabled = !uiState.isExtractingArticle && articleUrl.isNotBlank(),
+                    interactionSource = fetchArticleInteraction,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.65f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .lit(fetchArticleInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
+                        .testTag("tts_fetch_article_button"),
+                ) {
+                    if (uiState.isExtractingArticle) {
+                        CircularProgressIndicator(
+                            color = StudioColors.Cyan,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    } else {
+                        Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = t(lang, "tts_web_article_fetch"),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -569,11 +690,14 @@ fun TextToSpeechStudioScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(t(lang, "tts_input_label"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    val sampleInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { textInput = selectedDialect.sampleText },
+                        interactionSource = sampleInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(sampleInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("tts_fill_sample_button"),
                     ) {
                         Text(t(lang, "tts_sample_button"))
@@ -606,14 +730,17 @@ fun TextToSpeechStudioScreen(
                         TtsGender.FEMALE to t(lang, "tts_gender_female"),
                     ).forEach { (genderOption, label) ->
                         val isSel = selectedGender == genderOption
+                        val genderInteraction = remember { MutableInteractionSource() }
                         Surface(
                             onClick = { selectedGender = genderOption },
+                            interactionSource = genderInteraction,
                             shape = RoundedCornerShape(14.dp),
                             color = if (isSel) StudioColors.ElevatedSurface else StudioColors.BgMid,
                             border = BorderStroke(1.dp, if (isSel) StudioColors.Cyan else StudioColors.Border),
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(genderInteraction, MaterialTheme.colorScheme.primary, selected = isSel, cornerRadius = 14.dp)
                                 .testTag("tts_gender_${genderOption.name}"),
                         ) {
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp)) {
@@ -637,14 +764,17 @@ fun TextToSpeechStudioScreen(
                     ) {
                         rowStyles.forEach { st ->
                             val isSel = selectedStyle == st
+                            val styleInteraction = remember { MutableInteractionSource() }
                             Surface(
                                 onClick = { selectedStyle = st },
+                                interactionSource = styleInteraction,
                                 shape = RoundedCornerShape(14.dp),
                                 color = if (isSel) StudioColors.ElevatedSurface else StudioColors.BgMid,
                                 border = BorderStroke(1.dp, if (isSel) StudioColors.Violet else StudioColors.Border),
                                 modifier = Modifier
                                     .weight(1f)
                                     .defaultMinSize(minHeight = 46.dp)
+                                    .lit(styleInteraction, MaterialTheme.colorScheme.primary, selected = isSel, cornerRadius = 14.dp)
                                     .testTag("tts_style_${st.name}"),
                             ) {
                                 Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
@@ -670,18 +800,21 @@ fun TextToSpeechStudioScreen(
                     ) {
                         pair.forEach { dialect ->
                             val selected = dialect.id == selectedDialect.id
+                            val dialectInteraction = remember { MutableInteractionSource() }
                             Surface(
                                 onClick = {
                                     selectedDialect = dialect
                                     speechRate = dialect.defaultRate
                                     speechPitch = dialect.defaultPitch
                                 },
+                                interactionSource = dialectInteraction,
                                 shape = RoundedCornerShape(14.dp),
                                 color = if (selected) StudioColors.ElevatedSurface else StudioColors.BgMid,
                                 border = BorderStroke(1.dp, if (selected) StudioColors.Cyan else StudioColors.Border),
                                 modifier = Modifier
                                     .weight(1f)
                                     .defaultMinSize(minHeight = 48.dp)
+                                    .lit(dialectInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 14.dp)
                                     .testTag("tts_dialect_${dialect.id}"),
                             ) {
                                 Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp)) {
@@ -753,6 +886,7 @@ fun TextToSpeechStudioScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val previewInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = {
                             if (uiState.ttsUiState.isPreviewing) {
@@ -769,12 +903,14 @@ fun TextToSpeechStudioScreen(
                             }
                         },
                         enabled = !uiState.ttsUiState.isSynthesizingPreview && textInput.isNotBlank(),
+                        interactionSource = previewInteraction,
                         border = BorderStroke(1.dp, StudioColors.Cyan),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(previewInteraction, MaterialTheme.colorScheme.primary, selected = uiState.ttsUiState.isPreviewing, cornerRadius = 14.dp)
                             .testTag("tts_preview_button"),
                     ) {
                         if (uiState.ttsUiState.isSynthesizingPreview) {
@@ -804,6 +940,7 @@ fun TextToSpeechStudioScreen(
                         }
                     }
 
+                    val insertInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
                             viewModel.generateTtsToStudio(
@@ -817,6 +954,7 @@ fun TextToSpeechStudioScreen(
                             )
                         },
                         enabled = !uiState.ttsUiState.isGenerating && !uiState.isBusy && textInput.isNotBlank(),
+                        interactionSource = insertInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
@@ -825,16 +963,25 @@ fun TextToSpeechStudioScreen(
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(insertInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("tts_insert_button"),
                     ) {
                         Icon(Icons.Rounded.RecordVoiceOver, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text(t(lang, "tts_insert_button"), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(t(lang, "approve_and_start_processing"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
     }
+
+    ToolInfoDialog(
+        open = infoOpen,
+        title = t(lang, "section_tts_title"),
+        description = "${t(lang, "section_tts_subtitle")} • ${t(lang, "tts_web_article_title")}",
+        language = lang,
+        onDismiss = { infoOpen = false },
+    )
 }
 
 @Composable
@@ -851,6 +998,31 @@ fun VoiceTransformerScreen(
     var presenceDb by remember { mutableFloatStateOf(0f) }
     var mix by remember { mutableFloatStateOf(0f) }
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
+    var infoOpen by remember { mutableStateOf(false) }
+    var selectedLiveEffect by remember { mutableStateOf(uiState.liveVoiceEffect) }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            viewModel.startLiveVoiceProcessor(selectedLiveEffect)
+        } else {
+            viewModel.setMicPermissionDeniedError()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopLiveVoiceProcessor()
+        }
+    }
+
+    val humanPresets = remember {
+        VOICE_CHARACTER_PRESETS.filter { it.category == VoiceCharacterCategory.HUMAN }
+    }
+    val mythicalPresets = remember {
+        VOICE_CHARACTER_PRESETS.filter { it.category == VoiceCharacterCategory.MYTHICAL }
+    }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -858,6 +1030,14 @@ fun VoiceTransformerScreen(
             subtitle = t(lang, "section_voice_transformer_subtitle"),
             language = lang,
             onBack = onBack,
+            trailing = {
+                InfoBadgeButton(
+                    contentDescription = t(lang, "section_voice_transformer_title"),
+                    testTag = "voice_transformer_info_button",
+                    accentColor = StudioColors.Violet,
+                    onClick = { infoOpen = true },
+                )
+            },
         )
 
         StudioPreviewControlsBar(
@@ -878,6 +1058,144 @@ fun VoiceTransformerScreen(
             onOpenSaveDraft = { saveDraftDialogOpen = true },
         )
 
+        // Live zero-latency microphone character tester (VoiceProcessor)
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(
+                1.dp,
+                if (uiState.isLiveVoiceChangerActive) StudioColors.Emerald else StudioColors.Border,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Mic,
+                        contentDescription = null,
+                        tint = if (uiState.isLiveVoiceChangerActive) StudioColors.Emerald else StudioColors.Cyan,
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = t(lang, "live_mic_fx_title"),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = StudioColors.TextPrimary,
+                        )
+                        Text(
+                            text = t(lang, "live_mic_fx_subtitle"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioColors.TextSecondary,
+                        )
+                    }
+                }
+
+                val liveOptions = remember {
+                    listOf(
+                        VoiceEffect.CHILD_NATURAL to "Child",
+                        VoiceEffect.ABYSSAL_DRAGON to "Dragon",
+                        VoiceEffect.ALIEN_WIZARD to "Alien",
+                        VoiceEffect.DEEP to "Deep",
+                        VoiceEffect.ROBOT to "Robot",
+                        VoiceEffect.ECHO to "Echo",
+                        VoiceEffect.CHIPMUNK to "Chipmunk",
+                        VoiceEffect.NONE to "Natural",
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    liveOptions.forEach { (eff, fallbackLabel) ->
+                        val isSel = selectedLiveEffect == eff
+                        val chipLabel = when (eff) {
+                            VoiceEffect.CHILD_NATURAL -> t(lang, "voice_char_child")
+                            VoiceEffect.ABYSSAL_DRAGON -> t(lang, "voice_char_abyssal_dragon")
+                            VoiceEffect.ALIEN_WIZARD -> t(lang, "voice_char_alien_wizard")
+                            else -> fallbackLabel
+                        }
+                        FilterChip(
+                            selected = isSel,
+                            onClick = {
+                                selectedLiveEffect = eff
+                                if (uiState.isLiveVoiceChangerActive) {
+                                    viewModel.setLiveVoiceEffect(eff)
+                                }
+                            },
+                            label = {
+                                Text(
+                                    text = chipLabel,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.2f),
+                                selectedLabelColor = StudioColors.Cyan,
+                            ),
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 40.dp)
+                                .testTag("live_fx_chip_${eff.name}"),
+                        )
+                    }
+                }
+
+                val liveToggleInteraction = remember { MutableInteractionSource() }
+                Button(
+                    onClick = {
+                        if (uiState.isLiveVoiceChangerActive) {
+                            viewModel.stopLiveVoiceProcessor()
+                        } else if (viewModel.hasMicPermission()) {
+                            viewModel.startLiveVoiceProcessor(selectedLiveEffect)
+                        } else {
+                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    interactionSource = liveToggleInteraction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (uiState.isLiveVoiceChangerActive) StudioColors.RoseBright else StudioColors.Emerald,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .lit(
+                            liveToggleInteraction,
+                            MaterialTheme.colorScheme.primary,
+                            selected = uiState.isLiveVoiceChangerActive,
+                            cornerRadius = 14.dp,
+                        )
+                        .testTag("live_mic_fx_toggle_button"),
+                ) {
+                    Icon(
+                        imageVector = if (uiState.isLiveVoiceChangerActive) Icons.Rounded.Stop else Icons.Rounded.Mic,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (uiState.isLiveVoiceChangerActive) {
+                            t(lang, "live_mic_fx_stop")
+                        } else {
+                            t(lang, "live_mic_fx_start")
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+            }
+        }
+
+        // Voice Character Presets split into Realistic Human + Mythical & Scary Voices
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -890,9 +1208,17 @@ fun VoiceTransformerScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                VOICE_CHARACTER_PRESETS.forEach { preset ->
-                    val selected = preset.id == selectedPreset?.id
-                    Surface(
+                Text(
+                    text = t(lang, "voice_section_human"),
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = StudioColors.Cyan,
+                )
+                humanPresets.forEach { preset ->
+                    VoiceCharacterPresetRow(
+                        preset = preset,
+                        selected = preset.id == selectedPreset?.id,
+                        accentColor = StudioColors.Cyan,
+                        language = lang,
                         onClick = {
                             selectedPreset = preset
                             pitchSemitones = preset.pitchSemitones
@@ -901,31 +1227,34 @@ fun VoiceTransformerScreen(
                             presenceDb = preset.presenceDb
                             mix = 1f
                         },
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (selected) StudioColors.ElevatedSurface else StudioColors.BgMid,
-                        border = BorderStroke(1.dp, if (selected) StudioColors.Violet else StudioColors.Border),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 56.dp)
-                            .testTag("voice_char_${preset.id}"),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                            ) {
-                                Text(t(lang, preset.titleKey), style = MaterialTheme.typography.titleSmall, color = StudioColors.TextPrimary)
-                                Text(t(lang, preset.descKey), style = MaterialTheme.typography.bodySmall, color = StudioColors.TextSecondary)
-                            }
-                            if (selected) {
-                                Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = StudioColors.Violet)
-                            }
-                        }
-                    }
+                    )
+                }
+
+                HorizontalDivider(
+                    color = StudioColors.Border,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+
+                Text(
+                    text = t(lang, "voice_section_mythical"),
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = StudioColors.Violet,
+                )
+                mythicalPresets.forEach { preset ->
+                    VoiceCharacterPresetRow(
+                        preset = preset,
+                        selected = preset.id == selectedPreset?.id,
+                        accentColor = StudioColors.Violet,
+                        language = lang,
+                        onClick = {
+                            selectedPreset = preset
+                            pitchSemitones = preset.pitchSemitones
+                            formantShift = preset.formantShift
+                            warmthDb = preset.warmthDb
+                            presenceDb = preset.presenceDb
+                            mix = 1f
+                        },
+                    )
                 }
             }
         }
@@ -1017,6 +1346,7 @@ fun VoiceTransformerScreen(
                     )
                 }
 
+                val applyTransformInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = {
                         viewModel.transformVoiceOffline(
@@ -1027,9 +1357,19 @@ fun VoiceTransformerScreen(
                             mix = mix,
                             characterLabel = selectedPreset?.let { t(lang, it.titleKey) }
                                 ?: t(lang, "section_voice_transformer_title"),
+                            bassBoostDb = selectedPreset?.bassBoostDb ?: 0f,
+                            bassFreqHz = selectedPreset?.bassFreqHz ?: 75f,
+                            vibratoHz = selectedPreset?.vibratoHz ?: 0f,
+                            vibratoDepth = selectedPreset?.vibratoDepth ?: 0f,
+                            echoDelayMs = selectedPreset?.echoDelayMs ?: 0f,
+                            echoDecay = selectedPreset?.echoDecay ?: 0f,
+                            dualLayerPitchSemitones = selectedPreset?.dualLayerPitchSemitones ?: 0f,
+                            dualLayerFormantShift = selectedPreset?.dualLayerFormantShift ?: 1.0f,
+                            dualLayerMix = selectedPreset?.dualLayerMix ?: 0f,
                         )
                     },
                     enabled = !uiState.isBusy,
+                    interactionSource = applyTransformInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Violet,
                         contentColor = StudioColors.BgTop,
@@ -1038,11 +1378,12 @@ fun VoiceTransformerScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 52.dp)
+                        .lit(applyTransformInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("voice_apply_transform_button"),
                 ) {
                     Icon(Icons.Rounded.SpatialAudioOff, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(t(lang, "voice_apply_transform"), style = MaterialTheme.typography.labelLarge)
+                    Text(t(lang, "approve_and_start_processing"), style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
@@ -1057,6 +1398,62 @@ fun VoiceTransformerScreen(
         onDismiss = { saveDraftDialogOpen = false },
         onSaveDraft = { draftName -> viewModel.saveCloudDraft(draftName) },
     )
+
+    ToolInfoDialog(
+        open = infoOpen,
+        title = t(lang, "section_voice_transformer_title"),
+        description = "${t(lang, "section_voice_transformer_subtitle")} • ${t(lang, "voice_section_mythical")}",
+        language = lang,
+        onDismiss = { infoOpen = false },
+    )
+}
+
+@Composable
+private fun VoiceCharacterPresetRow(
+    preset: VoiceCharacterPreset,
+    selected: Boolean,
+    accentColor: Color,
+    language: AppLanguage,
+    onClick: () -> Unit,
+) {
+    val charInteraction = remember { MutableInteractionSource() }
+    Surface(
+        onClick = onClick,
+        interactionSource = charInteraction,
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) StudioColors.ElevatedSurface else StudioColors.BgMid,
+        border = BorderStroke(1.dp, if (selected) accentColor else StudioColors.Border),
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 56.dp)
+            .lit(charInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 14.dp)
+            .testTag("voice_char_${preset.id}"),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = t(language, preset.titleKey),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = StudioColors.TextPrimary,
+                )
+                Text(
+                    text = t(language, preset.descKey),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = StudioColors.TextSecondary,
+                )
+            }
+            if (selected) {
+                Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = accentColor)
+            }
+        }
+    }
 }
 
 @Composable
@@ -1076,13 +1473,16 @@ fun SettingsScreen(
             onBack = onBack,
         )
 
+        val langCardInteraction = remember { MutableInteractionSource() }
         Card(
             onClick = { langDialogOpen = true },
+            interactionSource = langCardInteraction,
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
             border = BorderStroke(1.dp, StudioColors.Border),
             modifier = Modifier
                 .fillMaxWidth()
+                .lit(langCardInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 20.dp)
                 .testTag("settings_language_card"),
         ) {
             Row(

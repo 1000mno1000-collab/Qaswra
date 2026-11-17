@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -79,6 +80,7 @@ import com.example.model.TTS_DIALECTS
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsGender
 import com.example.model.VOICE_CHARACTER_PRESETS
+import com.example.studio.ui.lit
 import com.example.ui.components.ExportFormatDialog
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
@@ -129,9 +131,11 @@ fun AudioEditorScreen(
             onBack = onBack,
             trailing = {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    val undoInteraction = remember { MutableInteractionSource() }
                     IconButton(
                         onClick = { viewModel.undoLastEdit() },
                         enabled = uiState.canUndoEdit,
+                        interactionSource = undoInteraction,
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = StudioColors.ElevatedSurface,
                             contentColor = StudioColors.Cyan,
@@ -139,13 +143,16 @@ fun AudioEditorScreen(
                         ),
                         modifier = Modifier
                             .size(48.dp)
+                            .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                             .testTag("editor_undo_button"),
                     ) {
                         Icon(Icons.AutoMirrored.Rounded.Undo, contentDescription = t(lang, "undo_edit"))
                     }
+                    val redoInteraction = remember { MutableInteractionSource() }
                     IconButton(
                         onClick = { viewModel.redoLastEdit() },
                         enabled = uiState.canRedoEdit,
+                        interactionSource = redoInteraction,
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = StudioColors.ElevatedSurface,
                             contentColor = StudioColors.Cyan,
@@ -153,6 +160,7 @@ fun AudioEditorScreen(
                         ),
                         modifier = Modifier
                             .size(48.dp)
+                            .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                             .testTag("editor_redo_button"),
                     ) {
                         Icon(Icons.AutoMirrored.Rounded.Redo, contentDescription = t(lang, "redo_edit"))
@@ -179,9 +187,11 @@ fun AudioEditorScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
+                    val loopChipInteraction = remember { MutableInteractionSource() }
                     FilterChip(
                         selected = uiState.loopSelection,
                         onClick = { viewModel.toggleLoopSelection() },
+                        interactionSource = loopChipInteraction,
                         leadingIcon = {
                             Icon(Icons.Rounded.Repeat, contentDescription = null, modifier = Modifier.size(16.dp))
                         },
@@ -192,12 +202,15 @@ fun AudioEditorScreen(
                         ),
                         modifier = Modifier
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(loopChipInteraction, MaterialTheme.colorScheme.primary, selected = uiState.loopSelection, cornerRadius = 10.dp)
                             .testTag("editor_loop_selection_chip"),
                     )
 
+                    val savePermInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { viewModel.saveEditsPermanent() },
                         enabled = uiState.hasAudio,
+                        interactionSource = savePermInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.ElevatedSurface,
                             contentColor = StudioColors.Cyan,
@@ -205,6 +218,7 @@ fun AudioEditorScreen(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(savePermInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("editor_save_permanent_button"),
                     ) {
                         Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -339,26 +353,32 @@ fun AudioEditorScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val trimInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.trimKeepSelection() },
                         enabled = uiState.hasAudio,
+                        interactionSource = trimInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(trimInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("editor_trim_keep_button"),
                     ) {
                         Icon(Icons.Rounded.Crop, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text(t(lang, "trim_keep"), maxLines = 1)
                     }
+                    val cutInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.cutSelectedRange() },
                         enabled = uiState.hasAudio,
+                        interactionSource = cutInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(cutInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("editor_cut_button"),
                     ) {
                         Icon(Icons.Rounded.ContentCut, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -371,26 +391,32 @@ fun AudioEditorScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val selectAllInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.resetSelection() },
                         enabled = uiState.hasAudio,
+                        interactionSource = selectAllInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(selectAllInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("editor_select_all_button"),
                     ) {
                         Icon(Icons.Rounded.SelectAll, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text(t(lang, "reset_selection"), maxLines = 1)
                     }
+                    val normalizeInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.normalizeAudioBuffer() },
                         enabled = uiState.hasAudio,
+                        interactionSource = normalizeInteraction,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(normalizeInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("editor_normalize_button"),
                     ) {
                         Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -424,9 +450,11 @@ fun AudioEditorScreen(
                     testTag = "editor_clip_gain_slider",
                     onValueChange = { viewModel.setClipGainDb(it) },
                 )
+                val clipGainInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.bakeClipGainDb(uiState.clipGainDb) },
                     enabled = uiState.hasAudio && abs(uiState.clipGainDb) > 0.05f,
+                    interactionSource = clipGainInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Amber,
                         contentColor = StudioColors.BgTop,
@@ -435,6 +463,7 @@ fun AudioEditorScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(clipGainInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("editor_apply_clip_gain_button"),
                 ) {
                     Text(if (lang == AppLanguage.EN) "Apply Clip Gain" else "تطبيق مستوى الصوت على المقطع")
@@ -465,13 +494,16 @@ fun AudioEditorScreen(
                     testTag = "editor_fade_in_slider",
                     onValueChange = { fadeInSec = it },
                 )
+                val fadeInInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { viewModel.applyFadeInSeconds(fadeInSec) },
                     enabled = uiState.hasAudio,
+                    interactionSource = fadeInInteraction,
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(fadeInInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("editor_apply_fade_in_button"),
                 ) {
                     Text(t(lang, "fade_in_title"))
@@ -487,13 +519,16 @@ fun AudioEditorScreen(
                     testTag = "editor_fade_out_slider",
                     onValueChange = { fadeOutSec = it },
                 )
+                val fadeOutInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { viewModel.applyFadeOutSeconds(fadeOutSec) },
                     enabled = uiState.hasAudio,
+                    interactionSource = fadeOutInteraction,
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(fadeOutInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("editor_apply_fade_out_button"),
                 ) {
                     Text(t(lang, "fade_out_title"))
@@ -531,10 +566,13 @@ fun AudioEditorScreen(
                         )
                     }
                     if (uiState.mixBgName != null) {
+                        val clearMixInteraction = remember { MutableInteractionSource() }
                         IconButton(
                             onClick = { viewModel.clearMixBackgroundTrack() },
+                            interactionSource = clearMixInteraction,
                             modifier = Modifier
                                 .size(48.dp)
+                                .lit(clearMixInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                 .testTag("editor_clear_mix_bg_button"),
                         ) {
                             Icon(Icons.Rounded.Close, contentDescription = t(lang, "delete"), tint = StudioColors.RoseBright)
@@ -542,12 +580,15 @@ fun AudioEditorScreen(
                     }
                 }
 
+                val pickMixBgInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { onOpenPicker(AudioPickerTarget.MIX_BACKGROUND) },
+                    interactionSource = pickMixBgInteraction,
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(pickMixBgInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("editor_pick_mix_bg_button"),
                 ) {
                     Text(
@@ -577,9 +618,11 @@ fun AudioEditorScreen(
                     onValueChange = { bgMixGain = it },
                 )
 
+                val applyMixInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.mixWithBackgroundTrack(mainMixGain, bgMixGain) },
                     enabled = uiState.hasAudio && uiState.mixBgName != null,
+                    interactionSource = applyMixInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Violet,
                         contentColor = StudioColors.BgTop,
@@ -588,6 +631,7 @@ fun AudioEditorScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(applyMixInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("editor_apply_mix_button"),
                 ) {
                     Text(if (lang == AppLanguage.EN) "Mix Tracks Together" else "دمج ومزج المسارين")
@@ -608,12 +652,16 @@ fun AudioEditorScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                val expandVoiceInteraction = remember { MutableInteractionSource() }
                 Surface(
                     onClick = { showVoiceCard = !showVoiceCard },
+                    interactionSource = expandVoiceInteraction,
                     color = StudioColors.CardSurface,
+                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(expandVoiceInteraction, MaterialTheme.colorScheme.primary, selected = showVoiceCard, cornerRadius = 12.dp)
                         .testTag("editor_expand_voice_transformer"),
                 ) {
                     Row(
@@ -640,19 +688,25 @@ fun AudioEditorScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         VOICE_CHARACTER_PRESETS.forEach { preset ->
+                            val chipInteraction = remember { MutableInteractionSource() }
+                            val isCharSel = selectedCharId == preset.id
                             FilterChip(
-                                selected = selectedCharId == preset.id,
+                                selected = isCharSel,
                                 onClick = {
                                     selectedCharId = preset.id
                                     charPitch = preset.pitchSemitones
                                     charFormant = preset.formantShift
                                 },
+                                interactionSource = chipInteraction,
                                 label = { Text(t(lang, preset.titleKey)) },
-                                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .lit(chipInteraction, MaterialTheme.colorScheme.primary, selected = isCharSel, cornerRadius = 10.dp),
                             )
                         }
                     }
@@ -679,6 +733,7 @@ fun AudioEditorScreen(
                     )
 
                     val chosen = VOICE_CHARACTER_PRESETS.firstOrNull { it.id == selectedCharId }
+                    val applyVoiceCharInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
                             viewModel.transformVoiceOffline(
@@ -689,14 +744,25 @@ fun AudioEditorScreen(
                                 mix = 1f,
                                 characterLabel = chosen?.let { t(lang, it.titleKey) }
                                     ?: t(lang, "section_voice_transformer_title"),
+                                bassBoostDb = chosen?.bassBoostDb ?: 0f,
+                                bassFreqHz = chosen?.bassFreqHz ?: 75f,
+                                vibratoHz = chosen?.vibratoHz ?: 0f,
+                                vibratoDepth = chosen?.vibratoDepth ?: 0f,
+                                echoDelayMs = chosen?.echoDelayMs ?: 0f,
+                                echoDecay = chosen?.echoDecay ?: 0f,
+                                dualLayerPitchSemitones = chosen?.dualLayerPitchSemitones ?: 0f,
+                                dualLayerFormantShift = chosen?.dualLayerFormantShift ?: 1.0f,
+                                dualLayerMix = chosen?.dualLayerMix ?: 0f,
                             )
                         },
                         enabled = uiState.hasAudio && !uiState.isBusy,
+                        interactionSource = applyVoiceCharInteraction,
                         colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Violet, contentColor = StudioColors.BgTop),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(applyVoiceCharInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("editor_apply_voice_char_button"),
                     ) {
                         Text(t(lang, "voice_apply_transform"))
@@ -718,12 +784,16 @@ fun AudioEditorScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                val expandTtsInteraction = remember { MutableInteractionSource() }
                 Surface(
                     onClick = { showTtsCard = !showTtsCard },
+                    interactionSource = expandTtsInteraction,
                     color = StudioColors.CardSurface,
+                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(expandTtsInteraction, MaterialTheme.colorScheme.primary, selected = showTtsCard, cornerRadius = 12.dp)
                         .testTag("editor_expand_tts"),
                 ) {
                     Row(
@@ -751,18 +821,24 @@ fun AudioEditorScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         TTS_DIALECTS.forEach { d ->
+                            val dialectChipInteraction = remember { MutableInteractionSource() }
+                            val isDialectSel = d.id == selectedDialectId
                             FilterChip(
-                                selected = d.id == selectedDialectId,
+                                selected = isDialectSel,
                                 onClick = {
                                     selectedDialectId = d.id
                                     if (ttsText.isBlank()) ttsText = d.sampleText
                                 },
+                                interactionSource = dialectChipInteraction,
                                 label = { Text(t(lang, d.titleKey)) },
-                                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .lit(dialectChipInteraction, MaterialTheme.colorScheme.primary, selected = isDialectSel, cornerRadius = 10.dp),
                             )
                         }
                     }
@@ -784,6 +860,7 @@ fun AudioEditorScreen(
                             .testTag("editor_tts_input"),
                     )
 
+                    val ttsInsertInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
                             viewModel.generateTtsToStudio(
@@ -797,11 +874,13 @@ fun AudioEditorScreen(
                             )
                         },
                         enabled = !uiState.isBusy,
+                        interactionSource = ttsInsertInteraction,
                         colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(ttsInsertInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                             .testTag("editor_tts_insert_button"),
                     ) {
                         Text(t(lang, "tts_insert_button"))
@@ -823,12 +902,15 @@ fun AudioEditorScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                val appendFileInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { onOpenPicker(AudioPickerTarget.APPEND_CLIP) },
+                    interactionSource = appendFileInteraction,
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(appendFileInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("editor_append_file_button"),
                 ) {
                     Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -845,16 +927,20 @@ fun AudioEditorScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         uiState.projects.filter { it.hasAudio }.forEach { proj ->
+                            val projChipInteraction = remember { MutableInteractionSource() }
                             FilterChip(
                                 selected = false,
                                 onClick = { viewModel.appendSavedProjectToCurrent(proj) },
+                                interactionSource = projChipInteraction,
                                 label = { Text("${proj.name} (${formatDurationMs(proj.durationMs)})") },
                                 modifier = Modifier
                                     .defaultMinSize(minHeight = 48.dp)
+                                    .lit(projChipInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 10.dp)
                                     .testTag("editor_append_project_${proj.id}"),
                             )
                         }
@@ -873,15 +959,18 @@ fun AudioEditorScreen(
                     )
                 }
 
+                val saveDraftInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { saveDraftDialogOpen = true },
                     enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = saveDraftInteraction,
                     border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(saveDraftInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("editor_save_draft_button"),
                 ) {
                     Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -889,9 +978,11 @@ fun AudioEditorScreen(
                     Text(t(lang, "save_to_drafts"), style = MaterialTheme.typography.labelLarge)
                 }
 
+                val openExportInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { exportDialogOpen = true },
                     enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = openExportInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Cyan,
                         contentColor = StudioColors.BgTop,
@@ -900,6 +991,7 @@ fun AudioEditorScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 52.dp)
+                        .lit(openExportInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("editor_open_export_dialog_button"),
                 ) {
                     Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))

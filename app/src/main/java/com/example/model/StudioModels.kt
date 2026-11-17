@@ -1,5 +1,6 @@
 package com.example.model
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -40,6 +41,7 @@ enum class EffectType(val titleKey: String, val category: EffectCategory, val is
     LIMITER("effect_limiter", EffectCategory.CHARACTER_DYNAMICS, true),
 }
 
+@Immutable
 @Serializable
 data class EchoReverbParams(
     val echoStrength: Float = 0f,
@@ -57,6 +59,7 @@ data class EchoReverbParams(
     val diffusion: Float = 0f,
 )
 
+@Immutable
 @Serializable
 data class EqualizerParams(
     val band60HzDb: Float = 0f,
@@ -66,29 +69,34 @@ data class EqualizerParams(
     val band14000HzDb: Float = 0f,
 )
 
+@Immutable
 @Serializable
 data class BassBoostParams(
     val gainDb: Float = 0f,
     val frequencyHz: Float = 95f,
 )
 
+@Immutable
 @Serializable
 data class TrebleParams(
     val gainDb: Float = 0f,
     val frequencyHz: Float = 6500f,
 )
 
+@Immutable
 @Serializable
 data class PitchShiftParams(
     val semitones: Float = 0f,
     val wetMix: Float = 1f,
 )
 
+@Immutable
 @Serializable
 data class TimeStretchParams(
     val tempoRatio: Float = 1f,
 )
 
+@Immutable
 @Serializable
 data class ChorusParams(
     val rateHz: Float = 1.2f,
@@ -96,6 +104,7 @@ data class ChorusParams(
     val mix: Float = 0f,
 )
 
+@Immutable
 @Serializable
 data class FlangerParams(
     val rateHz: Float = 0.45f,
@@ -104,6 +113,7 @@ data class FlangerParams(
     val mix: Float = 0f,
 )
 
+@Immutable
 @Serializable
 data class PhaserParams(
     val rateHz: Float = 0.6f,
@@ -119,6 +129,7 @@ enum class DistortionMode {
     OVERDRIVE,
 }
 
+@Immutable
 @Serializable
 data class DistortionParams(
     val drive: Float = 1f,
@@ -127,6 +138,7 @@ data class DistortionParams(
     val mode: DistortionMode = DistortionMode.OVERDRIVE,
 )
 
+@Immutable
 @Serializable
 data class CompressorParams(
     val thresholdDb: Float = 0f,
@@ -136,12 +148,14 @@ data class CompressorParams(
     val makeupGainDb: Float = 0f,
 )
 
+@Immutable
 @Serializable
 data class LimiterParams(
     val ceilingDb: Float = 0f,
     val releaseMs: Float = 80f,
 )
 
+@Immutable
 @Serializable
 data class NoiseReductionParams(
     val thresholdDb: Float = -70f,
@@ -153,6 +167,7 @@ data class NoiseReductionParams(
     val spectralCleanerEnabled: Boolean = false,
 )
 
+@Immutable
 @Serializable
 data class EffectSlot(
     val type: EffectType,
@@ -175,6 +190,7 @@ val DEFAULT_CHAIN: List<EffectSlot> = listOf(
     EffectSlot(EffectType.LIMITER, false),
 )
 
+@Immutable
 @Serializable
 data class DspConfig(
     val bypassAll: Boolean = false,
@@ -229,6 +245,7 @@ data class StoredCustomPreset(
     val cloudDocId: String? = null,
 )
 
+@Immutable
 data class StudioPreset(
     val id: Long,
     val name: String,
@@ -238,6 +255,7 @@ data class StudioPreset(
     val cloudDocId: String? = null,
 )
 
+@Immutable
 data class CloudDraft(
     val docId: String,
     val name: String,
@@ -273,6 +291,7 @@ class StereoAudioBuffer(
     val durationMs: Long get() = if (sampleRate > 0) (frameCount * 1000L) / sampleRate else 0L
 }
 
+@Immutable
 data class DeviceAudioItem(
     val id: Long,
     val uriString: String,
@@ -319,6 +338,7 @@ enum class ExportAudioFormat(
     MP3("MP3", "صيغة قياسية عالية التوافق", "mp3", "audio/mpeg"),
 }
 
+@Immutable
 data class StudioProject(
     val id: Long,
     val name: String,
@@ -335,6 +355,7 @@ enum class RecordingSourceType {
     TTS,
 }
 
+@Immutable
 data class AudioRecordingItem(
     val id: Long,
     val title: String,
@@ -344,6 +365,7 @@ data class AudioRecordingItem(
     val sourceType: RecordingSourceType,
 )
 
+@Immutable
 data class VoicePurifyPreset(
     val id: String,
     val titleAr: String,
@@ -403,6 +425,20 @@ val VOICE_PURIFY_PRESETS: List<VoicePurifyPreset> = listOf(
         spectralCleanerEnabled = true,
     ),
     VoicePurifyPreset(
+        id = "clean_podcast_mic",
+        titleAr = "تنقية المايك والبودكاست (Studio Mic)",
+        titleEn = "Clean Podcast Mic Pro",
+        subtitleAr = "عزل طيفي -25dB وبوابة ضجيج مع إزالة الصفير وموازنة -16 LUFS",
+        subtitleEn = "Studio FFT -25dB denoise, -35dB gate, de-esser & broadcast loudnorm",
+        highPassHz = 85f,
+        thresholdDb = -35f,
+        reductionDb = 25f,
+        spectralStrength = 0.85f,
+        deEssAmount = 0.45f,
+        clarityBoostDb = 2.8f,
+        spectralCleanerEnabled = true,
+    ),
+    VoicePurifyPreset(
         id = "gentle_denoise",
         titleAr = "تصفية خفيفة (حفظ الجو)",
         titleEn = "Gentle Ambient Safe",
@@ -418,6 +454,12 @@ val VOICE_PURIFY_PRESETS: List<VoicePurifyPreset> = listOf(
     ),
 )
 
+enum class VoiceCharacterCategory {
+    HUMAN,
+    MYTHICAL,
+}
+
+@Immutable
 data class VoiceCharacterPreset(
     val id: String,
     val titleKey: String,
@@ -426,6 +468,16 @@ data class VoiceCharacterPreset(
     val formantShift: Float,
     val warmthDb: Float,
     val presenceDb: Float,
+    val bassBoostDb: Float = 0f,
+    val bassFreqHz: Float = 75f,
+    val vibratoHz: Float = 0f,
+    val vibratoDepth: Float = 0f,
+    val echoDelayMs: Float = 0f,
+    val echoDecay: Float = 0f,
+    val dualLayerPitchSemitones: Float = 0f,
+    val dualLayerFormantShift: Float = 1.0f,
+    val dualLayerMix: Float = 0f,
+    val category: VoiceCharacterCategory = VoiceCharacterCategory.HUMAN,
 )
 
 val VOICE_CHARACTER_PRESETS: List<VoiceCharacterPreset> = listOf(
@@ -433,7 +485,122 @@ val VOICE_CHARACTER_PRESETS: List<VoiceCharacterPreset> = listOf(
     VoiceCharacterPreset("male_calm", "voice_char_male_calm", "voice_char_male_calm_desc", -1.8f, 0.91f, 2.5f, 1.5f),
     VoiceCharacterPreset("female_soft", "voice_char_female_soft", "voice_char_female_soft_desc", 3.4f, 1.15f, 1.2f, 2.0f),
     VoiceCharacterPreset("female_balanced", "voice_char_female_balanced", "voice_char_female_balanced_desc", 2.2f, 1.1f, 0.5f, 3.0f),
-    VoiceCharacterPreset("child", "voice_char_child", "voice_char_child_desc", 6.2f, 1.27f, -1.0f, 2.8f),
+    VoiceCharacterPreset("child", "voice_char_child", "voice_char_child_desc", 4.85f, 1.26f, 0.2f, 2.2f),
+    VoiceCharacterPreset(
+        id = "abyssal_dragon",
+        titleKey = "voice_char_abyssal_dragon",
+        descKey = "voice_char_abyssal_dragon_desc",
+        pitchSemitones = -8.25f,
+        formantShift = 0.72f,
+        warmthDb = 3.0f,
+        presenceDb = 1.8f,
+        bassBoostDb = 14.0f,
+        bassFreqHz = 70f,
+        vibratoHz = 12.0f,
+        vibratoDepth = 0.40f,
+        echoDelayMs = 160f,
+        echoDecay = 0.50f,
+        category = VoiceCharacterCategory.MYTHICAL,
+    ),
+    VoiceCharacterPreset(
+        id = "shadow_legion",
+        titleKey = "voice_char_shadow_legion",
+        descKey = "voice_char_shadow_legion_desc",
+        pitchSemitones = -5.0f,
+        formantShift = 0.80f,
+        warmthDb = 2.5f,
+        presenceDb = 2.0f,
+        bassBoostDb = 4.5f,
+        bassFreqHz = 85f,
+        echoDelayMs = 90f,
+        echoDecay = 0.40f,
+        dualLayerPitchSemitones = -1.45f,
+        dualLayerFormantShift = 0.94f,
+        dualLayerMix = 0.50f,
+        category = VoiceCharacterCategory.MYTHICAL,
+    ),
+    VoiceCharacterPreset(
+        id = "alien_wizard",
+        titleKey = "voice_char_alien_wizard",
+        descKey = "voice_char_alien_wizard_desc",
+        pitchSemitones = 2.6f,
+        formantShift = 1.24f,
+        warmthDb = -1.5f,
+        presenceDb = 4.5f,
+        vibratoHz = 18.0f,
+        vibratoDepth = 0.55f,
+        echoDelayMs = 140f,
+        echoDecay = 0.42f,
+        dualLayerPitchSemitones = -2.2f,
+        dualLayerFormantShift = 0.88f,
+        dualLayerMix = 0.35f,
+        category = VoiceCharacterCategory.MYTHICAL,
+    ),
+    VoiceCharacterPreset(
+        id = "stone_giant",
+        titleKey = "voice_char_stone_giant",
+        descKey = "voice_char_stone_giant_desc",
+        pitchSemitones = -9.5f,
+        formantShift = 0.68f,
+        warmthDb = 5.5f,
+        presenceDb = 0.8f,
+        bassBoostDb = 16.0f,
+        bassFreqHz = 65f,
+        echoDelayMs = 210f,
+        echoDecay = 0.48f,
+        category = VoiceCharacterCategory.MYTHICAL,
+    ),
+    VoiceCharacterPreset(
+        id = "forest_spirit",
+        titleKey = "voice_char_forest_spirit",
+        descKey = "voice_char_forest_spirit_desc",
+        pitchSemitones = 3.2f,
+        formantShift = 1.18f,
+        warmthDb = 1.5f,
+        presenceDb = 5.0f,
+        vibratoHz = 5.5f,
+        vibratoDepth = 0.25f,
+        echoDelayMs = 240f,
+        echoDecay = 0.55f,
+        dualLayerPitchSemitones = 7.0f,
+        dualLayerFormantShift = 1.28f,
+        dualLayerMix = 0.32f,
+        category = VoiceCharacterCategory.MYTHICAL,
+    ),
+    VoiceCharacterPreset(
+        id = "ghost_whisper",
+        titleKey = "voice_char_ghost_whisper",
+        descKey = "voice_char_ghost_whisper_desc",
+        pitchSemitones = -1.5f,
+        formantShift = 1.12f,
+        warmthDb = -3.0f,
+        presenceDb = 6.0f,
+        vibratoHz = 7.5f,
+        vibratoDepth = 0.35f,
+        echoDelayMs = 310f,
+        echoDecay = 0.62f,
+        dualLayerPitchSemitones = 0.4f,
+        dualLayerFormantShift = 1.22f,
+        dualLayerMix = 0.45f,
+        category = VoiceCharacterCategory.MYTHICAL,
+    ),
+    VoiceCharacterPreset(
+        id = "cursed_radio",
+        titleKey = "voice_char_cursed_radio",
+        descKey = "voice_char_cursed_radio_desc",
+        pitchSemitones = -3.6f,
+        formantShift = 0.84f,
+        warmthDb = -4.5f,
+        presenceDb = 7.5f,
+        vibratoHz = 14.0f,
+        vibratoDepth = 0.30f,
+        echoDelayMs = 85f,
+        echoDecay = 0.38f,
+        dualLayerPitchSemitones = -6.0f,
+        dualLayerFormantShift = 0.78f,
+        dualLayerMix = 0.28f,
+        category = VoiceCharacterCategory.MYTHICAL,
+    ),
 )
 
 enum class TtsGender {
@@ -589,6 +756,7 @@ val TTS_DIALECTS: List<TtsDialect> = listOf(
     ),
 )
 
+@Immutable
 data class SmartMasterAnalysis(
     val rmsDb: Float,
     val peakDb: Float,
@@ -602,12 +770,14 @@ data class SmartMasterAnalysis(
     val optimizedConfig: DspConfig,
 )
 
+@Immutable
 data class SearchSourceLink(
     val title: String,
     val uri: String,
     val domain: String,
 )
 
+@Immutable
 data class AiStreamState(
     val isLoading: Boolean = false,
     val outputText: String = "",
@@ -616,6 +786,7 @@ data class AiStreamState(
     val sources: List<SearchSourceLink> = emptyList(),
 )
 
+@Immutable
 data class TtsStudioUiState(
     val isSynthesizingPreview: Boolean = false,
     val isPreviewing: Boolean = false,
@@ -624,6 +795,7 @@ data class TtsStudioUiState(
     val errorMessage: String? = null,
 )
 
+@Immutable
 @Serializable
 sealed interface AuthSession {
     @Serializable
@@ -640,6 +812,7 @@ sealed interface AuthSession {
     ) : AuthSession
 }
 
+@Immutable
 data class PlaybackTelemetry(
     val isPlaying: Boolean = false,
     val positionMs: Long = 0L,
@@ -650,6 +823,7 @@ data class PlaybackTelemetry(
     val waveformBars: List<Float> = List(48) { 0.06f },
 )
 
+@Immutable
 data class RecorderTelemetry(
     val isRecording: Boolean = false,
     val isPaused: Boolean = false,

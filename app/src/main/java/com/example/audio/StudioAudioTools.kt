@@ -37,55 +37,17 @@ import kotlin.math.sin
 import kotlin.math.tanh
 
 /**
- * Adds studio warmth, mild compression, and presence to Edge/Local TTS audio.
+ * Adds ElevenLabs-grade studio vocal mastering warmth, compression, 8kHz air, and gentle loudness normalization.
  */
 fun applyStudioWarmth(
     buffer: StereoAudioBuffer,
     warmthDb: Float = 2.5f,
     presenceDb: Float = 2.2f,
-): StereoAudioBuffer {
-    val n = buffer.frameCount
-    if (n <= 0) return buffer
-    val outL = buffer.left.copyOf()
-    val outR = buffer.right.copyOf()
-
-    val eq = EqualizerProcessor().apply {
-        configure(
-            buffer.sampleRate,
-            EqualizerParams(
-                band60HzDb = warmthDb * 0.4f,
-                band230HzDb = warmthDb,
-                band910HzDb = 0.5f,
-                band3600HzDb = presenceDb,
-                band14000HzDb = 1.5f,
-            ),
-        )
-    }
-    val comp = CompressorProcessor(buffer.sampleRate)
-    val compParams = CompressorParams(
-        thresholdDb = -20f,
-        ratio = 2.8f,
-        attackMs = 12f,
-        releaseMs = 140f,
-        makeupGainDb = 2.2f,
-    )
-
-    val blockSize = 2048
-    val bL = FloatArray(blockSize)
-    val bR = FloatArray(blockSize)
-    var off = 0
-    while (off < n) {
-        val count = min(blockSize, n - off)
-        System.arraycopy(outL, off, bL, 0, count)
-        System.arraycopy(outR, off, bR, 0, count)
-        eq.processStereo(bL, bR, count)
-        comp.processStereo(bL, bR, count, compParams)
-        System.arraycopy(bL, 0, outL, off, count)
-        System.arraycopy(bR, 0, outR, off, count)
-        off += blockSize
-    }
-    return normalizeAudio(StereoAudioBuffer(outL, outR, buffer.sampleRate), -1.2f)
-}
+): StereoAudioBuffer = com.example.audio.fx.AudioSkillsPresets.applyStudioVocalMastering(
+    buffer = buffer,
+    extraWarmthDb = (warmthDb - 2.5f).coerceAtLeast(-2f),
+    extraPresenceDb = (presenceDb - 1.5f).coerceAtLeast(-2f),
+)
 
 /**
  * Applies a Global Pro Preset with dedicated post-DSP shaping (8D autopan, walkie 8-bit bitcrusher,
@@ -349,7 +311,7 @@ suspend fun replaceOrMixVideoAudio(
         val aacMime = MediaFormat.MIMETYPE_AUDIO_AAC
         val aacFormat = MediaFormat.createAudioFormat(aacMime, preparedAudio.sampleRate, 2).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, 192_000)
+            setInteger(MediaFormat.KEY_BIT_RATE, 320_000)
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
         }
         aacCodec = MediaCodec.createEncoderByType(aacMime).apply {
@@ -497,7 +459,7 @@ suspend fun saveAndSetRingtone(
         buffer = buffer,
         format = com.example.model.ExportAudioFormat.M4A,
         baseFileName = cleanTitle,
-        bitrateKbps = 192,
+        bitrateKbps = 320,
     )
 
     val resolver = context.contentResolver

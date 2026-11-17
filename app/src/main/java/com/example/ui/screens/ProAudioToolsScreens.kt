@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -69,6 +70,7 @@ import com.example.model.AppLanguage
 import com.example.model.AudioPickerTarget
 import com.example.model.EffectType
 import com.example.model.ExportAudioFormat
+import com.example.studio.ui.lit
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
@@ -127,13 +129,16 @@ private fun ActiveTrackPromptCard(
                     }
                 }
             }
+            val pickInteraction = remember { MutableInteractionSource() }
             OutlinedButton(
                 onClick = onPickMainAudio,
+                interactionSource = pickInteraction,
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, StudioColors.Cyan),
                 modifier = Modifier
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = 48.dp)
+                    .lit(pickInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                     .testTag("tool_pick_audio_button"),
             ) {
                 Icon(Icons.Rounded.AudioFile, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -174,14 +179,17 @@ fun AudioMergeScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                val mergeInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { onOpenPicker(AudioPickerTarget.APPEND_CLIP) },
                     enabled = !uiState.isBusy,
+                    interactionSource = mergeInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(mergeInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("merge_append_library_button"),
                 ) {
                     Icon(Icons.Rounded.Add, contentDescription = null)
@@ -198,15 +206,20 @@ fun AudioMergeScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         uiState.projects.filter { it.hasAudio }.forEach { proj ->
+                            val chipInteraction = remember { MutableInteractionSource() }
                             FilterChip(
                                 selected = false,
                                 onClick = { viewModel.appendSavedProjectToCurrent(proj) },
+                                interactionSource = chipInteraction,
                                 label = { Text("${proj.name} (${formatDurationMs(proj.durationMs)})") },
-                                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .lit(chipInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 10.dp),
                             )
                         }
                     }
@@ -267,17 +280,25 @@ fun AudioSplitScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val part1Interaction = remember { MutableInteractionSource() }
                     FilterChip(
                         selected = loadPart == 1,
                         onClick = { loadPart = 1 },
+                        interactionSource = part1Interaction,
                         label = { Text(if (lang == AppLanguage.EN) "Open Part 1" else "فتح الجزء الأول") },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .lit(part1Interaction, MaterialTheme.colorScheme.primary, selected = loadPart == 1, cornerRadius = 10.dp),
                     )
+                    val part2Interaction = remember { MutableInteractionSource() }
                     FilterChip(
                         selected = loadPart == 2,
                         onClick = { loadPart = 2 },
+                        interactionSource = part2Interaction,
                         label = { Text(if (lang == AppLanguage.EN) "Open Part 2" else "فتح الجزء الثاني") },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .lit(part2Interaction, MaterialTheme.colorScheme.primary, selected = loadPart == 2, cornerRadius = 10.dp),
                     )
                 }
 
@@ -295,14 +316,17 @@ fun AudioSplitScreen(
                     Switch(checked = saveBothToLibrary, onCheckedChange = { saveBothToLibrary = it })
                 }
 
+                val splitExecInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.splitAudioAtFraction(splitPoint, loadPart, saveBothToLibrary) },
                     enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = splitExecInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(splitExecInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("split_execute_button"),
                 ) {
                     Icon(Icons.AutoMirrored.Rounded.CallSplit, contentDescription = null)
@@ -314,21 +338,27 @@ fun AudioSplitScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val leftInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.splitStereoChannel(keepLeft = true) },
                         enabled = uiState.hasAudio,
+                        interactionSource = leftInteraction,
                         modifier = Modifier
                             .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp),
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(leftInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp),
                     ) {
                         Text(if (lang == AppLanguage.EN) "Isolate Left (L)" else "عزل القناة اليسرى")
                     }
+                    val rightInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.splitStereoChannel(keepLeft = false) },
                         enabled = uiState.hasAudio,
+                        interactionSource = rightInteraction,
                         modifier = Modifier
                             .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp),
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(rightInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp),
                     ) {
                         Text(if (lang == AppLanguage.EN) "Isolate Right (R)" else "عزل القناة اليمنى")
                     }
@@ -414,14 +444,17 @@ fun PitchAndSpeedScreen(
                     },
                 )
 
+                val bakeInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.applyPitchAndSpeed(semitones, tempo) },
                     enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = bakeInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(bakeInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("pitch_speed_bake_button"),
                 ) {
                     Icon(Icons.Rounded.Speed, contentDescription = null)
@@ -461,14 +494,17 @@ fun ReverseAudioScreen(
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
 
+        val reverseInteraction = remember { MutableInteractionSource() }
         Button(
             onClick = { viewModel.applyReverseAudio() },
             enabled = uiState.hasAudio && !uiState.isBusy,
+            interactionSource = reverseInteraction,
             colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .defaultMinSize(minHeight = 52.dp)
+                .lit(reverseInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp)
                 .testTag("reverse_apply_button"),
         ) {
             Icon(Icons.Rounded.Undo, contentDescription = null)
@@ -559,14 +595,17 @@ fun SurroundStereoScreen(
                     onValueChange = { stereoWidth = it },
                 )
 
+                val stereoInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.applySurroundStereo(midLevel, sideLevel, stereoWidth) },
                     enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = stereoInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(stereoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("stereo_apply_button"),
                 ) {
                     Icon(Icons.Rounded.SurroundSound, contentDescription = null)
@@ -645,13 +684,16 @@ fun GenerateSilenceScreen(
                     }
                 }
 
+                val silenceInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.insertGeneratedSilence(durationSec, appendMode) },
+                    interactionSource = silenceInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(silenceInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("silence_generate_button"),
                 ) {
                     Icon(Icons.Rounded.HourglassEmpty, contentDescription = null)
@@ -716,15 +758,21 @@ fun FormatConverterScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 4.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     ExportAudioFormat.entries.forEach { fmt ->
+                        val isFmtSelected = selectedFormat == fmt
+                        val fmtInteraction = remember { MutableInteractionSource() }
                         FilterChip(
-                            selected = selectedFormat == fmt,
+                            selected = isFmtSelected,
                             onClick = { selectedFormat = fmt },
+                            interactionSource = fmtInteraction,
                             label = { Text(fmt.displayName) },
-                            modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 48.dp)
+                                .lit(fmtInteraction, MaterialTheme.colorScheme.primary, selected = isFmtSelected, cornerRadius = 10.dp),
                         )
                     }
                 }
@@ -744,14 +792,17 @@ fun FormatConverterScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val convertSaveInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { viewModel.exportRenderedAudio(selectedFormat, fileName, shareAfter = false) },
                         enabled = uiState.hasAudio && !uiState.isBusy,
+                        interactionSource = convertSaveInteraction,
                         colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(convertSaveInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                             .testTag("convert_save_button"),
                     ) {
                         Icon(Icons.Rounded.Download, contentDescription = null)
@@ -759,11 +810,15 @@ fun FormatConverterScreen(
                         Text(t(lang, "export_and_save"))
                     }
 
+                    val convertShareInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = { viewModel.exportRenderedAudio(selectedFormat, fileName, shareAfter = true) },
                         enabled = uiState.hasAudio && !uiState.isBusy,
+                        interactionSource = convertShareInteraction,
                         shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(convertShareInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp),
                     ) {
                         Icon(Icons.Rounded.Share, contentDescription = t(lang, "share_audio"))
                     }
@@ -797,14 +852,17 @@ fun ExtractVideoAudioScreen(
             onBack = onBack,
         )
 
+        val pickVideoInteraction = remember { MutableInteractionSource() }
         Button(
             onClick = { videoPicker.launch(arrayOf("video/*")) },
             enabled = !uiState.isBusy,
+            interactionSource = pickVideoInteraction,
             colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .defaultMinSize(minHeight = 52.dp)
+                .lit(pickVideoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp)
                 .testTag("extract_pick_video_button"),
         ) {
             Icon(Icons.Rounded.VideoFile, contentDescription = null)
@@ -833,23 +891,31 @@ fun ExtractVideoAudioScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         listOf(ExportAudioFormat.M4A, ExportAudioFormat.WAV, ExportAudioFormat.MP3).forEach { fmt ->
+                            val isFmtSelected = selectedFormat == fmt
+                            val fmtInteraction = remember { MutableInteractionSource() }
                             FilterChip(
-                                selected = selectedFormat == fmt,
+                                selected = isFmtSelected,
                                 onClick = { selectedFormat = fmt },
+                                interactionSource = fmtInteraction,
                                 label = { Text(fmt.displayName) },
+                                modifier = Modifier.lit(fmtInteraction, MaterialTheme.colorScheme.primary, selected = isFmtSelected, cornerRadius = 10.dp),
                             )
                         }
                     }
+                    val extractExportInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = { viewModel.exportRenderedAudio(selectedFormat, uiState.activeProjectName, shareAfter = false) },
                         enabled = !uiState.isBusy,
+                        interactionSource = extractExportInteraction,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .defaultMinSize(minHeight = 48.dp),
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(extractExportInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp),
                     ) {
                         Icon(Icons.Rounded.Download, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
@@ -903,12 +969,15 @@ fun VideoAudioEditorScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                val videoEditPickInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = { videoPicker.launch(arrayOf("video/*")) },
+                    interactionSource = videoEditPickInteraction,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(videoEditPickInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("video_edit_pick_video_button"),
                 ) {
                     Icon(Icons.Rounded.Movie, contentDescription = null)
@@ -982,6 +1051,7 @@ fun VideoAudioEditorScreen(
                     )
                 }
 
+                val videoExportInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = {
                         selectedVideoUri?.let { uri ->
@@ -996,11 +1066,13 @@ fun VideoAudioEditorScreen(
                         }
                     },
                     enabled = selectedVideoUri != null && uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = videoExportInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 52.dp)
+                        .lit(videoExportInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("video_edit_export_button"),
                 ) {
                     Icon(Icons.Rounded.Download, contentDescription = null)
@@ -1058,11 +1130,16 @@ fun CompressAudioScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     listOf(64, 96, 128, 192).forEach { br ->
+                        val brSelected = bitrateKbps == br
+                        val brInteraction = remember { MutableInteractionSource() }
                         FilterChip(
-                            selected = bitrateKbps == br,
+                            selected = brSelected,
                             onClick = { bitrateKbps = br },
+                            interactionSource = brInteraction,
                             label = { Text("${br}k") },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .lit(brInteraction, MaterialTheme.colorScheme.primary, selected = brSelected, cornerRadius = 10.dp),
                         )
                     }
                 }
@@ -1089,14 +1166,17 @@ fun CompressAudioScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
+                val compressInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = { viewModel.compressAndExportAudio(bitrateKbps, fileName, shareAfter = false) },
                     enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = compressInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 52.dp)
+                        .lit(compressInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("compress_export_button"),
                 ) {
                     Icon(Icons.Rounded.Compress, contentDescription = null)
@@ -1205,6 +1285,7 @@ fun RingtoneMakerScreen(
                     Switch(checked = setAsDefault, onCheckedChange = { setAsDefault = it })
                 }
 
+                val ringtoneSaveInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = {
                         viewModel.createRingtoneFromSelection(
@@ -1222,11 +1303,13 @@ fun RingtoneMakerScreen(
                         )
                     },
                     enabled = uiState.hasAudio && !uiState.isBusy,
+                    interactionSource = ringtoneSaveInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Emerald, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 52.dp)
+                        .lit(ringtoneSaveInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("ringtone_save_button"),
                 ) {
                     Icon(Icons.Rounded.NotificationsActive, contentDescription = null)

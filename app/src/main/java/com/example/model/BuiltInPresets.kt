@@ -146,37 +146,27 @@ val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
             id = GlobalProPresetId.CRYSTAL_VOCAL,
             titleKey = "pro_preset_crystal",
             descKey = "pro_preset_crystal_desc",
-            ffmpegFilter = "afftdn=nf=-25,highpass=f=85,loudnorm=I=-16:TP=-1.5:LRA=11",
-            dspConfig = def
-                .withSlotEnabled(EffectType.NOISE_REDUCTION, true)
-                .withSlotEnabled(EffectType.EQUALIZER, true)
-                .withSlotEnabled(EffectType.COMPRESSOR, true)
-                .withSlotEnabled(EffectType.LIMITER, true)
-                .copy(
-                    noiseReduction = NoiseReductionParams(
-                        thresholdDb = -44f,
-                        reductionDb = 25f,
-                        highPassHz = 85f,
-                        spectralStrength = 0.82f,
-                        deEssAmount = 0.45f,
-                        clarityBoostDb = 3.5f,
-                        spectralCleanerEnabled = true,
-                    ),
-                    equalizer = EqualizerParams(-2f, -1f, 0.5f, 3.2f, 2f),
-                    compressor = CompressorParams(
-                        thresholdDb = -18f,
-                        ratio = 3.2f,
-                        attackMs = 10f,
-                        releaseMs = 120f,
-                        makeupGainDb = 2.8f,
-                    ),
-                    limiter = LimiterParams(ceilingDb = -1.5f, releaseMs = 70f),
-                ),
+            ffmpegFilter = com.example.audio.fx.AudioSkillsPresets.CLEAN_PODCAST_MIC,
+            dspConfig = com.example.audio.fx.AudioSkillsPresets.cleanPodcastMicDspConfig(),
         )
     },
 )
 
 val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
+    StudioPreset(
+        id = -8L,
+        name = "ماسترينغ الاستوديو الدافئ (Studio Vocal)",
+        description = "جودة صوت بشري فاخرة: فلتر 75Hz، دفء 180Hz، هواء 8kHz وضغط 3:1",
+        isBuiltIn = true,
+        config = com.example.audio.fx.AudioSkillsPresets.studioVocalMasteringDspConfig(),
+    ),
+    StudioPreset(
+        id = -9L,
+        name = "تنقية البودكاست والمايك (Clean Mic)",
+        description = "عزل طيفي للضوضاء -25dB وبوابة ذكية مع إزالة الصفير وموازنة البث",
+        isBuiltIn = true,
+        config = com.example.audio.fx.AudioSkillsPresets.cleanPodcastMicDspConfig(),
+    ),
     run {
         val def = DspConfig()
         StudioPreset(

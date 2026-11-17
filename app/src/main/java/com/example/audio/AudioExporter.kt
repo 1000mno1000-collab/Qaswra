@@ -176,7 +176,7 @@ private fun encodeFlacBytes(
 private fun encodeM4aFile(
     buffer: StereoAudioBuffer,
     outputFile: File,
-    bitrateKbps: Int = 192,
+    bitrateKbps: Int = 320,
     onProgress: ((Float) -> Unit)?,
 ): Boolean {
     val mime = MediaFormat.MIMETYPE_AUDIO_AAC
@@ -287,7 +287,7 @@ suspend fun exportRenderedAudioToFile(
     buffer: StereoAudioBuffer,
     format: ExportAudioFormat,
     baseFileName: String,
-    bitrateKbps: Int = 192,
+    bitrateKbps: Int = 320,
     onProgress: ((Float) -> Unit)? = null,
 ): ExportedAudioResult = withContext(Dispatchers.IO) {
     val cleanBase = baseFileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "Sonix_Export" }

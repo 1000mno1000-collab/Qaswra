@@ -22,6 +22,7 @@ import androidx.core.content.ContextCompat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -78,11 +79,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -102,6 +105,8 @@ import com.example.i18n.t
 import com.example.model.AudioPickerTarget
 import com.example.model.AuthSession
 import com.example.model.StudioRoute
+import com.example.studio.ui.applyDisplayBoost
+import com.example.studio.ui.lit
 import com.example.ui.components.PersistentTransportBar
 import com.example.ui.components.SleepTimerDialog
 import com.example.ui.components.SonixLuxuryLaunchOverlay
@@ -111,6 +116,7 @@ import com.example.ui.screens.AudioEditorScreen
 import com.example.ui.screens.AudioMergeScreen
 import com.example.ui.screens.AudioSplitScreen
 import com.example.ui.screens.AuthScreen
+import com.example.ui.screens.CinematicReelsScreen
 import com.example.ui.screens.CompressAudioScreen
 import com.example.ui.screens.EchoDetailScreen
 import com.example.ui.screens.EchoReverbScreen
@@ -128,6 +134,7 @@ import com.example.ui.screens.RecordingStudioScreen
 import com.example.ui.screens.ReverseAudioScreen
 import com.example.ui.screens.RingtoneMakerScreen
 import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.SmartAssistantScreen
 import com.example.ui.screens.SmartMusicMixerScreen
 import com.example.ui.screens.SpeechToTextScreen
 import com.example.ui.screens.SurroundStereoScreen
@@ -159,6 +166,7 @@ private class CreateTypedDocumentContract : ActivityResultContract<Pair<String, 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyDisplayBoost()
 
         try {
             Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
@@ -342,19 +350,21 @@ private fun SonixRootApp(
         }
     }
 
+    val bgBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(
+                StudioColors.BgTop,
+                StudioColors.BgMid,
+                StudioColors.BgTop,
+            ),
+        )
+    }
+
     CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            StudioColors.BgTop,
-                            StudioColors.BgMid,
-                            StudioColors.BgTop,
-                        ),
-                    ),
-                ),
+                .background(bgBrush),
         ) {
             if (uiState.authSession is AuthSession.SignedOut) {
                 AuthScreen(uiState = uiState, viewModel = viewModel)
@@ -411,6 +421,7 @@ private fun SonixRootApp(
                                         unselectedTextColor = StudioColors.TextSecondary,
                                     )
 
+                                    val toolsInteraction = remember { MutableInteractionSource() }
                                     NavigationBarItem(
                                         selected = isHomeTab,
                                         onClick = {
@@ -422,6 +433,7 @@ private fun SonixRootApp(
                                                 restoreState = true
                                             }
                                         },
+                                        interactionSource = toolsInteraction,
                                         icon = { Icon(Icons.Rounded.Tune, contentDescription = t(lang, "nav_tools")) },
                                         label = {
                                             Text(
@@ -431,9 +443,12 @@ private fun SonixRootApp(
                                             )
                                         },
                                         colors = itemColors,
-                                        modifier = Modifier.testTag("bottom_nav_tools"),
+                                        modifier = Modifier
+                                            .lit(toolsInteraction, MaterialTheme.colorScheme.primary, selected = isHomeTab, cornerRadius = 16.dp)
+                                            .testTag("bottom_nav_tools"),
                                     )
 
+                                    val libraryInteraction = remember { MutableInteractionSource() }
                                     NavigationBarItem(
                                         selected = isLibraryTab,
                                         onClick = {
@@ -445,6 +460,7 @@ private fun SonixRootApp(
                                                 restoreState = true
                                             }
                                         },
+                                        interactionSource = libraryInteraction,
                                         icon = { Icon(Icons.Rounded.LibraryMusic, contentDescription = t(lang, "nav_library")) },
                                         label = {
                                             Text(
@@ -454,9 +470,12 @@ private fun SonixRootApp(
                                             )
                                         },
                                         colors = itemColors,
-                                        modifier = Modifier.testTag("bottom_nav_library"),
+                                        modifier = Modifier
+                                            .lit(libraryInteraction, MaterialTheme.colorScheme.primary, selected = isLibraryTab, cornerRadius = 16.dp)
+                                            .testTag("bottom_nav_library"),
                                     )
 
+                                    val projectsInteraction = remember { MutableInteractionSource() }
                                     NavigationBarItem(
                                         selected = isProjectsTab,
                                         onClick = {
@@ -468,6 +487,7 @@ private fun SonixRootApp(
                                                 restoreState = true
                                             }
                                         },
+                                        interactionSource = projectsInteraction,
                                         icon = { Icon(Icons.Rounded.FolderOpen, contentDescription = t(lang, "nav_projects")) },
                                         label = {
                                             Text(
@@ -477,7 +497,9 @@ private fun SonixRootApp(
                                             )
                                         },
                                         colors = itemColors,
-                                        modifier = Modifier.testTag("bottom_nav_projects"),
+                                        modifier = Modifier
+                                            .lit(projectsInteraction, MaterialTheme.colorScheme.primary, selected = isProjectsTab, cornerRadius = 16.dp)
+                                            .testTag("bottom_nav_projects"),
                                     )
                                 }
                             }
@@ -518,10 +540,13 @@ private fun SonixRootApp(
                                             color = StudioColors.Cyan,
                                             modifier = Modifier.weight(1f),
                                         )
+                                        val dismissInteraction = remember { MutableInteractionSource() }
                                         IconButton(
                                             onClick = { viewModel.clearBanner() },
+                                            interactionSource = dismissInteraction,
                                             modifier = Modifier
                                                 .size(48.dp)
+                                                .lit(dismissInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                                 .testTag("dismiss_banner_button"),
                                         ) {
                                             Icon(
@@ -791,6 +816,38 @@ private fun SonixRootApp(
                                     onBack = { navController.popBackStack() },
                                 )
                             }
+                            composable<StudioRoute.SmartAssistant> {
+                                SmartAssistantScreen(
+                                    uiState = uiState,
+                                    viewModel = viewModel,
+                                    onNavigateToTool = { toolId ->
+                                        val dest: StudioRoute = when (toolId) {
+                                            "noise_reduction" -> StudioRoute.VoicePurifier
+                                            "voice_changer" -> StudioRoute.VoiceTransformer
+                                            "human_tts" -> StudioRoute.TtsStudio
+                                            "cinematic_video" -> StudioRoute.CinematicVideoReels
+                                            "smart_mixer" -> StudioRoute.SmartMusicMixer
+                                            "audio_editor" -> StudioRoute.Editor
+                                            "presets_echo" -> StudioRoute.Presets
+                                            else -> StudioRoute.Home
+                                        }
+                                        navController.navigate(dest) {
+                                            launchSingleTop = true
+                                        }
+                                    },
+                                    onBack = { navController.popBackStack() },
+                                )
+                            }
+                            composable<StudioRoute.CinematicVideoReels> {
+                                CinematicReelsScreen(
+                                    uiState = uiState,
+                                    viewModel = viewModel,
+                                    onOpenAudioPicker = {
+                                        navController.navigate(StudioRoute.AudioPicker(AudioPickerTarget.IMPORT_MAIN))
+                                    },
+                                    onBack = { navController.popBackStack() },
+                                )
+                            }
                         }
                     }
                 }
@@ -822,18 +879,23 @@ private fun StartupErrorScreen(
     val context = LocalContext.current
     var copied by remember { mutableStateOf(false) }
 
+    val bgBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(
+                StudioColors.BgTop,
+                StudioColors.BgMid,
+                StudioColors.BgTop,
+            ),
+        )
+    }
+    val logoBorderBrush = remember {
+        Brush.linearGradient(listOf(StudioColors.Cyan, StudioColors.Violet))
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        StudioColors.BgTop,
-                        StudioColors.BgMid,
-                        StudioColors.BgTop,
-                    ),
-                ),
-            )
+            .background(bgBrush)
             .systemBarsPadding(),
         contentAlignment = Alignment.Center,
     ) {
@@ -851,15 +913,16 @@ private fun StartupErrorScreen(
                 color = Color(0xFFFFFFFE),
                 border = BorderStroke(
                     width = 1.5.dp,
-                    brush = Brush.linearGradient(listOf(StudioColors.Cyan, StudioColors.Violet)),
+                    brush = logoBorderBrush,
                 ),
                 shadowElevation = 10.dp,
                 modifier = Modifier.size(72.dp),
             ) {
                 Image(
-                    painter = painterResource(R.drawable.sonix_primary_logo),
+                    bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
                     contentDescription = "Sonix ✦",
                     contentScale = ContentScale.Crop,
+                    filterQuality = FilterQuality.High,
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(RoundedCornerShape(20.dp)),
@@ -936,6 +999,7 @@ private fun StartupErrorScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
+                        val copyInteraction = remember { MutableInteractionSource() }
                         OutlinedButton(
                             onClick = {
                                 runCatching {
@@ -949,11 +1013,13 @@ private fun StartupErrorScreen(
                                     copied = true
                                 }
                             },
+                            interactionSource = copyInteraction,
                             border = BorderStroke(1.dp, StudioColors.BorderBright),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(copyInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("error_copy_button"),
                         ) {
                             Icon(
@@ -971,8 +1037,10 @@ private fun StartupErrorScreen(
                             )
                         }
 
+                        val retryInteraction = remember { MutableInteractionSource() }
                         Button(
                             onClick = onRetry,
+                            interactionSource = retryInteraction,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = StudioColors.Cyan,
                                 contentColor = StudioColors.BgTop,
@@ -981,6 +1049,7 @@ private fun StartupErrorScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
+                                .lit(retryInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("error_retry_button"),
                         ) {
                             Icon(

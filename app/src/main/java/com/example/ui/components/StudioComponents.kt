@@ -5,6 +5,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,6 +56,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -72,6 +75,7 @@ import androidx.compose.ui.unit.sp
 import com.example.audio.formatDurationMs
 import com.example.i18n.t
 import com.example.model.AppLanguage
+import com.example.studio.ui.lit
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
@@ -85,14 +89,17 @@ fun InfoBadgeButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     Surface(
         onClick = onClick,
+        interactionSource = interaction,
         shape = CircleShape,
         color = accentColor.copy(alpha = 0.16f),
         border = BorderStroke(1.dp, accentColor.copy(alpha = 0.5f)),
         modifier = modifier
             .size(48.dp)
             .padding(8.dp)
+            .lit(interaction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
             .testTag(testTag),
     ) {
         Box(contentAlignment = Alignment.Center) {
@@ -147,14 +154,17 @@ fun StudioFocusTopBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            val backInteraction = remember { MutableInteractionSource() }
             IconButton(
                 onClick = onBack,
+                interactionSource = backInteraction,
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = StudioColors.ElevatedSurface,
                     contentColor = StudioColors.Cyan,
                 ),
                 modifier = Modifier
                     .size(48.dp)
+                    .lit(backInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                     .testTag("back_button"),
             ) {
                 Icon(
@@ -202,14 +212,17 @@ fun StudioSectionCard(
     testTag: String,
     onClick: () -> Unit,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     Card(
         onClick = onClick,
+        interactionSource = interaction,
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
         border = BorderStroke(1.dp, StudioColors.Border),
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 76.dp)
+            .lit(interaction, MaterialTheme.colorScheme.primary, cornerRadius = 20.dp)
             .testTag(testTag),
     ) {
         Row(
@@ -354,12 +367,16 @@ fun RealTimeWaveformCanvas(
     accentColor: Color = StudioColors.Cyan,
     modifier: Modifier = Modifier,
 ) {
-    val activeBrush = Brush.verticalGradient(
-        colors = listOf(accentColor, StudioColors.Violet),
-    )
-    val inactiveBrush = Brush.verticalGradient(
-        colors = listOf(StudioColors.WaveformInactive, StudioColors.WaveformTrack),
-    )
+    val activeBrush = remember(accentColor) {
+        Brush.verticalGradient(
+            colors = listOf(accentColor, StudioColors.Violet),
+        )
+    }
+    val inactiveBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(StudioColors.WaveformInactive, StudioColors.WaveformTrack),
+        )
+    }
 
     Canvas(modifier = modifier) {
         val count = bars.size.coerceAtLeast(1)
@@ -422,6 +439,7 @@ fun StudioPreviewControlsBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                val compareInteraction = remember { MutableInteractionSource() }
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = if (effectiveBypass) StudioColors.Amber.copy(alpha = 0.2f) else StudioColors.ElevatedSurface,
@@ -432,16 +450,22 @@ fun StudioPreviewControlsBar(
                     modifier = Modifier
                         .weight(1f)
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(compareInteraction, MaterialTheme.colorScheme.primary, selected = effectiveBypass, cornerRadius = 12.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .pointerInput(Unit) {
                             detectTapGestures(
-                                onPress = {
+                                onPress = { offset ->
+                                    val press = PressInteraction.Press(offset)
+                                    compareInteraction.tryEmit(press)
                                     onHoldBypassChange(true)
-                                    try {
+                                    val released = try {
                                         tryAwaitRelease()
                                     } finally {
                                         onHoldBypassChange(false)
                                     }
+                                    compareInteraction.tryEmit(
+                                        if (released) PressInteraction.Release(press) else PressInteraction.Cancel(press),
+                                    )
                                 },
                                 onTap = {
                                     onToggleBypass()
@@ -472,8 +496,10 @@ fun StudioPreviewControlsBar(
                     }
                 }
 
+                val undoInteraction = remember { MutableInteractionSource() }
                 IconButton(
                     onClick = onUndo,
+                    interactionSource = undoInteraction,
                     enabled = uiState.canUndoEdit,
                     colors = IconButtonDefaults.iconButtonColors(
                         containerColor = StudioColors.ElevatedSurface,
@@ -483,6 +509,7 @@ fun StudioPreviewControlsBar(
                     ),
                     modifier = Modifier
                         .size(48.dp)
+                        .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                         .testTag("preview_undo_button"),
                 ) {
                     Icon(
@@ -491,8 +518,10 @@ fun StudioPreviewControlsBar(
                     )
                 }
 
+                val redoInteraction = remember { MutableInteractionSource() }
                 IconButton(
                     onClick = onRedo,
+                    interactionSource = redoInteraction,
                     enabled = uiState.canRedoEdit,
                     colors = IconButtonDefaults.iconButtonColors(
                         containerColor = StudioColors.ElevatedSurface,
@@ -502,6 +531,7 @@ fun StudioPreviewControlsBar(
                     ),
                     modifier = Modifier
                         .size(48.dp)
+                        .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                         .testTag("preview_redo_button"),
                 ) {
                     Icon(
@@ -515,8 +545,10 @@ fun StudioPreviewControlsBar(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                val resetInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = onResetZero,
+                    interactionSource = resetInteraction,
                     border = BorderStroke(1.dp, StudioColors.Rose.copy(alpha = 0.5f)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
                     shape = RoundedCornerShape(12.dp),
@@ -524,6 +556,7 @@ fun StudioPreviewControlsBar(
                     modifier = Modifier
                         .weight(1f)
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(resetInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("preview_reset_zero_button"),
                 ) {
                     Icon(Icons.Rounded.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -536,8 +569,10 @@ fun StudioPreviewControlsBar(
                     )
                 }
 
+                val saveDraftInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = onOpenSaveDraft,
+                    interactionSource = saveDraftInteraction,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Violet.copy(alpha = 0.22f),
                         contentColor = StudioColors.Violet,
@@ -548,6 +583,7 @@ fun StudioPreviewControlsBar(
                     modifier = Modifier
                         .weight(1f)
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(saveDraftInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("preview_save_draft_button"),
                 ) {
                     Icon(Icons.Rounded.BookmarkAdd, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -656,8 +692,10 @@ fun PersistentTransportBar(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val playInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = onPlayPause,
+                        interactionSource = playInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (uiState.playback.isPlaying) StudioColors.Amber else StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
@@ -666,6 +704,7 @@ fun PersistentTransportBar(
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                         modifier = Modifier
                             .defaultMinSize(minHeight = 48.dp)
+                            .lit(playInteraction, MaterialTheme.colorScheme.primary, selected = uiState.playback.isPlaying, cornerRadius = 14.dp)
                             .testTag("transport_play_pause_button"),
                     ) {
                         Icon(
@@ -681,8 +720,10 @@ fun PersistentTransportBar(
                         )
                     }
 
+                    val stopInteraction = remember { MutableInteractionSource() }
                     IconButton(
                         onClick = onStop,
+                        interactionSource = stopInteraction,
                         enabled = uiState.hasAudio,
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = StudioColors.ElevatedSurface,
@@ -692,6 +733,7 @@ fun PersistentTransportBar(
                         ),
                         modifier = Modifier
                             .size(48.dp)
+                            .lit(stopInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                             .testTag("transport_stop_button"),
                     ) {
                         Icon(
@@ -700,14 +742,17 @@ fun PersistentTransportBar(
                         )
                     }
 
+                    val loopInteraction = remember { MutableInteractionSource() }
                     IconButton(
                         onClick = onToggleAutoLoop,
+                        interactionSource = loopInteraction,
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = if (uiState.autoLoopOnPlayback) StudioColors.Emerald.copy(alpha = 0.2f) else StudioColors.ElevatedSurface,
                             contentColor = if (uiState.autoLoopOnPlayback) StudioColors.Emerald else StudioColors.TextSecondary,
                         ),
                         modifier = Modifier
                             .size(48.dp)
+                            .lit(loopInteraction, MaterialTheme.colorScheme.primary, selected = uiState.autoLoopOnPlayback, cornerRadius = 24.dp)
                             .testTag("transport_loop_button"),
                     ) {
                         Icon(
@@ -718,13 +763,16 @@ fun PersistentTransportBar(
 
                     if (onOpenSleepTimer != null) {
                         val timerActive = uiState.sleepTimerRemainingSec > 0
+                        val timerInteraction = remember { MutableInteractionSource() }
                         Surface(
                             onClick = onOpenSleepTimer,
+                            interactionSource = timerInteraction,
                             shape = RoundedCornerShape(14.dp),
                             color = if (timerActive) StudioColors.Violet.copy(alpha = 0.22f) else StudioColors.ElevatedSurface,
                             border = if (timerActive) BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)) else null,
                             modifier = Modifier
                                 .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                .lit(timerInteraction, MaterialTheme.colorScheme.primary, selected = timerActive, cornerRadius = 14.dp)
                                 .testTag("transport_sleep_timer_button"),
                         ) {
                             Row(
@@ -753,8 +801,10 @@ fun PersistentTransportBar(
                     }
 
                     if (onUndo != null) {
+                        val tUndoInteraction = remember { MutableInteractionSource() }
                         IconButton(
                             onClick = onUndo,
+                            interactionSource = tUndoInteraction,
                             enabled = uiState.canUndoEdit,
                             colors = IconButtonDefaults.iconButtonColors(
                                 containerColor = StudioColors.ElevatedSurface,
@@ -764,6 +814,7 @@ fun PersistentTransportBar(
                             ),
                             modifier = Modifier
                                 .size(48.dp)
+                                .lit(tUndoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                 .testTag("transport_undo_button"),
                         ) {
                             Icon(
@@ -774,8 +825,10 @@ fun PersistentTransportBar(
                     }
 
                     if (onRedo != null) {
+                        val tRedoInteraction = remember { MutableInteractionSource() }
                         IconButton(
                             onClick = onRedo,
+                            interactionSource = tRedoInteraction,
                             enabled = uiState.canRedoEdit,
                             colors = IconButtonDefaults.iconButtonColors(
                                 containerColor = StudioColors.ElevatedSurface,
@@ -785,6 +838,7 @@ fun PersistentTransportBar(
                             ),
                             modifier = Modifier
                                 .size(48.dp)
+                                .lit(tRedoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                 .testTag("transport_redo_button"),
                         ) {
                             Icon(
@@ -823,6 +877,7 @@ fun PersistentTransportBar(
                     }
 
                     // A/B Compare / Bypass chip supporting tap-to-toggle AND press-and-hold
+                    val bypassInteraction = remember { MutableInteractionSource() }
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = if (effectiveBypass) StudioColors.Amber.copy(alpha = 0.18f) else StudioColors.ElevatedSurface,
@@ -832,16 +887,22 @@ fun PersistentTransportBar(
                         ),
                         modifier = Modifier
                             .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                            .lit(bypassInteraction, MaterialTheme.colorScheme.primary, selected = effectiveBypass, cornerRadius = 14.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .pointerInput(Unit) {
                                 detectTapGestures(
-                                    onPress = {
+                                    onPress = { offset ->
+                                        val press = PressInteraction.Press(offset)
+                                        bypassInteraction.tryEmit(press)
                                         onHoldBypassChange(true)
-                                        try {
+                                        val released = try {
                                             tryAwaitRelease()
                                         } finally {
                                             onHoldBypassChange(false)
                                         }
+                                        bypassInteraction.tryEmit(
+                                            if (released) PressInteraction.Release(press) else PressInteraction.Cancel(press),
+                                        )
                                     },
                                     onTap = {
                                         onToggleBypass()

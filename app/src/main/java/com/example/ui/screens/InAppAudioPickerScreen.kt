@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -79,6 +80,7 @@ import com.example.data.MediaStoreAudioRepository
 import com.example.i18n.t
 import com.example.model.AudioPickerTarget
 import com.example.model.DeviceAudioItem
+import com.example.studio.ui.lit
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
@@ -158,13 +160,19 @@ fun InAppAudioPickerScreen(
         val mp = MediaPlayer()
         val ok = runCatching {
             mp.setDataSource(context, Uri.parse(item.uriString))
-            mp.prepare()
+            mp.setOnPreparedListener { prepared ->
+                runCatching { prepared.start() }
+            }
             mp.setOnCompletionListener {
                 stopPreview()
             }
-            mp.start()
+            mp.setOnErrorListener { _, _, _ ->
+                stopPreview()
+                true
+            }
             previewPlayer = mp
             previewingUri = item.uriString
+            mp.prepareAsync()
             true
         }.getOrDefault(false)
         if (!ok) {
@@ -219,10 +227,10 @@ fun InAppAudioPickerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .widthIn(max = 640.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            item(key = "picker_header") {
+            item(key = "picker_header", contentType = "header") {
                 if (showBackButton) {
                     StudioFocusTopBar(
                         title = t(lang, "picker_title"),
@@ -233,10 +241,13 @@ fun InAppAudioPickerScreen(
                             onBack()
                         },
                         trailing = {
+                            val refreshInteraction = remember { MutableInteractionSource() }
                             IconButton(
                                 onClick = { viewModel.refreshDeviceAudios() },
+                                interactionSource = refreshInteraction,
                                 modifier = Modifier
                                     .size(48.dp)
+                                    .lit(refreshInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                     .testTag("picker_refresh_button"),
                             ) {
                                 Icon(Icons.Rounded.Refresh, contentDescription = "Refresh", tint = StudioColors.Cyan)
@@ -275,9 +286,13 @@ fun InAppAudioPickerScreen(
                                     )
                                 }
                             }
+                            val refreshBrowseInteraction = remember { MutableInteractionSource() }
                             IconButton(
                                 onClick = { viewModel.refreshDeviceAudios() },
-                                modifier = Modifier.size(48.dp),
+                                interactionSource = refreshBrowseInteraction,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .lit(refreshBrowseInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp),
                             ) {
                                 Icon(Icons.Rounded.Refresh, contentDescription = "Refresh", tint = StudioColors.Cyan)
                             }
@@ -286,18 +301,21 @@ fun InAppAudioPickerScreen(
                 }
             }
 
-            item(key = "external_drive_import_button") {
+            item(key = "external_drive_import_button", contentType = "external_import_button") {
+                val externalInteraction = remember { MutableInteractionSource() }
                 OutlinedButton(
                     onClick = {
                         stopPreview()
                         externalDocLauncher.launch(arrayOf("audio/*"))
                     },
+                    interactionSource = externalInteraction,
                     border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.7f)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
+                        .lit(externalInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                         .testTag("picker_external_drive_button"),
                 ) {
                     Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -307,7 +325,7 @@ fun InAppAudioPickerScreen(
             }
 
             if (!hasAudioPerm) {
-                item(key = "audio_permission_card") {
+                item(key = "audio_permission_card", contentType = "permission_card") {
                     Card(
                         shape = RoundedCornerShape(20.dp),
                         colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -330,8 +348,10 @@ fun InAppAudioPickerScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = StudioColors.TextSecondary,
                             )
+                            val grantInteraction = remember { MutableInteractionSource() }
                             Button(
                                 onClick = { permLauncher.launch(requiredPermission) },
+                                interactionSource = grantInteraction,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = StudioColors.Cyan,
                                     contentColor = StudioColors.BgTop,
@@ -340,6 +360,7 @@ fun InAppAudioPickerScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .defaultMinSize(minHeight = 48.dp)
+                                    .lit(grantInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                     .testTag("picker_grant_permission_button"),
                             ) {
                                 Text(t(lang, "grant_permission"), style = MaterialTheme.typography.labelLarge)
@@ -348,7 +369,7 @@ fun InAppAudioPickerScreen(
                     }
                 }
             } else {
-                item(key = "picker_tabs") {
+                item(key = "picker_tabs", contentType = "tabs") {
                     TabRow(
                         selectedTabIndex = selectedTab,
                         containerColor = StudioColors.CardSurface,
@@ -361,23 +382,29 @@ fun InAppAudioPickerScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
+                        val deviceTabInteraction = remember { MutableInteractionSource() }
                         Tab(
                             selected = selectedTab == 0,
                             onClick = {
                                 selectedTab = 0
                                 selectedFolder = null
                             },
+                            interactionSource = deviceTabInteraction,
                             text = { Text(t(lang, "picker_tab_device")) },
+                            modifier = Modifier.lit(deviceTabInteraction, MaterialTheme.colorScheme.primary, selected = selectedTab == 0, cornerRadius = 12.dp),
                         )
+                        val folderTabInteraction = remember { MutableInteractionSource() }
                         Tab(
                             selected = selectedTab == 1,
                             onClick = { selectedTab = 1 },
+                            interactionSource = folderTabInteraction,
                             text = { Text(t(lang, "picker_tab_folders")) },
+                            modifier = Modifier.lit(folderTabInteraction, MaterialTheme.colorScheme.primary, selected = selectedTab == 1, cornerRadius = 12.dp),
                         )
                     }
                 }
 
-                item(key = "picker_search_and_filter") {
+                item(key = "picker_search_and_filter", contentType = "search_filter") {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = searchQuery,
@@ -400,13 +427,17 @@ fun InAppAudioPickerScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             formatOptions.forEach { fmt ->
+                                val chipInteraction = remember { MutableInteractionSource() }
+                                val isFmtSelected = selectedFormat == fmt
                                 FilterChip(
-                                    selected = selectedFormat == fmt,
+                                    selected = isFmtSelected,
                                     onClick = { selectedFormat = fmt },
+                                    interactionSource = chipInteraction,
                                     label = {
                                         Text(
                                             if (fmt == "ALL") t(lang, "picker_all_formats") else fmt,
@@ -417,7 +448,9 @@ fun InAppAudioPickerScreen(
                                         selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.2f),
                                         selectedLabelColor = StudioColors.Cyan,
                                     ),
-                                    modifier = Modifier.defaultMinSize(minHeight = 40.dp),
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 40.dp)
+                                        .lit(chipInteraction, MaterialTheme.colorScheme.primary, selected = isFmtSelected, cornerRadius = 10.dp),
                                 )
                             }
                         }
@@ -425,7 +458,7 @@ fun InAppAudioPickerScreen(
                 }
 
                 if (uiState.isScanningDeviceAudio && uiState.deviceAudios.isEmpty()) {
-                    item(key = "picker_loading") {
+                    item(key = "picker_loading", contentType = "loading") {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -437,17 +470,25 @@ fun InAppAudioPickerScreen(
                     }
                 } else if (selectedTab == 1 && selectedFolder == null) {
                     if (foldersSummary.isEmpty()) {
-                        item(key = "picker_empty_folders") {
+                        item(key = "picker_empty_folders", contentType = "empty") {
                             EmptyLibraryCard(t(lang, "picker_empty"))
                         }
                     } else {
-                        itemsIndexed(foldersSummary, key = { _, entry -> "folder_${entry.key}" }) { _, entry ->
+                        itemsIndexed(
+                            items = foldersSummary,
+                            key = { _, entry -> "folder_${entry.key}" },
+                            contentType = { _, _ -> "folder_row" },
+                        ) { _, entry ->
+                            val folderInteraction = remember { MutableInteractionSource() }
                             Card(
                                 onClick = { selectedFolder = entry.key },
+                                interactionSource = folderInteraction,
                                 shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
                                 border = BorderStroke(1.dp, StudioColors.Border),
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .lit(folderInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp),
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -482,11 +523,15 @@ fun InAppAudioPickerScreen(
                     }
                 } else {
                     if (selectedTab == 1 && selectedFolder != null) {
-                        item(key = "folder_back_chip") {
+                        item(key = "folder_back_chip", contentType = "folder_back") {
+                            val folderBackInteraction = remember { MutableInteractionSource() }
                             OutlinedButton(
                                 onClick = { selectedFolder = null },
+                                interactionSource = folderBackInteraction,
                                 shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.defaultMinSize(minHeight = 44.dp),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 44.dp)
+                                    .lit(folderBackInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp),
                             ) {
                                 Icon(Icons.Rounded.Folder, contentDescription = null, tint = StudioColors.Amber, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(6.dp))
@@ -496,11 +541,15 @@ fun InAppAudioPickerScreen(
                     }
 
                     if (filteredItems.isEmpty()) {
-                        item(key = "picker_empty_items") {
+                        item(key = "picker_empty_items", contentType = "empty") {
                             EmptyLibraryCard(t(lang, "picker_empty"))
                         }
                     } else {
-                        itemsIndexed(filteredItems, key = { _, item -> "audio_${item.id}" }) { index, item ->
+                        itemsIndexed(
+                            items = filteredItems,
+                            key = { _, item -> "audio_${item.id}" },
+                            contentType = { _, _ -> "audio_row" },
+                        ) { index, item ->
                             val isPlayingThis = previewingUri == item.uriString
                             DeviceAudioRowCard(
                                 serialNumber = index + 1,
@@ -525,7 +574,7 @@ fun InAppAudioPickerScreen(
                 }
             }
 
-            item { Spacer(Modifier.height(16.dp)) }
+            item(key = "picker_bottom_spacer", contentType = "spacer") { Spacer(Modifier.height(16.dp)) }
         }
     }
 }
@@ -558,8 +607,10 @@ private fun DeviceAudioRowCard(
     onTogglePreview: () -> Unit,
     onSelect: () -> Unit,
 ) {
+    val cardInteraction = remember { MutableInteractionSource() }
     Card(
         onClick = onSelect,
+        interactionSource = cardInteraction,
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
         border = BorderStroke(
@@ -568,6 +619,7 @@ private fun DeviceAudioRowCard(
         ),
         modifier = Modifier
             .fillMaxWidth()
+            .lit(cardInteraction, MaterialTheme.colorScheme.primary, selected = isPlayingPreview, cornerRadius = 16.dp)
             .testTag("device_audio_card_${item.id}"),
     ) {
         Row(
@@ -630,14 +682,17 @@ private fun DeviceAudioRowCard(
                 }
             }
 
+            val previewInteraction = remember { MutableInteractionSource() }
             IconButton(
                 onClick = onTogglePreview,
+                interactionSource = previewInteraction,
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = if (isPlayingPreview) StudioColors.Cyan else StudioColors.ElevatedSurface,
                     contentColor = if (isPlayingPreview) StudioColors.BgTop else StudioColors.Cyan,
                 ),
                 modifier = Modifier
                     .size(48.dp)
+                    .lit(previewInteraction, MaterialTheme.colorScheme.primary, selected = isPlayingPreview, cornerRadius = 24.dp)
                     .testTag("device_audio_preview_${item.id}"),
             ) {
                 Icon(
@@ -646,15 +701,19 @@ private fun DeviceAudioRowCard(
                 )
             }
 
+            val selectInteraction = remember { MutableInteractionSource() }
             Button(
                 onClick = onSelect,
+                interactionSource = selectInteraction,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = StudioColors.Cyan.copy(alpha = 0.18f),
                     contentColor = StudioColors.Cyan,
                 ),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                 shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.defaultMinSize(minHeight = 40.dp),
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 40.dp)
+                    .lit(selectInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 10.dp),
             ) {
                 Icon(Icons.Rounded.AudioFile, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))

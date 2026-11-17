@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +58,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,9 +70,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -85,6 +90,7 @@ import com.example.model.AudioPickerTarget
 import com.example.model.AuthSession
 import com.example.model.EffectType
 import com.example.model.StudioRoute
+import com.example.studio.ui.lit
 import com.example.ui.components.LanguageBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
 import com.example.ui.components.RealTimeWaveformCanvas
@@ -94,6 +100,7 @@ import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
 
+@Immutable
 private data class HomeToolTile(
     val id: String,
     val titleKey: String,
@@ -103,6 +110,7 @@ private data class HomeToolTile(
     val infoKey: String? = null,
 )
 
+@Immutable
 private data class HomeToolFamily(
     val id: String,
     val titleKey: String,
@@ -166,6 +174,14 @@ fun HomeScreen(
                         accent = StudioColors.Cyan,
                         route = StudioRoute.SpeechToText,
                         infoKey = "speech_to_text_info",
+                    ),
+                    HomeToolTile(
+                        id = "smart_assistant",
+                        titleKey = "tool_smart_assistant",
+                        icon = Icons.Rounded.AutoAwesome,
+                        accent = StudioColors.Cyan,
+                        route = StudioRoute.SmartAssistant,
+                        infoKey = "tool_smart_assistant_info",
                     ),
                 ),
             ),
@@ -286,6 +302,14 @@ fun HomeScreen(
                         infoKey = "tool_video_audio_edit_info",
                     ),
                     HomeToolTile(
+                        id = "cinematic_video_reels",
+                        titleKey = "tool_cinematic_video_reels",
+                        icon = Icons.Rounded.Movie,
+                        accent = StudioColors.Amber,
+                        route = StudioRoute.CinematicVideoReels,
+                        infoKey = "tool_cinematic_video_reels_info",
+                    ),
+                    HomeToolTile(
                         id = "compress_audio",
                         titleKey = "tool_compress_audio",
                         icon = Icons.Rounded.Compress,
@@ -322,38 +346,40 @@ fun HomeScreen(
                 .fillMaxHeight()
                 .fillMaxWidth()
                 .widthIn(max = 640.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            item(key = "hero_banner") {
+            item(key = "hero_banner", contentType = "hero_banner") {
+                val heroBgBrush = remember {
+                    Brush.linearGradient(
+                        colors = listOf(
+                            StudioColors.BgTop,
+                            StudioColors.CardSurface,
+                            Color(0xFF151E3B),
+                        ),
+                    )
+                }
+                val heroRadialBrush = remember {
+                    Brush.radialGradient(
+                        colors = listOf(
+                            StudioColors.Cyan.copy(alpha = 0.16f),
+                            StudioColors.Violet.copy(alpha = 0.10f),
+                            Color.Transparent,
+                        ),
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(176.dp)
                         .clip(RoundedCornerShape(22.dp))
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(
-                                    StudioColors.BgTop,
-                                    StudioColors.CardSurface,
-                                    Color(0xFF151E3B),
-                                ),
-                            ),
-                        ),
+                        .background(heroBgBrush),
                 ) {
                     // Ambient glowing cyan-violet studio backdrop + watermark of the primary logo silhouette
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(
-                                Brush.radialGradient(
-                                    colors = listOf(
-                                        StudioColors.Cyan.copy(alpha = 0.16f),
-                                        StudioColors.Violet.copy(alpha = 0.10f),
-                                        Color.Transparent,
-                                    ),
-                                ),
-                            ),
+                            .background(heroRadialBrush),
                     )
                     Image(
                         painter = painterResource(R.drawable.ic_splash_vector),
@@ -383,22 +409,26 @@ fun HomeScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
+                                val logoBorderBrush = remember {
+                                    Brush.linearGradient(
+                                        colors = listOf(StudioColors.Cyan, StudioColors.Violet),
+                                    )
+                                }
                                 Surface(
                                     shape = RoundedCornerShape(16.dp),
                                     color = Color(0xFFFFFFFE),
                                     border = BorderStroke(
                                         width = 1.5.dp,
-                                        brush = Brush.linearGradient(
-                                            colors = listOf(StudioColors.Cyan, StudioColors.Violet),
-                                        ),
+                                        brush = logoBorderBrush,
                                     ),
                                     shadowElevation = 8.dp,
                                     modifier = Modifier.size(52.dp),
                                 ) {
                                     Image(
-                                        painter = painterResource(R.drawable.sonix_primary_logo),
+                                        bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
                                         contentDescription = t(lang, "app_name"),
                                         contentScale = ContentScale.Crop,
+                                        filterQuality = FilterQuality.High,
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .clip(RoundedCornerShape(15.dp)),
@@ -428,6 +458,7 @@ fun HomeScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
+                                val authChipInteraction = remember { MutableInteractionSource() }
                                 Surface(
                                     onClick = {
                                         if (uiState.authSession is AuthSession.Guest) {
@@ -436,11 +467,13 @@ fun HomeScreen(
                                             viewModel.signOut()
                                         }
                                     },
+                                    interactionSource = authChipInteraction,
                                     shape = RoundedCornerShape(999.dp),
                                     color = StudioColors.ElevatedSurface.copy(alpha = 0.9f),
                                     border = BorderStroke(1.dp, StudioColors.BorderBright),
                                     modifier = Modifier
                                         .defaultMinSize(minHeight = 48.dp)
+                                        .lit(authChipInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
                                         .testTag("home_auth_chip"),
                                 ) {
                                     Box(
@@ -479,7 +512,7 @@ fun HomeScreen(
                 }
             }
 
-            item(key = "active_project_summary") {
+            item(key = "active_project_summary", contentType = "active_project_summary") {
                 Card(
                     shape = RoundedCornerShape(18.dp),
                     colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -544,12 +577,15 @@ fun HomeScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            val importInteraction = remember { MutableInteractionSource() }
                             OutlinedButton(
                                 onClick = { onNavigate(StudioRoute.AudioPicker(AudioPickerTarget.IMPORT_MAIN)) },
+                                interactionSource = importInteraction,
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier
                                     .weight(1f)
                                     .defaultMinSize(minHeight = 48.dp)
+                                    .lit(importInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                                     .testTag("home_import_library_button"),
                             ) {
                                 Icon(Icons.Rounded.LibraryMusic, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -560,13 +596,16 @@ fun HomeScreen(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             }
+                            val recordInteraction = remember { MutableInteractionSource() }
                             OutlinedButton(
                                 onClick = { onNavigate(StudioRoute.Record) },
+                                interactionSource = recordInteraction,
                                 shape = RoundedCornerShape(12.dp),
                                 border = BorderStroke(1.dp, StudioColors.Rose.copy(alpha = 0.55f)),
                                 modifier = Modifier
                                     .weight(1f)
                                     .defaultMinSize(minHeight = 48.dp)
+                                    .lit(recordInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                                     .testTag("home_card_record"),
                             ) {
                                 Icon(Icons.Rounded.Mic, contentDescription = null, tint = StudioColors.RoseBright, modifier = Modifier.size(16.dp))
@@ -585,7 +624,7 @@ fun HomeScreen(
 
             // 4 Families ("كل أب وأبناؤه - شبكة مربعات 3 أعمدة")
             families.forEach { family ->
-                item(key = "family_header_${family.id}") {
+                item(key = "family_header_${family.id}", contentType = "family_header") {
                     FamilyParentHeader(
                         title = t(lang, family.titleKey),
                         icon = family.icon,
@@ -596,7 +635,7 @@ fun HomeScreen(
 
                 val rows = family.tools.chunked(3)
                 rows.forEachIndexed { rowIdx, rowTools ->
-                    item(key = "family_${family.id}_row_$rowIdx") {
+                    item(key = "family_${family.id}_row_$rowIdx", contentType = "family_tools_row") {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -626,7 +665,7 @@ fun HomeScreen(
             }
 
             // Secondary studio utilities strip (AI Tools, 3D Echo Pad, Full Effects Chain, Settings)
-            item(key = "studio_extras_strip") {
+            item(key = "studio_extras_strip", contentType = "extras_strip") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -678,7 +717,7 @@ fun HomeScreen(
                 }
             }
 
-            item(key = "home_bottom_spacer") {
+            item(key = "home_bottom_spacer", contentType = "spacer") {
                 Spacer(Modifier.height(10.dp))
             }
         }
@@ -775,28 +814,32 @@ private fun ToolSquareTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tileInteraction = remember { MutableInteractionSource() }
+    val tileGradient = remember(accent) {
+        Brush.verticalGradient(
+            colors = listOf(
+                accent.copy(alpha = 0.14f),
+                StudioColors.CardSurface,
+                StudioColors.ElevatedSurface.copy(alpha = 0.85f),
+            ),
+        )
+    }
     Surface(
         onClick = onClick,
+        interactionSource = tileInteraction,
         shape = RoundedCornerShape(16.dp),
         color = StudioColors.CardSurface,
         border = BorderStroke(1.dp, accent.copy(alpha = 0.28f)),
         modifier = modifier
             .aspectRatio(1f)
             .defaultMinSize(minHeight = 48.dp)
+            .lit(tileInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp)
             .testTag(testTag),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            accent.copy(alpha = 0.14f),
-                            StudioColors.CardSurface,
-                            StudioColors.ElevatedSurface.copy(alpha = 0.85f),
-                        ),
-                    ),
-                )
+                .background(tileGradient)
                 .padding(horizontal = 6.dp, vertical = 8.dp),
         ) {
             Column(
@@ -835,14 +878,17 @@ private fun ToolSquareTile(
             }
 
             if (hasInfo) {
+                val infoInteraction = remember { MutableInteractionSource() }
                 Surface(
                     onClick = onInfoClick,
+                    interactionSource = infoInteraction,
                     shape = CircleShape,
                     color = accent.copy(alpha = 0.22f),
                     border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .size(26.dp)
+                        .lit(infoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 13.dp)
                         .testTag("${testTag}_info"),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -870,13 +916,16 @@ private fun ExtraQuickChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val chipInteraction = remember { MutableInteractionSource() }
     Surface(
         onClick = onClick,
+        interactionSource = chipInteraction,
         shape = RoundedCornerShape(14.dp),
         color = StudioColors.ElevatedSurface,
         border = BorderStroke(1.dp, StudioColors.Border),
         modifier = modifier
             .defaultMinSize(minHeight = 48.dp)
+            .lit(chipInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
             .testTag(testTag),
     ) {
         Row(
