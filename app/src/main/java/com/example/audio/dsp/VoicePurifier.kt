@@ -434,13 +434,15 @@ class NoiseReductionProcessor(private val sampleRate: Int = 44100) {
     // Stage 2: Adaptive Spectral Wiener Cleaner
     internal val spectralCleaner = SpectralVoiceCleaner(sampleRate)
 
-    // Stage 3: Smooth hysteresis noise gate
+    // Stage 3: Smooth dynamic downward expander + hysteresis noise gate
     private var env = 0f
     private var currentGateGain = 1f
     private var holdSamples = 0
-    private val holdDurationSamples = (0.065 * sampleRate).toInt()
-    private val attackCoef = exp(-1.0 / (0.004 * sampleRate)).toFloat()
-    private val releaseCoef = exp(-1.0 / (0.125 * sampleRate)).toFloat()
+    private val holdDurationSamples = (0.055 * sampleRate).toInt()
+    private val attackCoef = exp(-1.0 / (0.003 * sampleRate)).toFloat()
+    private val releaseCoef = exp(-1.0 / (0.110 * sampleRate)).toFloat()
+    private val gainAttackCoef = exp(-1.0 / (0.004 * sampleRate)).toFloat()
+    private val gainReleaseCoef = exp(-1.0 / (0.095 * sampleRate)).toFloat()
 
     // Stage 4: Dynamic De-Esser
     private val deEssSidechain = StereoBiquadFilter()
@@ -495,25 +497,25 @@ class NoiseReductionProcessor(private val sampleRate: Int = 44100) {
             right[i] = yR
         }
 
-        val hpHz = params.highPassHz.coerceIn(30f, 200f)
-        if (hpHz > 32f) {
-            hpfStage1.configureHighPass(sampleRate, hpHz, 0.707f)
-            hpfStage1.processBlock(left, right, numFrames)
-            if (hpHz > 60f) {
-                hpfStage2.configureHighPass(sampleRate, hpHz, 0.707f)
-                hpfStage2.processBlock(left, right, numFrames)
-            }
-        }
+        // Steep 24 dB/oct high-pass rumble filter anchored at >= 85 Hz
+        val hpHz = params.highPassHz.coerceIn(85f, 220f)
+        hpfStage1.configureHighPass(sampleRate, hpHz, 0.707f)
+        hpfStage1.processBlock(left, right, numFrames)
+        hpfStage2.configureHighPass(sampleRate, hpHz, 0.707f)
+        hpfStage2.processBlock(left, right, numFrames)
 
         // 2. Adaptive STFT Spectral Noise Suppressor
         if (params.spectralClean && params.amount > 0.02f) {
             spectralCleaner.processBlock(left, right, numFrames, params.amount, params.thresholdDb)
         }
 
-        // 3. Smooth Hysteresis Soft Noise Gate
-        val openThresh = 10.0.pow(params.thresholdDb.coerceIn(-70f, -10f) / 20.0).toFloat()
-        val closeThresh = openThresh * 0.58f // ~4.7 dB hysteresis prevents chatter
-        val floorGain = (1f - params.amount.coerceIn(0f, 1f) * 0.94f).coerceIn(0.03f, 1f)
+        // 3. Dynamic Downward Expander + Hysteresis Soft Noise Gate
+        val threshDb = params.thresholdDb.coerceIn(-70f, -10f)
+        val openThresh = 10.0.pow(threshDb / 20.0).toFloat()
+        val closeThresh = openThresh * 0.62f // ~4.1 dB hysteresis prevents chatter
+        val amountClamped = params.amount.coerceIn(0f, 1f)
+        val floorGain = (1f - amountClamped * 0.97f).coerceIn(0.015f, 1f)
+        val expanderSlope = 1.2f + amountClamped * 3.8f
 
         var gateAttenSum = 0f
         for (i in 0 until numFrames) {
@@ -532,22 +534,25 @@ class NoiseReductionProcessor(private val sampleRate: Int = 44100) {
                 }
                 env >= closeThresh -> {
                     val t = ((env - closeThresh) / (openThresh - closeThresh).coerceAtLeast(1e-6f)).coerceIn(0f, 1f)
-                    floorGain + (1f - floorGain) * t
+                    val kneeFloor = max(floorGain, 0.25f)
+                    kneeFloor + (1f - kneeFloor) * t
                 }
                 else -> {
-                    val ratio = (env / closeThresh.coerceAtLeast(1e-6f)).coerceIn(0f, 1f)
-                    floorGain + (1f - floorGain) * (ratio * ratio * 0.35f)
+                    val envDb = 20f * log10(env.coerceAtLeast(1e-6f))
+                    val underDb = (threshDb - envDb).coerceAtLeast(0f)
+                    val expandedGain = 10.0.pow(-(underDb * (expanderSlope - 1f)) / 20.0).toFloat()
+                    expandedGain.coerceIn(floorGain, 1f)
                 }
             }
-            val smoothCoef = if (targetGain > currentGateGain) 0.985f else 0.996f
+            val smoothCoef = if (targetGain > currentGateGain) gainAttackCoef else gainReleaseCoef
             currentGateGain = smoothCoef * currentGateGain + (1f - smoothCoef) * targetGain
 
             left[i] *= currentGateGain
             right[i] *= currentGateGain
             gateAttenSum += currentGateGain
         }
-        val avgGateGain = (gateAttenSum / numFrames).coerceIn(0.03f, 1f)
-        val gateDb = (-20f * log10(avgGateGain)).coerceIn(0f, 24f)
+        val avgGateGain = (gateAttenSum / numFrames).coerceIn(0.015f, 1f)
+        val gateDb = (-20f * log10(avgGateGain)).coerceIn(0f, 32f)
 
         // 4. Sidechain Dynamic De-Esser
         val deEss = params.deEssAmount.coerceIn(0f, 1f)
@@ -576,21 +581,23 @@ class NoiseReductionProcessor(private val sampleRate: Int = 44100) {
             }
         }
 
-        // 5. Vocal Clarity & Presence Shaper
+        // 5. Vocal Clarity & +4.5 dB Vocal Presence Shelf at 3.5 kHz
         val clarity = params.vocalClarity.coerceIn(0f, 1f)
         if (clarity > 0.02f) {
-            mudCutFilter.configurePeaking(sampleRate, 270f, 1.2f, -2.4f * clarity)
+            mudCutFilter.configurePeaking(sampleRate, 265f, 1.2f, -2.6f * clarity)
             mudCutFilter.processBlock(left, right, numFrames)
+        }
 
-            presenceFilter.configurePeaking(sampleRate, 3200f, 1.0f, 3.2f * clarity)
-            presenceFilter.processBlock(left, right, numFrames)
+        presenceFilter.configureHighShelf(sampleRate, 3500f, 0.85f, 4.5f)
+        presenceFilter.processBlock(left, right, numFrames)
 
-            airFilter.configureHighShelf(sampleRate, 9800f, 0.85f, 2.0f * clarity)
+        if (clarity > 0.02f) {
+            airFilter.configureHighShelf(sampleRate, 10200f, 0.85f, 1.8f * clarity)
             airFilter.processBlock(left, right, numFrames)
         }
 
         val spectralDb = if (params.spectralClean) spectralCleaner.lastSuppressionDb else 0f
-        lastNoiseSuppressionDb = max(spectralDb, gateDb).coerceIn(0f, 30f)
+        lastNoiseSuppressionDb = max(spectralDb, gateDb).coerceIn(0f, 34f)
     }
 }
 

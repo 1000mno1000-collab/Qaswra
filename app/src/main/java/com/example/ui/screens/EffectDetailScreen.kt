@@ -66,7 +66,7 @@ fun EffectDetailScreen(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 110.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // Effect Activation Header Card
@@ -114,7 +114,7 @@ fun EffectDetailScreen(
                 StudioParamSlider(
                     label = "جهير عميق (60 Hz)",
                     value = eq.band60HzDb,
-                    valueRange = -12f..12f,
+                    valueRange = -15f..15f,
                     formattedValue = String.format(Locale.US, "%+.1f dB", eq.band60HzDb),
                     onValueChange = { v -> onUpdateConfig { it.copy(equalizer = it.equalizer.copy(band60HzDb = v)) } },
                     accentColor = VioletGlow
@@ -122,7 +122,7 @@ fun EffectDetailScreen(
                 StudioParamSlider(
                     label = "دفء منخفض (250 Hz)",
                     value = eq.band250HzDb,
-                    valueRange = -12f..12f,
+                    valueRange = -15f..15f,
                     formattedValue = String.format(Locale.US, "%+.1f dB", eq.band250HzDb),
                     onValueChange = { v -> onUpdateConfig { it.copy(equalizer = it.equalizer.copy(band250HzDb = v)) } },
                     accentColor = CyanGlow
@@ -130,7 +130,7 @@ fun EffectDetailScreen(
                 StudioParamSlider(
                     label = "وضوح الوسط (1 kHz)",
                     value = eq.band1kHzDb,
-                    valueRange = -12f..12f,
+                    valueRange = -15f..15f,
                     formattedValue = String.format(Locale.US, "%+.1f dB", eq.band1kHzDb),
                     onValueChange = { v -> onUpdateConfig { it.copy(equalizer = it.equalizer.copy(band1kHzDb = v)) } },
                     accentColor = EmeraldActive
@@ -138,7 +138,7 @@ fun EffectDetailScreen(
                 StudioParamSlider(
                     label = "حضور الصوت (4 kHz)",
                     value = eq.band4kHzDb,
-                    valueRange = -12f..12f,
+                    valueRange = -15f..15f,
                     formattedValue = String.format(Locale.US, "%+.1f dB", eq.band4kHzDb),
                     onValueChange = { v -> onUpdateConfig { it.copy(equalizer = it.equalizer.copy(band4kHzDb = v)) } },
                     accentColor = AmberWarm
@@ -146,7 +146,7 @@ fun EffectDetailScreen(
                 StudioParamSlider(
                     label = "بريق وهواء (12 kHz)",
                     value = eq.band12kHzDb,
-                    valueRange = -12f..12f,
+                    valueRange = -15f..15f,
                     formattedValue = String.format(Locale.US, "%+.1f dB", eq.band12kHzDb),
                     onValueChange = { v -> onUpdateConfig { it.copy(equalizer = it.equalizer.copy(band12kHzDb = v)) } },
                     accentColor = CyanGlow
@@ -591,7 +591,7 @@ private fun EqResponseCurveCard(eq: EqualizerParams) {
             )
             val points = bands.mapIndexed { idx, db ->
                 val x = w * (idx.toFloat() / (bands.size - 1))
-                val y = midY - (db / 12f) * (h * 0.42f)
+                val y = midY - (db.coerceIn(-15f, 15f) / 15f) * (h * 0.42f)
                 Offset(x, y)
             }
 

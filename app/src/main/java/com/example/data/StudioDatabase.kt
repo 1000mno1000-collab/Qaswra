@@ -6,8 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [ProjectEntity::class, PresetEntity::class],
-    version = 1,
+    entities = [ProjectEntity::class, PresetEntity::class, AudioRecordingEntity::class],
+    version = 2,
     exportSchema = false
 )
 abstract class StudioDatabase : RoomDatabase() {
@@ -23,7 +23,10 @@ abstract class StudioDatabase : RoomDatabase() {
                     context.applicationContext,
                     StudioDatabase::class.java,
                     "voice_pro_studio.db"
-                ).build().also { INSTANCE = it }
+                )
+                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }

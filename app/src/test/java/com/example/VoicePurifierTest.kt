@@ -5,6 +5,7 @@ import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -144,6 +145,10 @@ class VoicePurifierTest {
     @Test
     fun `voice purifier workspace opens from home and applies studio preset`() {
         composeTestRule.waitForIdle()
+        if (composeTestRule.onAllNodesWithTag("guest_continue_button").fetchSemanticsNodes().isNotEmpty()) {
+            composeTestRule.onNodeWithTag("guest_continue_button").performScrollTo().performClick()
+            composeTestRule.waitForIdle()
+        }
         composeTestRule.onNode(hasScrollToNodeAction()).performScrollToNode(hasTestTag("section_voice_purifier"))
         composeTestRule.onNodeWithTag("section_voice_purifier").performClick()
         composeTestRule.waitForIdle()

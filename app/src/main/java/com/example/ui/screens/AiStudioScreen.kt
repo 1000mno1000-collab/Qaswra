@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,21 +21,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForwardIos
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Mic
-import androidx.compose.material.icons.rounded.MusicNote
-import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -58,13 +58,15 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.ai.AiTextState
-import com.example.ai.LyriaTrackLength
-import com.example.ai.MusicGenState
+import com.example.audio.dsp.SmartMasterAnalysis
 import com.example.audio.io.RecordingState
 import com.example.ui.components.AnimatedAcousticRibbon
+import com.example.ui.components.EmptyAudioNotice
 import com.example.ui.components.formatDurationMs
 import com.example.ui.theme.AmberWarm
 import com.example.ui.theme.CoralRecord
@@ -79,6 +81,7 @@ import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.VioletGlow
 import com.example.viewmodel.AiToolType
 import com.example.viewmodel.StudioUiState
+import java.util.Locale
 
 @Composable
 fun AiStudioScreen(
@@ -89,11 +92,11 @@ fun AiStudioScreen(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 110.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text(
-            text = "أدوات الذكاء الصوتي المدعومة بنماذج Gemini وLyria عبر Firebase AI Logic",
+            text = "أدوات الذكاء الصوتي المجانية بالكامل: تفريغ صوتي عبر Gemini 2.5 Flash وماسترينغ ذكي فوري",
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary
         )
@@ -107,11 +110,11 @@ fun AiStudioScreen(
         )
 
         AiToolHubCard(
-            tool = AiToolType.MUSIC_GEN,
-            icon = Icons.Rounded.MusicNote,
+            tool = AiToolType.SMART_MASTER,
+            icon = Icons.Rounded.AutoAwesome,
             accent = VioletGlow,
-            tag = "ai_tool_music_gen",
-            onClick = { onOpenTool(AiToolType.MUSIC_GEN) }
+            tag = "ai_tool_smart_master",
+            onClick = { onOpenTool(AiToolType.SMART_MASTER) }
         )
 
         AiToolHubCard(
@@ -207,7 +210,7 @@ fun AiTranscribeScreen(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 110.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Surface(
@@ -221,7 +224,7 @@ fun AiTranscribeScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "التسجيل المباشر والتفريغ عبر gemini-3.5-transcribe",
+                    text = "التسجيل المباشر والتفريغ المجاني عبر gemini-2.5-flash",
                     style = MaterialTheme.typography.titleMedium,
                     color = CyanGlow
                 )
@@ -261,28 +264,40 @@ fun AiTranscribeScreen(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = CoralRecord, contentColor = TextPrimary),
                             shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .height(52.dp)
                                 .testTag("transcribe_mic_start")
                         ) {
-                            Icon(Icons.Rounded.Mic, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("سجّل وفرّغ مباشرة")
+                            Icon(Icons.Rounded.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = "سجّل وفرّغ مباشرة",
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     } else {
                         Button(
                             onClick = { onStopAndTranscribeMic(languageHint) },
                             colors = ButtonDefaults.buttonColors(containerColor = EmeraldActive, contentColor = StudioObsidian),
                             shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .height(52.dp)
                                 .testTag("transcribe_mic_stop")
                         ) {
-                            Icon(Icons.Rounded.Stop, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("إنهاء وتفريغ النص")
+                            Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = "إنهاء وتفريغ النص",
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
 
@@ -291,14 +306,26 @@ fun AiTranscribeScreen(
                             onClick = { onTranscribeStudioAudio(languageHint) },
                             border = BorderStroke(1.dp, CyanGlow.copy(alpha = 0.6f)),
                             shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .height(52.dp)
                                 .testTag("transcribe_current_audio")
                         ) {
-                            Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = CyanGlow)
-                            Spacer(Modifier.width(6.dp))
-                            Text("تفريغ مقطع الاستوديو", color = CyanGlow)
+                            Icon(
+                                Icons.Rounded.GraphicEq,
+                                contentDescription = null,
+                                tint = CyanGlow,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = "تفريغ مقطع الاستوديو",
+                                color = CyanGlow,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
@@ -314,28 +341,39 @@ fun AiTranscribeScreen(
 }
 
 @Composable
-fun AiMusicGenScreen(
+fun AiSmartMasterScreen(
     uiState: StudioUiState,
-    musicGenState: MusicGenState,
-    onGenerateMusic: (String, LyriaTrackLength) -> Unit,
-    onLoadIntoStudio: (Boolean) -> Unit,
+    analysis: SmartMasterAnalysis?,
+    onGoToRecording: () -> Unit,
+    onRunSmartMaster: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var prompt by remember {
-        mutableStateOf("موسيقى سينمائية هادئة بآلة العود والبيانو وإيقاع إلكتروني ناعم بسرعة 95 BPM")
+    if (!uiState.hasAudio) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            EmptyAudioNotice(
+                title = "قم بتسجيل أو استيراد مقطع صوتي أولاً لتفعيله بالماسترينغ الذكي.",
+                actionLabel = "الانتقال للتسجيل",
+                onAction = onGoToRecording
+            )
+        }
+        return
     }
-    var selectedLength by remember { mutableStateOf(LyriaTrackLength.SHORT_CLIP) }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 110.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Surface(
             color = StudioSurface,
-            border = BorderStroke(1.dp, StudioBorder),
+            border = BorderStroke(1.dp, VioletGlow.copy(alpha = 0.55f)),
             shape = RoundedCornerShape(22.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -344,142 +382,136 @@ fun AiMusicGenScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "توليد الموسيقى باستخدام Lyria 3",
+                    text = "مهندس الصوت الذكي (Smart Auto-Master)",
                     style = MaterialTheme.typography.titleMedium,
                     color = VioletGlow
                 )
-
-                OutlinedTextField(
-                    value = prompt,
-                    onValueChange = { prompt = it },
-                    label = { Text("صف النمط الموسيقي، الآلات، والمزاج") },
-                    minLines = 3,
-                    maxLines = 5,
-                    modifier = Modifier.fillMaxWidth().testTag("music_prompt_input")
+                Text(
+                    text = "يفحص خصائص المقطع الصوتي محلياً ومجاناً بالكامل (RMS، القمم، أرضية الضجيج، وتوازن الترددات) ليضبط العزل والمعادل 5-Band والضاغط ومحدّد القمم تلقائياً بضغطة واحدة.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary
                 )
 
-                LyriaTrackLength.entries.forEach { option ->
-                    val selected = selectedLength == option
-                    Surface(
-                        onClick = { selectedLength = option },
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (selected) VioletGlow.copy(alpha = 0.16f) else StudioObsidian,
-                        border = BorderStroke(1.dp, if (selected) VioletGlow else StudioBorder),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("music_length_${option.name.lowercase()}")
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Text(
-                                text = option.arabicLabel,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = if (selected) VioletGlow else TextPrimary
-                            )
-                            Text(
-                                text = option.subtitle,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = TextSecondary
-                            )
-                        }
-                    }
-                }
-
                 Button(
-                    onClick = { onGenerateMusic(prompt, selectedLength) },
-                    enabled = prompt.isNotBlank() && musicGenState !is MusicGenState.Loading,
-                    colors = ButtonDefaults.buttonColors(containerColor = VioletGlow, contentColor = StudioObsidian),
+                    onClick = onRunSmartMaster,
+                    enabled = !uiState.isBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = VioletGlow,
+                        contentColor = StudioObsidian
+                    ),
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(54.dp)
-                        .testTag("generate_music_button")
+                        .testTag("smart_master_run_button")
                 ) {
-                    if (musicGenState is MusicGenState.Loading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
-                            color = StudioObsidian,
-                            strokeWidth = 2.5.dp
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text("جارٍ التأليف الموسيقي…")
-                    } else {
-                        Icon(Icons.Rounded.AutoAwesome, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("توليد المقطوعة الموسيقية")
-                    }
+                    Icon(Icons.Rounded.AutoAwesome, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "تحليل الصوت وتطبيق الماسترينغ الذكي",
+                        fontSize = 13.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
 
-        when (musicGenState) {
-            is MusicGenState.Success -> {
-                Surface(
-                    color = StudioSurface,
-                    border = BorderStroke(1.dp, EmeraldActive.copy(alpha = 0.6f)),
-                    shape = RoundedCornerShape(22.dp),
-                    modifier = Modifier.fillMaxWidth()
+        if (analysis != null) {
+            Surface(
+                color = StudioSurface,
+                border = BorderStroke(1.dp, EmeraldActive.copy(alpha = 0.6f)),
+                shape = RoundedCornerShape(22.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("smart_master_result_card")
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Tune, contentDescription = null, tint = EmeraldActive)
+                        Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "تم التوليد عبر ${musicGenState.modelUsed}",
+                            text = analysis.spectralProfileLabel,
                             style = MaterialTheme.typography.titleMedium,
                             color = EmeraldActive
                         )
-                        Text(
-                            text = "المدة: ${formatDurationMs(musicGenState.buffer.durationMs)}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = CyanGlow
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        MetricChip(
+                            label = "الشدة RMS",
+                            value = String.format(Locale.US, "%.1f dB", analysis.rmsDb),
+                            modifier = Modifier.weight(1f)
                         )
-                        AnimatedAcousticRibbon(
-                            peaks = musicGenState.buffer.computeWaveformPeaks(80),
-                            isActive = false,
-                            liveEnergy = 0f,
-                            accentPrimary = VioletGlow,
-                            modifier = Modifier.fillMaxWidth().height(72.dp)
+                        MetricChip(
+                            label = "الذروة Peak",
+                            value = String.format(Locale.US, "%.1f dB", analysis.peakDb),
+                            modifier = Modifier.weight(1f)
                         )
-                        if (!musicGenState.notes.isNullOrBlank()) {
-                            Text(
-                                text = musicGenState.notes,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = TextSecondary
-                            )
-                        }
+                        MetricChip(
+                            label = "الضجيج",
+                            value = String.format(Locale.US, "%.0f dB", analysis.noiseFloorDb),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Text(
+                        text = "التحسينات المطبّقة تلقائياً:",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = CyanGlow
+                    )
+
+                    analysis.appliedAdjustments.forEach { step ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            verticalAlignment = Alignment.Top
                         ) {
-                            Button(
-                                onClick = { onLoadIntoStudio(true) },
-                                colors = ButtonDefaults.buttonColors(containerColor = CyanGlow, contentColor = StudioObsidian),
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.weight(1f).height(50.dp)
-                            ) {
-                                Icon(Icons.Rounded.LibraryMusic, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text("فتح بالاستوديو")
-                            }
-                            if (uiState.hasAudio) {
-                                OutlinedButton(
-                                    onClick = { onLoadIntoStudio(false) },
-                                    shape = RoundedCornerShape(14.dp),
-                                    modifier = Modifier.weight(1f).height(50.dp)
-                                ) {
-                                    Text("دمج مع مقطعي")
-                                }
-                            }
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                tint = EmeraldActive,
+                                modifier = Modifier
+                                    .padding(top = 2.dp)
+                                    .size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = step,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextPrimary
+                            )
                         }
                     }
                 }
             }
+        }
+    }
+}
 
-            is MusicGenState.Error -> {
-                ErrorNoticeCard(musicGenState.message)
-            }
-
-            else -> Unit
+@Composable
+private fun MetricChip(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = StudioObsidian,
+        border = BorderStroke(1.dp, StudioBorder),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+            Text(value, style = MaterialTheme.typography.titleSmall, color = CyanGlow)
         }
     }
 }
@@ -498,7 +530,7 @@ fun AiSearchAssistantScreen(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 110.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Surface(
@@ -517,7 +549,7 @@ fun AiSearchAssistantScreen(
                     color = EmeraldActive
                 )
                 Text(
-                    text = "استعلم عبر gemini-4-hydrogen مع البحث المباشر عن إعدادات EQ، الميكروفونات، أو حقوق المؤثرات.",
+                    text = "استعلم مجاناً عبر gemini-2.5-flash مع البحث المباشر عن إعدادات EQ، الميكروفونات، وأساليب الهندسة الصوتية.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary
                 )
@@ -670,7 +702,7 @@ private fun AiTextResultCard(
                                             Text(src.domain, style = MaterialTheme.typography.labelSmall, color = AmberWarm)
                                         }
                                     }
-                                    Icon(Icons.Rounded.OpenInNew, contentDescription = null, tint = CyanGlow, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, tint = CyanGlow, modifier = Modifier.size(18.dp))
                                 }
                             }
                         }

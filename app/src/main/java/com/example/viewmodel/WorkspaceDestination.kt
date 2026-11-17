@@ -9,9 +9,9 @@ enum class EchoDetailGroup(val arabicTitle: String, val subtitle: String) {
 }
 
 enum class AiToolType(val arabicTitle: String, val subtitle: String) {
-    TRANSCRIBE("تفريغ الصوت الذكي", "تحويل التسجيل والميكروفون إلى نص عبر gemini-3.5-transcribe"),
-    MUSIC_GEN("توليد الموسيقى", "إنشاء مقاطع وموسيقى كاملة عبر Lyria 3 ودمجها بالاستوديو"),
-    SEARCH_ASSISTANT("باحث الاستوديو المباشر", "معلومات محدثة من بحث Google عبر gemini-4-hydrogen")
+    TRANSCRIBE("تفريغ الصوت الذكي", "تحويل التسجيل والميكروفون إلى نص مجاناً عبر gemini-2.5-flash"),
+    SMART_MASTER("مهندس الصوت الذكي", "تحليل طيفي تلقائي لضبط العزل والمعادل والضاغط مجاناً"),
+    SEARCH_ASSISTANT("باحث الاستوديو المباشر", "معلومات محدثة من بحث Google عبر gemini-2.5-flash")
 }
 
 sealed interface WorkspaceDestination {
@@ -26,6 +26,9 @@ sealed interface WorkspaceDestination {
     data object Presets : WorkspaceDestination
     data object ProjectsExport : WorkspaceDestination
     data object AiStudio : WorkspaceDestination
+    data object TextToSpeechStudio : WorkspaceDestination
+    data object VoiceTransformer : WorkspaceDestination
+    data object Settings : WorkspaceDestination
 
     // Tier 2: Sub-tool Detail Panels
     data class EchoDetail(val group: EchoDetailGroup) : WorkspaceDestination

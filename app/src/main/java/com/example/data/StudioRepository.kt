@@ -2,6 +2,7 @@ package com.example.data
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.core.content.FileProvider
 import com.example.audio.io.StereoAudioBuffer
 import com.example.audio.io.WavAudioCodec
@@ -29,7 +30,10 @@ class StudioRepository(
     private val dao: StudioDao
 ) {
     private val projectsDir = File(context.filesDir, "projects").apply { mkdirs() }
+    private val recordingsDir = File(context.filesDir, "recordings").apply { mkdirs() }
     private val exportsDir = File(context.cacheDir, "exports").apply { mkdirs() }
+
+    val recordings: Flow<List<AudioRecordingEntity>> = dao.observeRecordings()
 
     val projects: Flow<List<StudioProject>> = dao.observeProjects().map { list ->
         list.map { entity ->
@@ -128,8 +132,66 @@ class StudioRepository(
         }
     }
 
-    suspend fun importAudioFromUri(uri: Uri): StereoAudioBuffer? = withContext(Dispatchers.IO) {
-        WavAudioCodec.decodeAudioUri(context, uri)
+    suspend fun importAudioFromUri(
+        uri: Uri,
+        onProgress: (Float, String) -> Unit = { _, _ -> }
+    ): StereoAudioBuffer? = withContext(Dispatchers.IO) {
+        WavAudioCodec.decodeAudioUri(context, uri, onProgress)
+    }
+
+    suspend fun queryUriDisplayName(uri: Uri): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) {
+                        val raw = cursor.getString(idx)
+                        return@runCatching raw?.substringBeforeLast('.')?.trim()?.takeIf { it.isNotBlank() }
+                    }
+                }
+                null
+            }
+        }.getOrNull()
+    }
+
+    suspend fun indexAudioRecording(
+        title: String,
+        buffer: StereoAudioBuffer,
+        sourceType: String
+    ): AudioRecordingEntity = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val cleanTitle = title.trim().ifBlank {
+            if (sourceType == "IMPORTED") "ملف مستورد" else "تسجيل صوتي"
+        }
+        val prefix = if (sourceType == "IMPORTED") "imp" else "rec"
+        val file = File(recordingsDir, "${prefix}_${now}.wav")
+        WavAudioCodec.writeWavFile(file, buffer)
+        val entity = AudioRecordingEntity(
+            filePath = file.absolutePath,
+            title = cleanTitle,
+            timestamp = now,
+            durationMs = buffer.durationMs,
+            sampleRate = buffer.sampleRate,
+            sourceType = sourceType
+        )
+        val newId = dao.upsertRecording(entity)
+        entity.copy(id = newId)
+    }
+
+    suspend fun loadRecordingAudio(recording: AudioRecordingEntity): StereoAudioBuffer? =
+        withContext(Dispatchers.IO) {
+            WavAudioCodec.readWavFile(File(recording.filePath))
+        }
+
+    suspend fun deleteRecording(recording: AudioRecordingEntity) = withContext(Dispatchers.IO) {
+        runCatching { File(recording.filePath).delete() }
+        dao.deleteRecordingById(recording.id)
     }
 
     suspend fun exportWavToUri(uri: Uri, rendered: StereoAudioBuffer): Boolean = withContext(Dispatchers.IO) {
@@ -139,6 +201,21 @@ class StudioRepository(
             } ?: return@withContext false
             true
         }.getOrDefault(false)
+    }
+
+    suspend fun exportFormattedToUri(
+        uri: Uri,
+        rendered: StereoAudioBuffer,
+        format: com.example.audio.export.ExportAudioFormat,
+        onProgress: (Float) -> Unit = {}
+    ): Boolean = withContext(Dispatchers.IO) {
+        com.example.audio.export.AudioFormatExporter.exportToUri(
+            context = context,
+            destinationUri = uri,
+            buffer = rendered,
+            format = format,
+            onProgress = onProgress
+        )
     }
 
     suspend fun createShareWavUri(fileName: String, rendered: StereoAudioBuffer): Uri = withContext(Dispatchers.IO) {

@@ -3,10 +3,10 @@ package com.example.audio.dsp
 import com.example.audio.io.StereoAudioBuffer
 import com.example.model.DspConfig
 import com.example.model.EffectType
+import com.example.model.LimiterParams
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.pow
-import kotlin.math.tanh
 
 class DspPipeline(val sampleRate: Int = 44100) {
 
@@ -20,6 +20,8 @@ class DspPipeline(val sampleRate: Int = 44100) {
     private val phaser = PhaserProcessor(sampleRate)
     private val echoReverb = EchoReverbProcessor(sampleRate)
     private val limiter = LimiterProcessor(sampleRate)
+    private val masterBrickwallLimiter = LimiterProcessor(sampleRate)
+    private val masterCeilingParams = LimiterParams(ceilingDb = -0.5f, releaseMs = 60f)
 
     val compressorGainReductionDb: Float
         get() = compressor.lastGainReductionDb
@@ -42,6 +44,7 @@ class DspPipeline(val sampleRate: Int = 44100) {
         phaser.reset()
         echoReverb.reset()
         limiter.reset()
+        masterBrickwallLimiter.reset()
     }
 
     fun processStereoBlock(
@@ -74,15 +77,13 @@ class DspPipeline(val sampleRate: Int = 44100) {
         if (abs(config.masterGainDb) > 0.05f) {
             val master = 10.0.pow(config.masterGainDb / 20.0).toFloat()
             for (i in 0 until numFrames) {
-                left[i] = tanh((left[i] * master).toDouble()).toFloat()
-                right[i] = tanh((right[i] * master).toDouble()).toFloat()
-            }
-        } else {
-            for (i in 0 until numFrames) {
-                left[i] = left[i].coerceIn(-1f, 1f)
-                right[i] = right[i].coerceIn(-1f, 1f)
+                left[i] *= master
+                right[i] *= master
             }
         }
+
+        // Always enforce a soft-knee brickwall master limiter at -0.5 dBFS
+        masterBrickwallLimiter.processBlock(left, right, numFrames, masterCeilingParams)
     }
 
     /**

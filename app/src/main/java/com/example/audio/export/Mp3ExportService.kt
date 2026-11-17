@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.example.R
 import com.example.audio.dsp.DspPipeline
+import com.example.audio.io.AudioEditorOps
 import com.example.audio.io.Mp3AudioEncoder
 import com.example.audio.io.StereoAudioBuffer
 import com.example.model.DspConfig
@@ -47,7 +48,8 @@ data class Mp3ExportRequest(
     val dspConfig: DspConfig,
     val destinationUri: Uri?,
     val fileName: String,
-    val isShare: Boolean
+    val isShare: Boolean,
+    val normalizeBeforeExport: Boolean = true
 )
 
 object Mp3ExportCoordinator {
@@ -142,11 +144,11 @@ class Mp3ExportService : Service() {
             Mp3ExportCoordinator.updateState(
                 Mp3ExportState.Exporting(0.02f, "تطبيق المؤثرات الصوتية والماسترينغ…")
             )
-            val rendered = DspPipeline(request.sourceBuffer.sampleRate).renderOffline(
+            val renderedRaw = DspPipeline(request.sourceBuffer.sampleRate).renderOffline(
                 source = request.sourceBuffer,
                 config = request.dspConfig
             ) { dspFrac ->
-                val overall = (dspFrac * 0.55f).coerceIn(0.02f, 0.55f)
+                val overall = (dspFrac * 0.52f).coerceIn(0.02f, 0.52f)
                 Mp3ExportCoordinator.updateState(
                     Mp3ExportState.Exporting(overall, "تطبيق المؤثرات الصوتية…")
                 )
@@ -157,7 +159,16 @@ class Mp3ExportService : Service() {
                 }
             }
 
-            // Phase 2: Encode rendered PCM into MP3 (55% .. 98%)
+            val rendered = if (request.normalizeBeforeExport) {
+                Mp3ExportCoordinator.updateState(
+                    Mp3ExportState.Exporting(0.54f, "تطبيع الصوت تلقائياً إلى النطاق الأمثل…")
+                )
+                AudioEditorOps.normalize(renderedRaw, targetPeak = 0.944f)
+            } else {
+                renderedRaw
+            }
+
+            // Phase 2: Encode rendered PCM into MP3 (56% .. 99%)
             Mp3ExportCoordinator.updateState(
                 Mp3ExportState.Exporting(0.56f, "ترميز الصوت إلى MP3 (192 kbps)…")
             )
@@ -228,13 +239,21 @@ class Mp3ExportService : Service() {
     private fun ensureNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NotificationManager::class.java) ?: return
-            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+            val existing = nm.getNotificationChannel(CHANNEL_ID)
+            if (existing == null) {
                 val channel = NotificationChannel(
                     CHANNEL_ID,
                     getString(R.string.export_mp3_channel_name),
                     NotificationManager.IMPORTANCE_LOW
-                )
+                ).apply {
+                    enableVibration(false)
+                    vibrationPattern = null
+                    setSound(null, null)
+                }
                 nm.createNotificationChannel(channel)
+            } else {
+                existing.enableVibration(false)
+                existing.vibrationPattern = null
             }
         }
     }
@@ -251,6 +270,7 @@ class Mp3ExportService : Service() {
             .setContentText(detailText)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
+            .setSilent(true)
             .setProgress(100, progress.coerceIn(0, 100), false)
             .build()
     }

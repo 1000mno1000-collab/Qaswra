@@ -42,24 +42,29 @@ class EqualizerProcessor(private val sampleRate: Int = 44100) {
     }
 
     fun processEq(left: FloatArray, right: FloatArray, numFrames: Int, params: EqualizerParams) {
-        if (params.band60HzDb != 0f) {
-            band60.configureLowShelf(sampleRate, 65f, 0.9f, params.band60HzDb)
+        val g60 = params.band60HzDb.coerceIn(-15f, 15f)
+        if (abs(g60) > 0.05f) {
+            band60.configureLowShelf(sampleRate, 65f, 0.9f, g60)
             band60.processBlock(left, right, numFrames)
         }
-        if (params.band250HzDb != 0f) {
-            band250.configurePeaking(sampleRate, 250f, 1.1f, params.band250HzDb)
+        val g250 = params.band250HzDb.coerceIn(-15f, 15f)
+        if (abs(g250) > 0.05f) {
+            band250.configurePeaking(sampleRate, 250f, 1.1f, g250)
             band250.processBlock(left, right, numFrames)
         }
-        if (params.band1kHzDb != 0f) {
-            band1k.configurePeaking(sampleRate, 1000f, 1.1f, params.band1kHzDb)
+        val g1k = params.band1kHzDb.coerceIn(-15f, 15f)
+        if (abs(g1k) > 0.05f) {
+            band1k.configurePeaking(sampleRate, 1000f, 1.1f, g1k)
             band1k.processBlock(left, right, numFrames)
         }
-        if (params.band4kHzDb != 0f) {
-            band4k.configurePeaking(sampleRate, 4000f, 1.1f, params.band4kHzDb)
+        val g4k = params.band4kHzDb.coerceIn(-15f, 15f)
+        if (abs(g4k) > 0.05f) {
+            band4k.configurePeaking(sampleRate, 4000f, 1.1f, g4k)
             band4k.processBlock(left, right, numFrames)
         }
-        if (params.band12kHzDb != 0f) {
-            band12k.configureHighShelf(sampleRate, 11000f, 0.9f, params.band12kHzDb)
+        val g12k = params.band12kHzDb.coerceIn(-15f, 15f)
+        if (abs(g12k) > 0.05f) {
+            band12k.configureHighShelf(sampleRate, 11000f, 0.9f, g12k)
             band12k.processBlock(left, right, numFrames)
         }
     }
@@ -384,19 +389,44 @@ class LimiterProcessor(private val sampleRate: Int = 44100) {
     }
 
     fun processBlock(left: FloatArray, right: FloatArray, numFrames: Int, params: LimiterParams) {
-        val ceiling = 10.0.pow(params.ceilingDb.coerceIn(-12f, -0.1f) / 20.0).toFloat()
+        val ceilingDb = params.ceilingDb.coerceIn(-12f, -0.5f)
+        val ceiling = 10.0.pow(ceilingDb / 20.0).toFloat()
+        val kneeWidthDb = 3.0f
+        val kneeStartDb = ceilingDb - kneeWidthDb * 0.5f
+        val kneeEndDb = ceilingDb + kneeWidthDb * 0.5f
         val releaseCoef = exp(-1.0 / ((params.releaseMs.coerceAtLeast(10f) / 1000.0) * sampleRate)).toFloat()
 
         for (i in 0 until numFrames) {
             val peak = max(abs(left[i]), abs(right[i]))
-            val targetGain = if (peak > ceiling && peak > 1e-6f) ceiling / peak else 1f
+            val targetGain = if (peak > 1e-6f) {
+                val peakDb = 20f * log10(peak)
+                when {
+                    peakDb <= kneeStartDb -> 1f
+                    peakDb < kneeEndDb -> {
+                        val delta = peakDb - kneeStartDb
+                        val grDb = (delta * delta) / (2f * kneeWidthDb)
+                        val softGain = 10.0.pow(-grDb / 20.0).toFloat()
+                        if (peak * softGain > ceiling) ceiling / peak else softGain
+                    }
+                    else -> ceiling / peak
+                }
+            } else {
+                1f
+            }
+
             gainEnv = if (targetGain < gainEnv) {
-                targetGain // instant attack brickwall
+                // Fast attack tracking to prevent overshoots
+                gainEnv * 0.2f + targetGain * 0.8f
             } else {
                 releaseCoef * gainEnv + (1f - releaseCoef) * targetGain
             }
-            left[i] = (left[i] * gainEnv).coerceIn(-ceiling, ceiling)
-            right[i] = (right[i] * gainEnv).coerceIn(-ceiling, ceiling)
+
+            val outL = left[i] * gainEnv
+            val outR = right[i] * gainEnv
+            // Final brickwall safety guarantee at ceiling (-0.5dBFS or stricter)
+            left[i] = outL.coerceIn(-ceiling, ceiling)
+            right[i] = outR.coerceIn(-ceiling, ceiling)
         }
     }
 }
+

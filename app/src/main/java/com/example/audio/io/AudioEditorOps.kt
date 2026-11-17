@@ -103,7 +103,7 @@ object AudioEditorOps {
         return StereoAudioBuffer(outL, outR, buffer.sampleRate)
     }
 
-    fun normalize(buffer: StereoAudioBuffer, targetPeak: Float = 0.92f): StereoAudioBuffer {
+    fun normalize(buffer: StereoAudioBuffer, targetPeak: Float = 0.944f): StereoAudioBuffer {
         val n = buffer.frameCount
         if (n == 0) return buffer
         var maxAmp = 0f
@@ -120,6 +120,97 @@ object AudioEditorOps {
             outR[i] = (buffer.right[i] * scale).coerceIn(-1f, 1f)
         }
         return StereoAudioBuffer(outL, outR, buffer.sampleRate)
+    }
+
+    fun applyFadeIn(
+        buffer: StereoAudioBuffer,
+        durationSec: Float
+    ): StereoAudioBuffer {
+        val n = buffer.frameCount
+        if (n <= 1) return buffer
+        val clampedSec = durationSec.coerceIn(0.2f, 10f)
+        val fadeSamples = min(n, (clampedSec * buffer.sampleRate).toInt().coerceAtLeast(1))
+        val outL = buffer.left.copyOf()
+        val outR = buffer.right.copyOf()
+        for (i in 0 until fadeSamples) {
+            val t = i.toFloat() / fadeSamples.toFloat()
+            // Smooth cosine S-curve ramp from 0.0 to 1.0
+            val gain = (0.5 - 0.5 * kotlin.math.cos(kotlin.math.PI * t)).toFloat()
+            outL[i] *= gain
+            outR[i] *= gain
+        }
+        return StereoAudioBuffer(outL, outR, buffer.sampleRate)
+    }
+
+    fun applyFadeOut(
+        buffer: StereoAudioBuffer,
+        durationSec: Float
+    ): StereoAudioBuffer {
+        val n = buffer.frameCount
+        if (n <= 1) return buffer
+        val clampedSec = durationSec.coerceIn(0.2f, 10f)
+        val fadeSamples = min(n, (clampedSec * buffer.sampleRate).toInt().coerceAtLeast(1))
+        val startIdx = n - fadeSamples
+        val outL = buffer.left.copyOf()
+        val outR = buffer.right.copyOf()
+        for (i in 0 until fadeSamples) {
+            val t = i.toFloat() / fadeSamples.toFloat()
+            // Smooth cosine S-curve ramp from 1.0 down to 0.0
+            val gain = (0.5 + 0.5 * kotlin.math.cos(kotlin.math.PI * t)).toFloat()
+            outL[startIdx + i] *= gain
+            outR[startIdx + i] *= gain
+        }
+        return StereoAudioBuffer(outL, outR, buffer.sampleRate)
+    }
+
+    fun mixTracks(
+        mainBuffer: StereoAudioBuffer,
+        backgroundBuffer: StereoAudioBuffer,
+        mainGain: Float = 1.0f,
+        backgroundGain: Float = 0.45f
+    ): StereoAudioBuffer {
+        val alignedBg = if (backgroundBuffer.sampleRate != mainBuffer.sampleRate) {
+            WavAudioCodec.resample(backgroundBuffer, mainBuffer.sampleRate)
+        } else {
+            backgroundBuffer
+        }
+        val lenMain = mainBuffer.frameCount
+        val lenBg = alignedBg.frameCount
+        if (lenMain == 0) return applyGainFactor(alignedBg, backgroundGain)
+        if (lenBg == 0) return applyGainFactor(mainBuffer, mainGain)
+
+        val outLen = max(lenMain, lenBg)
+        val gMain = mainGain.coerceIn(0f, 2f)
+        val gBg = backgroundGain.coerceIn(0f, 2f)
+        val outL = FloatArray(outLen)
+        val outR = FloatArray(outLen)
+
+        for (i in 0 until outLen) {
+            val ml = if (i < lenMain) mainBuffer.left[i] * gMain else 0f
+            val mr = if (i < lenMain) mainBuffer.right[i] * gMain else 0f
+            val bl = if (i < lenBg) alignedBg.left[i] * gBg else 0f
+            val br = if (i < lenBg) alignedBg.right[i] * gBg else 0f
+            outL[i] = softClipSample(ml + bl)
+            outR[i] = softClipSample(mr + br)
+        }
+        return StereoAudioBuffer(outL, outR, mainBuffer.sampleRate)
+    }
+
+    private fun applyGainFactor(buffer: StereoAudioBuffer, factor: Float): StereoAudioBuffer {
+        val g = factor.coerceIn(0f, 2f)
+        val n = buffer.frameCount
+        val outL = FloatArray(n)
+        val outR = FloatArray(n)
+        for (i in 0 until n) {
+            outL[i] = softClipSample(buffer.left[i] * g)
+            outR[i] = softClipSample(buffer.right[i] * g)
+        }
+        return StereoAudioBuffer(outL, outR, buffer.sampleRate)
+    }
+
+    private fun softClipSample(x: Float): Float {
+        if (x in -0.95f..0.95f) return x
+        return kotlin.math.tanh(x.toDouble()).toFloat().coerceIn(-0.99f, 0.99f)
     }
 
     private fun applyEdgeFades(left: FloatArray, right: FloatArray, fadeSamples: Int) {

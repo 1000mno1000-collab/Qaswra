@@ -25,4 +25,14 @@ interface StudioDao {
 
     @Query("DELETE FROM presets WHERE id = :id")
     suspend fun deletePresetById(id: Long)
+
+    @Query("SELECT * FROM audio_recordings ORDER BY timestamp DESC")
+    fun observeRecordings(): Flow<List<AudioRecordingEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertRecording(recording: AudioRecordingEntity): Long
+
+    @Query("DELETE FROM audio_recordings WHERE id = :id")
+    suspend fun deleteRecordingById(id: Long)
 }
+

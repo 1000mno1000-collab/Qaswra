@@ -56,7 +56,7 @@ data class EchoReverbParams(
 
 @JsonClass(generateAdapter = true)
 data class EqualizerParams(
-    val band60HzDb: Float = 0f,    // -12..+12 dB
+    val band60HzDb: Float = 0f,    // -15..+15 dB
     val band250HzDb: Float = 0f,
     val band1kHzDb: Float = 0f,
     val band4kHzDb: Float = 0f,
@@ -126,8 +126,8 @@ data class CompressorParams(
 
 @JsonClass(generateAdapter = true)
 data class LimiterParams(
-    val ceilingDb: Float = -0.8f,  // -12..-0.1 dB
-    val releaseMs: Float = 80f     // 10..400 ms
+    val ceilingDb: Float = -0.5f,  // -12..-0.1 dB
+    val releaseMs: Float = 70f     // 10..400 ms
 )
 
 @JsonClass(generateAdapter = true)

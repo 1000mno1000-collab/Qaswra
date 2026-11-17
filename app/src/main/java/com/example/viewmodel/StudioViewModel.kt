@@ -5,12 +5,14 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.AiTextState
-import com.example.ai.LyriaTrackLength
-import com.example.ai.MusicGenState
 import com.example.ai.StudioAiRepository
 import com.example.audio.dsp.DspPipeline
+import com.example.audio.dsp.FormantVoiceTransformer
+import com.example.audio.dsp.SmartAutoMasterEngine
+import com.example.audio.dsp.SmartMasterAnalysis
 import com.example.audio.dsp.VoicePurifierEngine
 import com.example.audio.dsp.VoicePurifyPreset
+import com.example.audio.export.ExportAudioFormat
 import com.example.audio.export.Mp3ExportCoordinator
 import com.example.audio.export.Mp3ExportRequest
 import com.example.audio.export.Mp3ExportState
@@ -19,6 +21,10 @@ import com.example.audio.io.AudioPlayerEngine
 import com.example.audio.io.AudioRecorderEngine
 import com.example.audio.io.RecordingState
 import com.example.audio.io.StereoAudioBuffer
+import com.example.audio.io.WavAudioCodec
+import com.example.audio.tts.StudioTtsEngine
+import com.example.audio.tts.TtsDialect
+import com.example.data.AudioRecordingEntity
 import com.example.data.StudioDatabase
 import com.example.data.StudioProject
 import com.example.data.StudioRepository
@@ -27,6 +33,10 @@ import com.example.model.EchoReverbParams
 import com.example.model.EffectType
 import com.example.model.NoiseReductionParams
 import com.example.model.StudioPreset
+import com.example.ui.AppLanguage
+import com.example.ui.LocaleHelper
+import kotlinx.coroutines.CancellationException
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +47,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 enum class EchoPadAxisMode(val label: String, val xLabel: String, val yLabel: String) {
     DEPTH_AND_DIFFUSION("العمق × الانتشار", "العمق والحجم", "الشدة والانتشار"),
@@ -45,8 +56,15 @@ enum class EchoPadAxisMode(val label: String, val xLabel: String, val yLabel: St
     ECHO_FEEDBACK("التأخير × التكرار", "زمن الصدى", "التغذية الراجعة")
 }
 
+data class TtsStudioUiState(
+    val isPreviewing: Boolean = false,
+    val isGenerating: Boolean = false,
+    val errorMessage: String? = null
+)
+
 data class StudioUiState(
     val navStack: List<WorkspaceDestination> = listOf(WorkspaceDestination.Home),
+    val appLanguage: AppLanguage = AppLanguage.ARABIC,
     val projectId: Long = 0L,
     val projectName: String = "مشروع صوتي جديد",
     val dspConfig: DspConfig = DspConfig(),
@@ -59,14 +77,26 @@ data class StudioUiState(
     val trimStart: Float = 0f,
     val trimEnd: Float = 1f,
     val loopSelection: Boolean = false,
+    val isAutoLoopEnabled: Boolean = true,
     val canUndoEdit: Boolean = false,
+    val canRedoEdit: Boolean = false,
+    val hasUnsavedChanges: Boolean = false,
     val isBusy: Boolean = false,
     val exportProgress: Float? = null,
     val purifyProgress: Float? = null,
+    val importProgress: Float? = null,
+    val importStatusText: String = "",
+    val normalizeBeforeExport: Boolean = true,
+    val isHoldBypassing: Boolean = false,
+    val mixBackgroundName: String? = null,
+    val mixBackgroundDurationMs: Long = 0L,
     val statusBanner: String? = null
 ) {
     val currentDestination: WorkspaceDestination
         get() = navStack.lastOrNull() ?: WorkspaceDestination.Home
+
+    val effectiveBypassAll: Boolean
+        get() = dspConfig.bypassAll || isHoldBypassing
 }
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
@@ -77,21 +107,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private val recorder = AudioRecorderEngine()
     private val player = AudioPlayerEngine()
+    private val ttsEngine by lazy { StudioTtsEngine(getApplication()) }
 
-    private val _uiState = MutableStateFlow(StudioUiState())
+    private val _uiState = MutableStateFlow(
+        StudioUiState(appLanguage = LocaleHelper.getSavedLanguage(application))
+    )
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
+
+    private val _ttsUiState = MutableStateFlow(TtsStudioUiState())
+    val ttsUiState: StateFlow<TtsStudioUiState> = _ttsUiState.asStateFlow()
 
     private val _transcriptionState = MutableStateFlow<AiTextState>(AiTextState.Idle)
     val transcriptionState: StateFlow<AiTextState> = _transcriptionState.asStateFlow()
 
-    private val _musicGenState = MutableStateFlow<MusicGenState>(MusicGenState.Idle)
-    val musicGenState: StateFlow<MusicGenState> = _musicGenState.asStateFlow()
+    private val _smartMasterState = MutableStateFlow<SmartMasterAnalysis?>(null)
+    val smartMasterState: StateFlow<SmartMasterAnalysis?> = _smartMasterState.asStateFlow()
 
     private val _searchAssistantState = MutableStateFlow<AiTextState>(AiTextState.Idle)
     val searchAssistantState: StateFlow<AiTextState> = _searchAssistantState.asStateFlow()
 
     private var transcribeJob: Job? = null
-    private var musicGenJob: Job? = null
     private var searchJob: Job? = null
 
     val recordingState: StateFlow<RecordingState> = recorder.state
@@ -112,11 +147,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     val savedProjects: StateFlow<List<StudioProject>> = repository.projects
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val savedRecordings: StateFlow<List<AudioRecordingEntity>> = repository.recordings
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val presets: StateFlow<List<StudioPreset>> = repository.allPresets
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private var activeBuffer: StereoAudioBuffer? = null
+    private var pendingMixBackgroundBuffer: StereoAudioBuffer? = null
     private val undoStack = mutableListOf<StereoAudioBuffer>()
+    private val redoStack = mutableListOf<StereoAudioBuffer>()
+
+    init {
+        player.setAutoLoop(true)
+        viewModelScope.launch {
+            LocaleHelper.observeLanguage(getApplication()).collect { savedLang ->
+                _uiState.update { it.copy(appLanguage = savedLang) }
+            }
+        }
+    }
 
     // --- Focus Workspace Navigation ---
 
@@ -143,6 +192,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(statusBanner = null) }
     }
 
+    fun setAppLanguage(language: AppLanguage) {
+        LocaleHelper.saveLanguage(getApplication(), language)
+        _uiState.update { it.copy(appLanguage = language) }
+        viewModelScope.launch {
+            LocaleHelper.saveLanguageToDataStore(getApplication(), language)
+        }
+    }
+
     // --- Recording Controls ---
 
     fun startOrResumeRecording(): Boolean {
@@ -161,7 +218,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun finishRecording() {
         val recorded = recorder.stopAndBuildBuffer() ?: return
         setActiveBuffer(recorded, recordUndo = false)
-        postBanner("تم التقاط التسجيل الصوتي بنجاح")
+        val title = formatRecordingTitle("تسجيل")
+        viewModelScope.launch {
+            runCatching {
+                repository.indexAudioRecording(
+                    title = title,
+                    buffer = recorded,
+                    sourceType = "RECORDING"
+                )
+            }
+        }
+        postBanner("تم التقاط التسجيل الصوتي وفهرسته بنجاح")
     }
 
     fun discardRecording() {
@@ -176,6 +243,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         } else {
             val s = _uiState.value
             player.setLoopRange(s.loopSelection, s.trimStart, s.trimEnd)
+            player.setAutoLoop(s.isAutoLoopEnabled)
             player.updateDspConfig(s.dspConfig)
             player.play()
         }
@@ -197,8 +265,41 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun toggleAutoLoop() {
+        _uiState.update { state ->
+            val next = !state.isAutoLoopEnabled
+            player.setAutoLoop(next)
+            state.copy(isAutoLoopEnabled = next)
+        }
+    }
+
     fun toggleBypassAll() {
-        updateDspConfig { it.copy(bypassAll = !it.bypassAll) }
+        _uiState.update { state ->
+            val nextCfg = state.dspConfig.copy(bypassAll = !state.dspConfig.bypassAll)
+            player.updateDspConfig(nextCfg)
+            state.copy(
+                dspConfig = nextCfg,
+                isHoldBypassing = false,
+                activePresetId = null,
+                hasUnsavedChanges = state.hasUnsavedChanges || state.hasAudio || state.projectId > 0L
+            )
+        }
+    }
+
+    fun setHoldBypass(holding: Boolean) {
+        _uiState.update { state ->
+            val effectiveCfg = if (holding) {
+                state.dspConfig.copy(bypassAll = true)
+            } else {
+                state.dspConfig
+            }
+            player.updateDspConfig(effectiveCfg)
+            state.copy(isHoldBypassing = holding)
+        }
+    }
+
+    fun toggleNormalizeBeforeExport() {
+        _uiState.update { it.copy(normalizeBeforeExport = !it.normalizeBeforeExport) }
     }
 
     // --- DSP Configuration & Chain ---
@@ -206,8 +307,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun updateDspConfig(transform: (DspConfig) -> DspConfig) {
         _uiState.update { state ->
             val next = transform(state.dspConfig)
-            player.updateDspConfig(next)
-            state.copy(dspConfig = next, activePresetId = null)
+            val playerCfg = if (state.isHoldBypassing) next.copy(bypassAll = true) else next
+            player.updateDspConfig(playerCfg)
+            state.copy(
+                dspConfig = next,
+                activePresetId = null,
+                hasUnsavedChanges = state.hasUnsavedChanges || state.hasAudio || state.projectId > 0L
+            )
         }
     }
 
@@ -356,7 +462,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             _uiState.update { it.copy(purifyProgress = null) }
-            postBanner("تمت تصفية الصوت وتنظيف الضوضاء وحفظه في المقطع بنجاح")
+            postBanner("تمت تصفية الصوت في الذاكرة — احفظ المشروع لتثبيت التعديلات")
         }
     }
 
@@ -364,14 +470,52 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun importAudioUri(uri: Uri) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true) }
-            val decoded = repository.importAudioFromUri(uri)
-            _uiState.update { it.copy(isBusy = false) }
-            if (decoded != null) {
-                setActiveBuffer(decoded, recordUndo = false)
-                postBanner("تم استيراد الملف الصوتي بنجاح")
-            } else {
+            val importActive = AtomicBoolean(true)
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    importProgress = 0f,
+                    importStatusText = "جاري نسخ الملف الصوتي..."
+                )
+            }
+            try {
+                val decoded = repository.importAudioFromUri(uri) { progress, status ->
+                    if (importActive.get()) {
+                        _uiState.update {
+                            it.copy(
+                                importProgress = progress.coerceIn(0f, 1f),
+                                importStatusText = status
+                            )
+                        }
+                    }
+                }
+                if (decoded != null) {
+                    setActiveBuffer(decoded, recordUndo = false)
+                    val displayName = repository.queryUriDisplayName(uri)
+                        ?: formatRecordingTitle("ملف مستورد")
+                    runCatching {
+                        repository.indexAudioRecording(
+                            title = displayName,
+                            buffer = decoded,
+                            sourceType = "IMPORTED"
+                        )
+                    }
+                    postBanner("تم استيراد الملف الصوتي وفهرسته بنجاح")
+                } else {
+                    postBanner("تعذر فك تشفير الملف الصوتي المحدد")
+                }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
                 postBanner("تعذر فك تشفير الملف الصوتي المحدد")
+            } finally {
+                importActive.set(false)
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        importProgress = null,
+                        importStatusText = ""
+                    )
+                }
             }
         }
     }
@@ -419,23 +563,166 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         postBanner("تم تطبيق تعديل الشدة على المقطع")
     }
 
+    fun applyFadeInEffect(durationSec: Float) {
+        val current = activeBuffer ?: return
+        viewModelScope.launch {
+            val faded = withContext(Dispatchers.Default) {
+                AudioEditorOps.applyFadeIn(current, durationSec)
+            }
+            setActiveBuffer(faded, recordUndo = true)
+            postBanner("تم تطبيق الظهور التدريجي (${String.format(java.util.Locale.US, "%.1f", durationSec)} ث)")
+        }
+    }
+
+    fun applyFadeOutEffect(durationSec: Float) {
+        val current = activeBuffer ?: return
+        viewModelScope.launch {
+            val faded = withContext(Dispatchers.Default) {
+                AudioEditorOps.applyFadeOut(current, durationSec)
+            }
+            setActiveBuffer(faded, recordUndo = true)
+            postBanner("تم تطبيق الاختفاء التدريجي (${String.format(java.util.Locale.US, "%.1f", durationSec)} ث)")
+        }
+    }
+
+    fun importMixBackgroundUri(uri: Uri) {
+        viewModelScope.launch {
+            val importActive = AtomicBoolean(true)
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    importProgress = 0f,
+                    importStatusText = "جاري نسخ مسار الخلفية للمزج..."
+                )
+            }
+            try {
+                val decoded = repository.importAudioFromUri(uri) { progress, status ->
+                    if (importActive.get()) {
+                        _uiState.update {
+                            it.copy(
+                                importProgress = progress.coerceIn(0f, 1f),
+                                importStatusText = status
+                            )
+                        }
+                    }
+                }
+                if (decoded != null) {
+                    pendingMixBackgroundBuffer = decoded
+                    val bgName = repository.queryUriDisplayName(uri) ?: "مسار الخلفية"
+                    _uiState.update {
+                        it.copy(
+                            mixBackgroundName = bgName,
+                            mixBackgroundDurationMs = decoded.durationMs
+                        )
+                    }
+                    postBanner("تم تجهيز \"$bgName\" — اضبط مستوى الصوت ثم اضغط تطبيق المزج")
+                } else {
+                    postBanner("تعذر استيراد مسار الخلفية للمزج")
+                }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                postBanner("تعذر استيراد مسار الخلفية للمزج")
+            } finally {
+                importActive.set(false)
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        importProgress = null,
+                        importStatusText = ""
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearMixBackgroundTrack() {
+        pendingMixBackgroundBuffer = null
+        _uiState.update {
+            it.copy(
+                mixBackgroundName = null,
+                mixBackgroundDurationMs = 0L
+            )
+        }
+    }
+
+    fun applyDualTrackMix(mainGain: Float, backgroundGain: Float) {
+        val current = activeBuffer ?: run {
+            postBanner("لا يوجد صوت رئيسي حالياً")
+            return
+        }
+        val bg = pendingMixBackgroundBuffer ?: run {
+            postBanner("استورد مسار خلفية أولاً للمزج الصوتي")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            val mixed = withContext(Dispatchers.Default) {
+                AudioEditorOps.mixTracks(
+                    mainBuffer = current,
+                    backgroundBuffer = bg,
+                    mainGain = mainGain,
+                    backgroundGain = backgroundGain
+                )
+            }
+            setActiveBuffer(mixed, recordUndo = true)
+            pendingMixBackgroundBuffer = null
+            _uiState.update {
+                it.copy(
+                    isBusy = false,
+                    mixBackgroundName = null,
+                    mixBackgroundDurationMs = 0L
+                )
+            }
+            postBanner("تم مزج المسارين بنجاح — يمكنك التراجع أو التصدير الآن")
+        }
+    }
+
     fun mergeExternalAudio(uri: Uri) {
         val current = activeBuffer ?: run {
             importAudioUri(uri)
             return
         }
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true) }
-            val second = repository.importAudioFromUri(uri)
-            _uiState.update { it.copy(isBusy = false) }
-            if (second != null) {
-                val merged = withContext(Dispatchers.Default) {
-                    AudioEditorOps.mergeClips(current, second)
+            val importActive = AtomicBoolean(true)
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    importProgress = 0f,
+                    importStatusText = "جاري نسخ الملف الصوتي..."
+                )
+            }
+            try {
+                val second = repository.importAudioFromUri(uri) { progress, status ->
+                    if (importActive.get()) {
+                        _uiState.update {
+                            it.copy(
+                                importProgress = progress.coerceIn(0f, 1f),
+                                importStatusText = status
+                            )
+                        }
+                    }
                 }
-                setActiveBuffer(merged, recordUndo = true)
-                postBanner("تم دمج المقطعين بسلاسة")
-            } else {
+                if (second != null) {
+                    val merged = withContext(Dispatchers.Default) {
+                        AudioEditorOps.mergeClips(current, second)
+                    }
+                    setActiveBuffer(merged, recordUndo = true)
+                    postBanner("تم دمج المقطعين بسلاسة")
+                } else {
+                    postBanner("تعذر استيراد المقطع المراد دمجه")
+                }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
                 postBanner("تعذر استيراد المقطع المراد دمجه")
+            } finally {
+                importActive.set(false)
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        importProgress = null,
+                        importStatusText = ""
+                    )
+                }
             }
         }
     }
@@ -464,6 +751,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun undoLastEdit() {
         val prev = undoStack.removeLastOrNull() ?: return
+        activeBuffer?.let { cur ->
+            if (redoStack.size >= 12) redoStack.removeAt(0)
+            redoStack.add(cur)
+        }
         activeBuffer = prev
         player.setBuffer(prev, resetPosition = true)
         _uiState.update {
@@ -473,10 +764,39 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 waveformPeaks = prev.computeWaveformPeaks(120),
                 trimStart = 0f,
                 trimEnd = 1f,
-                canUndoEdit = undoStack.isNotEmpty()
+                canUndoEdit = undoStack.isNotEmpty(),
+                canRedoEdit = redoStack.isNotEmpty(),
+                hasUnsavedChanges = true
             )
         }
         postBanner("تم التراجع عن التعديل الأخير")
+    }
+
+    fun redoLastEdit() {
+        val next = redoStack.removeLastOrNull() ?: return
+        activeBuffer?.let { cur ->
+            if (undoStack.size >= 12) undoStack.removeAt(0)
+            undoStack.add(cur)
+        }
+        activeBuffer = next
+        player.setBuffer(next, resetPosition = true)
+        _uiState.update {
+            it.copy(
+                hasAudio = true,
+                durationMs = next.durationMs,
+                waveformPeaks = next.computeWaveformPeaks(120),
+                trimStart = 0f,
+                trimEnd = 1f,
+                canUndoEdit = undoStack.isNotEmpty(),
+                canRedoEdit = redoStack.isNotEmpty(),
+                hasUnsavedChanges = true
+            )
+        }
+        postBanner("تمت إعادة التعديل")
+    }
+
+    fun discardUnsavedChanges() {
+        _uiState.update { it.copy(hasUnsavedChanges = false) }
     }
 
     // --- Presets ---
@@ -486,7 +806,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             player.updateDspConfig(preset.config)
             state.copy(
                 dspConfig = preset.config,
-                activePresetId = preset.id
+                activePresetId = preset.id,
+                hasUnsavedChanges = state.hasUnsavedChanges || state.hasAudio || state.projectId > 0L
             )
         }
         postBanner("تم تفعيل قالب: ${preset.name}")
@@ -515,25 +836,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(projectName = name) }
     }
 
-    fun saveCurrentProject(customName: String? = null) {
+    fun saveCurrentProject(customName: String? = null, onSaved: (() -> Unit)? = null) {
         val s = _uiState.value
         val finalName = (customName ?: s.projectName).ifBlank { "مشروع صوتي" }
+        val bufferSnapshot = activeBuffer
+        val configSnapshot = s.dspConfig
+        val existingIdSnapshot = s.projectId
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
             val saved = repository.saveProject(
-                existingId = s.projectId,
+                existingId = existingIdSnapshot,
                 name = finalName,
-                buffer = activeBuffer,
-                config = s.dspConfig
+                buffer = bufferSnapshot,
+                config = configSnapshot
             )
             _uiState.update {
                 it.copy(
                     projectId = saved.id,
                     projectName = saved.name,
+                    hasUnsavedChanges = false,
                     isBusy = false
                 )
             }
             postBanner("تم حفظ المشروع \"${saved.name}\"")
+            onSaved?.invoke()
         }
     }
 
@@ -542,6 +868,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         recorder.discard()
         activeBuffer = null
         undoStack.clear()
+        redoStack.clear()
         val fresh = DspConfig()
         player.setBuffer(null)
         player.updateDspConfig(fresh)
@@ -556,7 +883,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 waveformPeaks = emptyList(),
                 trimStart = 0f,
                 trimEnd = 1f,
-                canUndoEdit = false
+                canUndoEdit = false,
+                canRedoEdit = false,
+                hasUnsavedChanges = false
             )
         }
         postBanner("تم فتح مساحة مشروع جديد")
@@ -567,6 +896,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update { it.copy(isBusy = true) }
             val loadedAudio = repository.loadProjectAudio(project)
             undoStack.clear()
+            redoStack.clear()
             activeBuffer = loadedAudio
             player.setBuffer(loadedAudio, resetPosition = true)
             player.updateDspConfig(project.config)
@@ -582,6 +912,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     trimStart = 0f,
                     trimEnd = 1f,
                     canUndoEdit = false,
+                    canRedoEdit = false,
+                    hasUnsavedChanges = false,
                     isBusy = false
                 )
             }
@@ -599,23 +931,69 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun loadIndexedRecording(recording: AudioRecordingEntity) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            val loaded = repository.loadRecordingAudio(recording)
+            _uiState.update { it.copy(isBusy = false) }
+            if (loaded == null) {
+                postBanner("تعذر قراءة الملف الصوتي من الذاكرة")
+                return@launch
+            }
+            setActiveBuffer(loaded, recordUndo = false)
+            _uiState.update { it.copy(projectName = recording.title) }
+            postBanner("تم تحميل \"${recording.title}\"")
+        }
+    }
+
+    fun deleteIndexedRecording(recording: AudioRecordingEntity) {
+        viewModelScope.launch {
+            repository.deleteRecording(recording)
+            postBanner("تم حذف التسجيل المفهرس")
+        }
+    }
+
     fun exportProcessedWav(destinationUri: Uri) {
+        exportAudioWithFormat(destinationUri, ExportAudioFormat.WAV, _uiState.value.projectName)
+    }
+
+    fun exportAudioWithFormat(
+        destinationUri: Uri,
+        format: ExportAudioFormat,
+        customFileName: String
+    ) {
         val source = activeBuffer ?: run {
             postBanner("لا يوجد صوت لتصديره")
             return
         }
-        val config = _uiState.value.dspConfig
+        val state = _uiState.value
+        val config = state.dspConfig
+        val normalize = state.normalizeBeforeExport
+        val cleanName = customFileName.trim().ifBlank { state.projectName.ifBlank { "VoicePro_Export" } }
         viewModelScope.launch {
-            _uiState.update { it.copy(exportProgress = 0.01f) }
+            _uiState.update { it.copy(exportProgress = 0.01f, projectName = cleanName) }
             val rendered = withContext(Dispatchers.Default) {
-                DspPipeline(source.sampleRate).renderOffline(source, config) { p ->
-                    _uiState.update { it.copy(exportProgress = p) }
+                val processed = DspPipeline(source.sampleRate).renderOffline(source, config) { p ->
+                    _uiState.update { it.copy(exportProgress = (p * 0.55f).coerceIn(0.01f, 0.55f)) }
+                }
+                if (normalize) AudioEditorOps.normalize(processed, targetPeak = 0.944f) else processed
+            }
+            val success = repository.exportFormattedToUri(
+                uri = destinationUri,
+                rendered = rendered,
+                format = format
+            ) { encFrac ->
+                _uiState.update {
+                    it.copy(exportProgress = (0.55f + encFrac * 0.45f).coerceIn(0.55f, 1f))
                 }
             }
-            val success = repository.exportWavToUri(destinationUri, rendered)
             _uiState.update { it.copy(exportProgress = null) }
             postBanner(
-                if (success) "تم تصدير الملف الصوتي بنجاح" else "فشل تصدير الملف الصوتي"
+                if (success) {
+                    "تم حفظ وتصدير الملف بصيغة ${format.displayName} بنجاح"
+                } else {
+                    "فشل تصدير الملف بصيغة ${format.displayName}"
+                }
             )
         }
     }
@@ -629,8 +1007,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _uiState.update { it.copy(exportProgress = 0.01f) }
             val rendered = withContext(Dispatchers.Default) {
-                DspPipeline(source.sampleRate).renderOffline(source, state.dspConfig) { p ->
+                val processed = DspPipeline(source.sampleRate).renderOffline(source, state.dspConfig) { p ->
                     _uiState.update { it.copy(exportProgress = p) }
+                }
+                if (state.normalizeBeforeExport) {
+                    AudioEditorOps.normalize(processed, targetPeak = 0.944f)
+                } else {
+                    processed
                 }
             }
             val uri = repository.createShareWavUri(state.projectName, rendered)
@@ -652,7 +1035,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 dspConfig = state.dspConfig,
                 destinationUri = destinationUri,
                 fileName = state.projectName.ifBlank { "VoicePro_Export" },
-                isShare = false
+                isShare = false,
+                normalizeBeforeExport = state.normalizeBeforeExport
             )
         )
     }
@@ -670,7 +1054,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 dspConfig = state.dspConfig,
                 destinationUri = null,
                 fileName = state.projectName.ifBlank { "VoicePro_Export" },
-                isShare = true
+                isShare = true,
+                normalizeBeforeExport = state.normalizeBeforeExport
             )
         )
     }
@@ -698,6 +1083,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         setActiveBuffer(recorded, recordUndo = false)
+        val title = formatRecordingTitle("تفريغ صوتي")
+        viewModelScope.launch {
+            runCatching {
+                repository.indexAudioRecording(
+                    title = title,
+                    buffer = recorded,
+                    sourceType = "RECORDING"
+                )
+            }
+        }
         runTranscription(recorded, languageHint)
     }
 
@@ -710,30 +1105,38 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun generateMusicTrack(prompt: String, trackLength: LyriaTrackLength) {
-        musicGenJob?.cancel()
-        musicGenJob = viewModelScope.launch {
-            _musicGenState.value = MusicGenState.Loading
-            _musicGenState.value = aiRepository.generateMusic(prompt, trackLength)
+    fun runSmartAutoMaster() {
+        val source = activeBuffer ?: run {
+            postBanner("قم بتسجيل أو استيراد مقطع صوتي أولاً لتحليله")
+            return
+        }
+        val currentCfg = _uiState.value.dspConfig
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            val analysis = withContext(Dispatchers.Default) {
+                SmartAutoMasterEngine.analyzeAndOptimize(source, currentCfg)
+            }
+            _smartMasterState.value = analysis
+            _uiState.update { state ->
+                val playerCfg = if (state.isHoldBypassing) {
+                    analysis.optimizedConfig.copy(bypassAll = true)
+                } else {
+                    analysis.optimizedConfig
+                }
+                player.updateDspConfig(playerCfg)
+                state.copy(
+                    dspConfig = analysis.optimizedConfig,
+                    activePresetId = null,
+                    hasUnsavedChanges = true,
+                    isBusy = false
+                )
+            }
+            postBanner("تم تحليل الصوت وتطبيق الماسترينغ الذكي تلقائياً")
         }
     }
 
-    fun loadGeneratedMusicIntoStudio(replaceExisting: Boolean) {
-        val success = _musicGenState.value as? MusicGenState.Success ?: return
-        val generated = success.buffer
-        val current = activeBuffer
-        if (replaceExisting || current == null) {
-            setActiveBuffer(generated, recordUndo = current != null)
-            postBanner("تم تحميل المقطوعة المولدة داخل الاستوديو")
-        } else {
-            viewModelScope.launch {
-                val merged = withContext(Dispatchers.Default) {
-                    AudioEditorOps.mergeClips(current, generated)
-                }
-                setActiveBuffer(merged, recordUndo = true)
-                postBanner("تم دمج المقطوعة المولدة مع مقطعك الحالي")
-            }
-        }
+    fun clearSmartMasterAnalysis() {
+        _smartMasterState.value = null
     }
 
     fun askSearchAssistant(query: String) {
@@ -745,14 +1148,144 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // --- Free Text-to-Speech Studio (10 Dialects) ---
+
+    fun previewTtsSpeech(
+        text: String,
+        dialect: TtsDialect,
+        speechRate: Float,
+        pitch: Float
+    ) {
+        if (text.isBlank()) {
+            _ttsUiState.update { it.copy(errorMessage = "يرجى إدخال النص أولاً.") }
+            return
+        }
+        viewModelScope.launch {
+            _ttsUiState.update { it.copy(isPreviewing = true, errorMessage = null) }
+            ttsEngine.speakPreview(text, dialect, speechRate, pitch) { _, err ->
+                _ttsUiState.update { it.copy(isPreviewing = false, errorMessage = err) }
+            }
+        }
+    }
+
+    fun stopTtsPreview() {
+        ttsEngine.stopPreview()
+        _ttsUiState.update { it.copy(isPreviewing = false) }
+    }
+
+    fun generateTtsToStudio(
+        text: String,
+        dialect: TtsDialect,
+        speechRate: Float,
+        pitch: Float,
+        appendToExisting: Boolean
+    ) {
+        if (text.isBlank()) {
+            _ttsUiState.update { it.copy(errorMessage = "يرجى إدخال نص لتوليد الصوت.") }
+            return
+        }
+        viewModelScope.launch {
+            _ttsUiState.update { it.copy(isGenerating = true, errorMessage = null) }
+            _uiState.update { it.copy(isBusy = true) }
+            val app = getApplication<Application>()
+            val outFile = File(app.cacheDir, "tts_synth_${System.currentTimeMillis()}.wav")
+            try {
+                val synthResult = ttsEngine.synthesizeToWavFile(
+                    text = text,
+                    dialect = dialect,
+                    speechRate = speechRate,
+                    pitch = pitch,
+                    outFile = outFile
+                )
+                val synthesizedFile = synthResult.getOrElse { err ->
+                    _ttsUiState.update {
+                        it.copy(isGenerating = false, errorMessage = err.message ?: "تعذر توليد الصوت")
+                    }
+                    _uiState.update { it.copy(isBusy = false) }
+                    return@launch
+                }
+
+                val decoded = withContext(Dispatchers.IO) {
+                    WavAudioCodec.decodeAudioUri(app, Uri.fromFile(synthesizedFile))
+                }
+                if (decoded == null || decoded.frameCount == 0) {
+                    _ttsUiState.update {
+                        it.copy(isGenerating = false, errorMessage = "فشل قراءة ملف الصوت المولّد.")
+                    }
+                    _uiState.update { it.copy(isBusy = false) }
+                    return@launch
+                }
+
+                val current = activeBuffer
+                val nextBuffer = if (appendToExisting && current != null) {
+                    withContext(Dispatchers.Default) {
+                        AudioEditorOps.mergeClips(current, decoded)
+                    }
+                } else {
+                    decoded
+                }
+                setActiveBuffer(nextBuffer, recordUndo = current != null)
+                val title = formatRecordingTitle("TTS")
+                runCatching {
+                    repository.indexAudioRecording(
+                        title = title,
+                        buffer = decoded,
+                        sourceType = "TTS"
+                    )
+                }
+                _ttsUiState.update { it.copy(isGenerating = false, errorMessage = null) }
+                _uiState.update { it.copy(isBusy = false) }
+                postBanner("تم توليد الصوت وإدراجه في الاستوديو بنجاح")
+            } finally {
+                runCatching { if (outFile.exists()) outFile.delete() }
+            }
+        }
+    }
+
+    // --- Offline Formant-Preserving Voice Transformer ---
+
+    fun transformVoiceOffline(
+        pitchSemitones: Float,
+        formantShift: Float,
+        warmthDb: Float,
+        presenceDb: Float,
+        mix: Float,
+        characterLabel: String
+    ) {
+        val source = activeBuffer ?: run {
+            postBanner("قم بتسجيل أو استيراد مقطع صوتي أولاً لتحويله")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, purifyProgress = 0.02f) }
+            val transformed = withContext(Dispatchers.Default) {
+                FormantVoiceTransformer.transformOffline(
+                    source = source,
+                    pitchSemitones = pitchSemitones,
+                    formantShift = formantShift,
+                    warmthDb = warmthDb,
+                    presenceDb = presenceDb,
+                    mix = mix
+                ) { p ->
+                    _uiState.update { it.copy(purifyProgress = p) }
+                }
+            }
+            setActiveBuffer(transformed, recordUndo = true)
+            _uiState.update { it.copy(isBusy = false, purifyProgress = null) }
+            postBanner("تم تحويل الشخصية الصوتية ($characterLabel) بنجاح")
+        }
+    }
+
     private fun setActiveBuffer(buffer: StereoAudioBuffer, recordUndo: Boolean) {
         if (recordUndo) {
             activeBuffer?.let { prev ->
-                if (undoStack.size >= 8) undoStack.removeAt(0)
+                if (undoStack.size >= 12) undoStack.removeAt(0)
                 undoStack.add(prev)
             }
+            redoStack.clear()
         } else {
             undoStack.clear()
+            redoStack.clear()
         }
         activeBuffer = buffer
         player.setBuffer(buffer, resetPosition = true)
@@ -764,7 +1297,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 waveformPeaks = buffer.computeWaveformPeaks(120),
                 trimStart = 0f,
                 trimEnd = 1f,
-                canUndoEdit = undoStack.isNotEmpty()
+                canUndoEdit = undoStack.isNotEmpty(),
+                canRedoEdit = redoStack.isNotEmpty(),
+                hasUnsavedChanges = recordUndo
             )
         }
     }
@@ -773,11 +1308,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(statusBanner = message) }
     }
 
+    private fun formatRecordingTitle(prefix: String): String {
+        val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+        return "$prefix ${fmt.format(java.util.Date())}"
+    }
+
     override fun onCleared() {
         super.onCleared()
         transcribeJob?.cancel()
-        musicGenJob?.cancel()
         searchJob?.cancel()
+        ttsEngine.release()
         player.stop()
         recorder.discard()
     }

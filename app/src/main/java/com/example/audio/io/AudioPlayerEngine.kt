@@ -55,6 +55,9 @@ class AudioPlayerEngine {
     private var loopEnabled: Boolean = false
 
     @Volatile
+    private var autoLoopEnabled: Boolean = true
+
+    @Volatile
     private var loopStartFraction: Float = 0f
 
     @Volatile
@@ -85,6 +88,10 @@ class AudioPlayerEngine {
         loopEnabled = enabled
         loopStartFraction = startFraction.coerceIn(0f, 0.99f)
         loopEndFraction = endFraction.coerceIn(loopStartFraction + 0.01f, 1f)
+    }
+
+    fun setAutoLoop(enabled: Boolean) {
+        autoLoopEnabled = enabled
     }
 
     fun seekTo(fraction: Float) {
@@ -174,11 +181,32 @@ class AudioPlayerEngine {
                             val avail = min(blockFrames, endFrame - currentFrameIndex)
                             System.arraycopy(currentBuf.left, currentFrameIndex, blockL, 0, avail)
                             System.arraycopy(currentBuf.right, currentFrameIndex, blockR, 0, avail)
-                            if (avail < blockFrames) {
-                                blockL.fill(0f, avail, blockFrames)
-                                blockR.fill(0f, avail, blockFrames)
-                            }
                             currentFrameIndex += avail
+                            if (avail < blockFrames) {
+                                val remaining = blockFrames - avail
+                                if (loopEnabled) {
+                                    val wrap = min(remaining, endFrame - startFrame)
+                                    System.arraycopy(currentBuf.left, startFrame, blockL, avail, wrap)
+                                    System.arraycopy(currentBuf.right, startFrame, blockR, avail, wrap)
+                                    if (avail + wrap < blockFrames) {
+                                        blockL.fill(0f, avail + wrap, blockFrames)
+                                        blockR.fill(0f, avail + wrap, blockFrames)
+                                    }
+                                    currentFrameIndex = startFrame + wrap
+                                } else if (autoLoopEnabled) {
+                                    val wrap = min(remaining, total)
+                                    System.arraycopy(currentBuf.left, 0, blockL, avail, wrap)
+                                    System.arraycopy(currentBuf.right, 0, blockR, avail, wrap)
+                                    if (avail + wrap < blockFrames) {
+                                        blockL.fill(0f, avail + wrap, blockFrames)
+                                        blockR.fill(0f, avail + wrap, blockFrames)
+                                    }
+                                    currentFrameIndex = wrap
+                                } else {
+                                    blockL.fill(0f, avail, blockFrames)
+                                    blockR.fill(0f, avail, blockFrames)
+                                }
+                            }
                             framesFilled = blockFrames
                         } else {
                             // Real-time pitch-preserving granular time stretch read
@@ -196,11 +224,15 @@ class AudioPlayerEngine {
                     } else if (loopEnabled) {
                         currentFrameIndex = startFrame
                         continue
+                    } else if (autoLoopEnabled) {
+                        currentFrameIndex = 0
+                        _progress.value = 0f
+                        continue
                     } else {
-                        // Let reverb/echo tail finish naturally up to 1.2s
-                        val reverbOn = cfg.isEffectEnabled(EffectType.ECHO_REVERB) && cfg.echoReverb.wetDryMix > 0.05f
+                        // Let lush FDN/echo reverb tail finish naturally
+                        val reverbOn = !cfg.bypassAll && cfg.isEffectEnabled(EffectType.ECHO_REVERB) && cfg.echoReverb.wetDryMix > 0.04f
                         if (reverbOn && tailCountdown == 0) {
-                            tailCountdown = (sampleRate * 1.1f).toInt()
+                            tailCountdown = (sampleRate * (0.7f + cfg.echoReverb.reverbDecay * 1.1f)).toInt()
                         }
                         if (tailCountdown > 0) {
                             blockL.fill(0f)

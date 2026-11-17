@@ -5,6 +5,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -142,6 +143,10 @@ class Mp3ExportAndWaveformTest {
     @Test
     fun `home recording and projects screens display real time waveform and mp3 export actions`() {
         composeTestRule.waitForIdle()
+        if (composeTestRule.onAllNodesWithTag("guest_continue_button").fetchSemanticsNodes().isNotEmpty()) {
+            composeTestRule.onNodeWithTag("guest_continue_button").performScrollTo().performClick()
+            composeTestRule.waitForIdle()
+        }
         composeTestRule.onNodeWithTag("home_realtime_waveform").assertIsDisplayed()
 
         // Navigate to Recording Studio and verify real-time waveform Canvas node
@@ -158,8 +163,7 @@ class Mp3ExportAndWaveformTest {
         composeTestRule.onNode(hasScrollToNodeAction()).performScrollToNode(hasTestTag("section_projects_export"))
         composeTestRule.onNodeWithTag("section_projects_export").performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNode(hasScrollToNodeAction()).performScrollToNode(hasTestTag("export_mp3_button"))
-        composeTestRule.onNodeWithTag("export_mp3_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("share_mp3_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("export_mp3_button").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("share_mp3_button").performScrollTo().assertIsDisplayed()
     }
 }

@@ -13,6 +13,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.shape.CircleShape
@@ -32,6 +35,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Icon
@@ -42,9 +46,13 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,11 +66,13 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.ui.theme.AmberWarm
 import com.example.ui.theme.CyanGlow
@@ -94,7 +104,8 @@ fun StudioFocusTopBar(
     title: String,
     subtitle: String? = null,
     onBack: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showBackButton: Boolean = true
 ) {
     Surface(
         color = StudioMidnight.copy(alpha = 0.92f),
@@ -104,28 +115,31 @@ fun StudioFocusTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .statusBarsPadding()
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .clip(CircleShape)
-                    .background(StudioSurfaceElevated)
-                    .testTag("back_button")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                    contentDescription = stringResource(R.string.back),
-                    tint = CyanGlow
-                )
+            if (showBackButton) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .clip(CircleShape)
+                        .background(StudioSurfaceElevated)
+                        .testTag("back_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = stringResource(R.string.back),
+                        tint = CyanGlow
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
             }
-            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleLarge.copy(fontSize = 18.sp),
                     color = TextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -133,7 +147,7 @@ fun StudioFocusTopBar(
                 if (!subtitle.isNullOrBlank()) {
                     Text(
                         text = subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
                         color = TextSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -156,7 +170,10 @@ fun PersistentTransportBar(
     onStop: () -> Unit,
     onToggleBypass: () -> Unit,
     onSeek: (Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onHoldBypassChange: (Boolean) -> Unit = {},
+    isAutoLoopEnabled: Boolean = true,
+    onToggleAutoLoop: () -> Unit = {}
 ) {
     Surface(
         color = StudioMidnight.copy(alpha = 0.96f),
@@ -169,53 +186,84 @@ fun PersistentTransportBar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
-            // Subtle progress bar + tap to seek
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(20.dp)
-                    .pointerInput(hasAudio) {
-                        if (!hasAudio) return@pointerInput
-                        detectTapGestures { offset ->
-                            // RTL visual mapping: right edge is 0, left edge is 1
-                            val frac = (1f - (offset.x / size.width)).coerceIn(0f, 1f)
-                            onSeek(frac)
-                        }
-                    },
-                contentAlignment = Alignment.Center
+            // Top seek progress row with time & mini live output level meter
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Canvas(modifier = Modifier.fillMaxWidth().height(6.dp)) {
-                    drawRoundRect(
-                        color = StudioSurfaceElevated,
-                        cornerRadius = CornerRadius(6f, 6f)
-                    )
-                    val filledW = size.width * progress.coerceIn(0f, 1f)
-                    if (filledW > 0f) {
+                val currentMs = (durationMs * progress).toLong()
+                Text(
+                    text = "${formatDurationMs(currentMs)} / ${formatDurationMs(durationMs)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (hasAudio) TextPrimary else TextMuted,
+                    maxLines = 1
+                )
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(20.dp)
+                        .pointerInput(hasAudio) {
+                            if (!hasAudio) return@pointerInput
+                            detectTapGestures { offset ->
+                                // RTL visual mapping: right edge is 0, left edge is 1
+                                val frac = (1f - (offset.x / size.width)).coerceIn(0f, 1f)
+                                onSeek(frac)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(modifier = Modifier.fillMaxWidth().height(6.dp)) {
                         drawRoundRect(
-                            brush = Brush.horizontalGradient(listOf(VioletGlow, CyanGlow)),
-                            topLeft = Offset(size.width - filledW, 0f),
-                            size = Size(filledW, size.height),
+                            color = StudioSurfaceElevated,
                             cornerRadius = CornerRadius(6f, 6f)
+                        )
+                        val filledW = size.width * progress.coerceIn(0f, 1f)
+                        if (filledW > 0f) {
+                            drawRoundRect(
+                                brush = Brush.horizontalGradient(listOf(VioletGlow, CyanGlow)),
+                                topLeft = Offset(size.width - filledW, 0f),
+                                size = Size(filledW, size.height),
+                                cornerRadius = CornerRadius(6f, 6f)
+                            )
+                        }
+                    }
+                }
+
+                Canvas(modifier = Modifier.width(52.dp).height(5.dp)) {
+                    drawRoundRect(color = StudioSurfaceElevated, cornerRadius = CornerRadius(4f, 4f))
+                    val lvl = (outputLevel * 1.4f).coerceIn(0f, 1f)
+                    if (lvl > 0.01f) {
+                        drawRoundRect(
+                            brush = Brush.horizontalGradient(listOf(EmeraldActive, CyanGlow, AmberWarm)),
+                            size = Size(size.width * lvl, size.height),
+                            cornerRadius = CornerRadius(4f, 4f)
                         )
                     }
                 }
             }
+
+            Spacer(Modifier.height(6.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Surface(
                         onClick = onTogglePlay,
                         enabled = hasAudio,
                         shape = CircleShape,
                         color = if (hasAudio) CyanGlow else StudioSurfaceElevated,
                         modifier = Modifier
-                            .size(50.dp)
+                            .size(48.dp)
                             .testTag("transport_play_button")
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -223,12 +271,10 @@ fun PersistentTransportBar(
                                 imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                 contentDescription = stringResource(if (isPlaying) R.string.pause else R.string.play),
                                 tint = if (hasAudio) StudioObsidian else TextMuted,
-                                modifier = Modifier.size(28.dp)
+                                modifier = Modifier.size(26.dp)
                             )
                         }
                     }
-
-                    Spacer(Modifier.width(10.dp))
 
                     IconButton(
                         onClick = onStop,
@@ -245,61 +291,118 @@ fun PersistentTransportBar(
                             tint = if (hasAudio) TextPrimary else TextMuted
                         )
                     }
+                }
 
-                    Spacer(Modifier.width(12.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Continuous Auto-Loop toggle pill
+                    Surface(
+                        onClick = onToggleAutoLoop,
+                        shape = RoundedCornerShape(50),
+                        color = if (isAutoLoopEnabled) EmeraldActive.copy(alpha = 0.18f) else StudioSurface,
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (isAutoLoopEnabled) EmeraldActive.copy(alpha = 0.7f) else StudioBorder
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("transport_loop_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Repeat,
+                                contentDescription = stringResource(R.string.loop_repeat),
+                                tint = if (isAutoLoopEnabled) EmeraldActive else TextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = stringResource(R.string.loop_repeat),
+                                style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
+                                color = if (isAutoLoopEnabled) EmeraldActive else TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
 
-                    Column {
-                        val currentMs = (durationMs * progress).toLong()
-                        Text(
-                            text = "${formatDurationMs(currentMs)} / ${formatDurationMs(durationMs)}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (hasAudio) TextPrimary else TextMuted
-                        )
-                        // Mini live audio level bar
-                        Spacer(Modifier.height(4.dp))
-                        Canvas(modifier = Modifier.width(88.dp).height(4.dp)) {
-                            drawRoundRect(color = StudioSurfaceElevated, cornerRadius = CornerRadius(4f, 4f))
-                            val lvl = (outputLevel * 1.4f).coerceIn(0f, 1f)
-                            if (lvl > 0.01f) {
-                                drawRoundRect(
-                                    brush = Brush.horizontalGradient(listOf(EmeraldActive, CyanGlow, AmberWarm)),
-                                    size = Size(size.width * lvl, size.height),
-                                    cornerRadius = CornerRadius(4f, 4f)
-                                )
+                    // Instant A/B Bypass Compare pill (tap to toggle OR press-and-hold to audition raw audio)
+                    val bypassInteraction = remember { MutableInteractionSource() }
+                    val isBypassPressed by bypassInteraction.collectIsPressedAsState()
+                    var holdBypassTriggered by remember { mutableStateOf(false) }
+                    var suppressNextBypassClick by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(isBypassPressed) {
+                        if (isBypassPressed) {
+                            kotlinx.coroutines.delay(160L)
+                            holdBypassTriggered = true
+                            onHoldBypassChange(true)
+                        } else if (holdBypassTriggered) {
+                            holdBypassTriggered = false
+                            suppressNextBypassClick = true
+                            onHoldBypassChange(false)
+                        }
+                    }
+
+                    DisposableEffect(Unit) {
+                        onDispose {
+                            if (holdBypassTriggered) {
+                                onHoldBypassChange(false)
                             }
                         }
                     }
-                }
 
-                // DSP Bypass toggle pill
-                Surface(
-                    onClick = onToggleBypass,
-                    shape = RoundedCornerShape(50),
-                    color = if (bypassAll) StudioSurface else CyanGlow.copy(alpha = 0.16f),
-                    border = BorderStroke(
-                        1.dp,
-                        if (bypassAll) StudioBorder else CyanGlow.copy(alpha = 0.6f)
-                    ),
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("transport_bypass_button")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    val highlightRaw = bypassAll || isBypassPressed
+                    Surface(
+                        onClick = {
+                            if (suppressNextBypassClick) {
+                                suppressNextBypassClick = false
+                            } else {
+                                onToggleBypass()
+                            }
+                        },
+                        interactionSource = bypassInteraction,
+                        shape = RoundedCornerShape(50),
+                        color = if (highlightRaw) AmberWarm.copy(alpha = 0.24f) else CyanGlow.copy(alpha = 0.14f),
+                        border = BorderStroke(
+                            width = if (highlightRaw) 1.5.dp else 1.dp,
+                            color = if (highlightRaw) AmberWarm else CyanGlow.copy(alpha = 0.6f)
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("transport_bypass_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Tune,
-                            contentDescription = null,
-                            tint = if (bypassAll) TextMuted else CyanGlow,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = stringResource(if (bypassAll) R.string.bypass_all else R.string.dsp_active),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (bypassAll) TextSecondary else CyanGlow
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(if (highlightRaw) AmberWarm else EmeraldActive)
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Icon(
+                                imageVector = Icons.Rounded.Tune,
+                                contentDescription = null,
+                                tint = if (highlightRaw) AmberWarm else CyanGlow,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                text = stringResource(if (highlightRaw) R.string.bypass_all else R.string.dsp_active),
+                                style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
+                                color = if (highlightRaw) AmberWarm else CyanGlow,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }
@@ -564,6 +667,10 @@ fun RangeWaveformEditorCanvas(
 ) {
     var draggingStart by remember { mutableStateOf(false) }
     var draggingEnd by remember { mutableStateOf(false) }
+    var containerWidthPx by remember { mutableFloatStateOf(1f) }
+    val latestTrimStart by rememberUpdatedState(trimStart)
+    val latestTrimEnd by rememberUpdatedState(trimEnd)
+    val latestOnRangeChange by rememberUpdatedState(onRangeChange)
 
     Box(
         modifier = modifier
@@ -572,19 +679,27 @@ fun RangeWaveformEditorCanvas(
             .clip(RoundedCornerShape(20.dp))
             .background(StudioObsidian)
             .border(1.dp, StudioBorder, RoundedCornerShape(20.dp))
-            .pointerInput(trimStart, trimEnd) {
+            .onSizeChanged { size ->
+                containerWidthPx = size.width.toFloat().coerceAtLeast(1f)
+            }
+            .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { offset ->
+                        val width = containerWidthPx.coerceAtLeast(1f)
+                        val start = latestTrimStart
+                        val end = latestTrimEnd
                         // RTL: fraction 0 is right edge, 1 is left edge
-                        val frac = (1f - offset.x / size.width).coerceIn(0f, 1f)
-                        val distStart = abs(frac - trimStart)
-                        val distEnd = abs(frac - trimEnd)
+                        val frac = (1f - offset.x / width).coerceIn(0f, 1f)
+                        val distStart = abs(frac - start)
+                        val distEnd = abs(frac - end)
                         if (distStart <= distEnd) {
                             draggingStart = true
                             draggingEnd = false
+                            latestOnRangeChange(frac.coerceIn(0f, (end - 0.02f).coerceAtLeast(0f)), end)
                         } else {
                             draggingStart = false
                             draggingEnd = true
+                            latestOnRangeChange(start, frac.coerceIn((start + 0.02f).coerceAtMost(1f), 1f))
                         }
                     },
                     onDragEnd = {
@@ -597,11 +712,14 @@ fun RangeWaveformEditorCanvas(
                     },
                     onDrag = { change, _ ->
                         change.consume()
-                        val frac = (1f - change.position.x / size.width).coerceIn(0f, 1f)
+                        val width = containerWidthPx.coerceAtLeast(1f)
+                        val start = latestTrimStart
+                        val end = latestTrimEnd
+                        val frac = (1f - change.position.x / width).coerceIn(0f, 1f)
                         if (draggingStart) {
-                            onRangeChange(frac.coerceAtMost(trimEnd - 0.03f), trimEnd)
+                            latestOnRangeChange(frac.coerceIn(0f, (end - 0.02f).coerceAtLeast(0f)), end)
                         } else if (draggingEnd) {
-                            onRangeChange(trimStart, frac.coerceAtLeast(trimStart + 0.03f))
+                            latestOnRangeChange(start, frac.coerceIn((start + 0.02f).coerceAtMost(1f), 1f))
                         }
                     }
                 )

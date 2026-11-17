@@ -23,3 +23,15 @@ data class PresetEntity(
     val dspConfigJson: String,
     val createdAt: Long = System.currentTimeMillis()
 )
+
+@Entity(tableName = "audio_recordings")
+data class AudioRecordingEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val filePath: String,
+    val title: String,
+    val timestamp: Long = System.currentTimeMillis(),
+    val durationMs: Long = 0L,
+    val sampleRate: Int = 44100,
+    val sourceType: String = "RECORDING"
+)
+
