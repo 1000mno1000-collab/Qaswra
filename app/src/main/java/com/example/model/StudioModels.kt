@@ -915,18 +915,29 @@ enum class SleepTimerOption(val minutes: Int?, val labelKey: String) {
     MIN_60(60, "sleep_timer_60"),
 }
 
+@Serializable
 enum class OnlineSearchCategory {
     VOICES_CLIPS,
     SOUND_EFFECTS,
 }
 
 @Immutable
+@Serializable
 data class AssistantChatMessage(
     val id: String,
     val isUser: Boolean,
     val text: String,
     val recommendedToolId: String? = null,
     val recommendedToolLabel: String? = null,
+    val timestampMs: Long = 0L,
 )
 
-
+@Immutable
+@Serializable
+data class SavedAssistantChatSession(
+    val id: String,
+    val title: String,
+    val createdAtMs: Long,
+    val updatedAtMs: Long,
+    val messages: List<AssistantChatMessage>,
+)

@@ -477,6 +477,20 @@ private val AR_STRINGS = mapOf(
     "support_message_hint" to "اشرح المشكلة أو الاقتراح باختصار...",
     "support_attach_logs_toggle" to "إرفاق سجل الأعطال والتقرير الفني تلقائياً",
     "support_send_email_btn" to "إرسال إلى الدعم الفني",
+    "assistant_chat_history_btn" to "سجل المحادثات",
+    "assistant_new_chat_btn" to "محادثة جديدة",
+    "assistant_copy_message" to "نسخ الرد",
+    "assistant_copy_full_chat" to "نسخ المحادثة بالكامل",
+    "assistant_copied_banner" to "تم النسخ إلى الحافظة",
+    "assistant_history_empty" to "لا توجد محادثات سابقة محفوظة بعد.",
+    "assistant_resume_chat" to "فتح ومتابعة",
+    "online_fav_and_history_btn" to "المفضلة وسجل الاستماع",
+    "online_tab_favorites" to "المفضلة ❤️",
+    "online_tab_history" to "سجل الاستماع 🕒",
+    "online_favorites_empty" to "اضغط على القلب ❤️ بجانب أي صوت لحفظه في مفضلتك.",
+    "online_history_empty" to "لم تستمع لأي صوت من المكتبة بعد.",
+    "online_clear_history_btn" to "مسح السجل",
+    "stt_continuous_active" to "الإملاء المستمر نشط — يستمع تلقائياً بعد كل جملة حتى تضغط إيقاف",
 )
 
 private val EN_STRINGS = mapOf(
@@ -954,6 +968,20 @@ private val EN_STRINGS = mapOf(
     "support_message_hint" to "Briefly describe your issue or suggestion...",
     "support_attach_logs_toggle" to "Attach recent diagnostic & crash logs automatically",
     "support_send_email_btn" to "Send Email to Support",
+    "assistant_chat_history_btn" to "Chat History",
+    "assistant_new_chat_btn" to "New Chat",
+    "assistant_copy_message" to "Copy Reply",
+    "assistant_copy_full_chat" to "Copy Full Chat",
+    "assistant_copied_banner" to "Copied to clipboard",
+    "assistant_history_empty" to "No saved conversations yet.",
+    "assistant_resume_chat" to "Open & Continue",
+    "online_fav_and_history_btn" to "Favorites & History",
+    "online_tab_favorites" to "Favorites ❤️",
+    "online_tab_history" to "History 🕒",
+    "online_favorites_empty" to "Tap the heart ❤️ on any sound to save it to favorites.",
+    "online_history_empty" to "No sounds previewed yet.",
+    "online_clear_history_btn" to "Clear History",
+    "stt_continuous_active" to "Continuous dictation active — stays listening through pauses until you tap Stop",
 )
 
 private val FA_STRINGS = mapOf(
@@ -1431,6 +1459,20 @@ private val FA_STRINGS = mapOf(
     "support_message_hint" to "مشکل یا پیشنهاد خود را کوتاه بنویسید...",
     "support_attach_logs_toggle" to "پیوست خودکار گزارش خطاها و تشخیص",
     "support_send_email_btn" to "ارسال ایمیل به پشتیبانی",
+    "assistant_chat_history_btn" to "تاریخچه گفتگو",
+    "assistant_new_chat_btn" to "گفتگوی جدید",
+    "assistant_copy_message" to "کپی پاسخ",
+    "assistant_copy_full_chat" to "کپی کل گفتگو",
+    "assistant_copied_banner" to "در کلیپ‌بورد کپی شد",
+    "assistant_history_empty" to "هنوز هیچ گفتگویی ذخیره نشده است.",
+    "assistant_resume_chat" to "باز کردن و ادامه",
+    "online_fav_and_history_btn" to "علاقه‌مندی‌ها و تاریخچه",
+    "online_tab_favorites" to "علاقه‌مندی‌ها ❤️",
+    "online_tab_history" to "تاریخچه پخش 🕒",
+    "online_favorites_empty" to "برای ذخیره، روی قلب ❤️ کنار هر صدا بزنید.",
+    "online_history_empty" to "هنوز صدایی از کتابخانه پخش نشده است.",
+    "online_clear_history_btn" to "پاک کردن تاریخچه",
+    "stt_continuous_active" to "تایپ صوتی پیوسته فعال است — در سکوت متوقف نمی‌شود تا توقف را بزنید",
 )
 
 fun t(lang: AppLanguage, key: String): String {

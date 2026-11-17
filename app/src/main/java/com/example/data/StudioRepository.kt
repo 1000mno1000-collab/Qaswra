@@ -9,10 +9,13 @@ import com.example.data.local.LocalAccountEntity
 import com.example.data.local.PreferencesStore
 import com.example.data.local.ProjectEntity
 import com.example.data.local.RecordingEntity
+import com.example.audio.ai.OnlineSoundHistoryItem
+import com.example.audio.ai.OnlineSoundItem
 import com.example.model.AppLanguage
 import com.example.model.AuthSession
 import com.example.model.DspConfig
 import com.example.model.RecordingSourceType
+import com.example.model.SavedAssistantChatSession
 import com.example.model.StereoAudioBuffer
 import com.example.model.StoredCustomPreset
 import com.example.model.StudioPreset
@@ -43,6 +46,9 @@ class StudioRepository(private val context: Context) {
     val autoLoopFlow: Flow<Boolean> = prefs.autoLoopFlow
     val authSessionFlow: Flow<AuthSession> = prefs.authSessionFlow
     val defaultSaveFolderFlow: Flow<Pair<String?, String?>> = prefs.defaultSaveFolderFlow
+    val savedAssistantChatsFlow: Flow<List<SavedAssistantChatSession>> = prefs.savedAssistantChatsFlow
+    val favoriteOnlineSoundsFlow: Flow<List<OnlineSoundItem>> = prefs.favoriteOnlineSoundsFlow
+    val onlineListeningHistoryFlow: Flow<List<OnlineSoundHistoryItem>> = prefs.onlineListeningHistoryFlow
 
     val projectsFlow: Flow<List<StudioProject>> = dao.observeProjects().map { list ->
         list.map { entity ->
@@ -111,6 +117,40 @@ class StudioRepository(private val context: Context) {
     suspend fun saveDefaultSaveFolder(uriString: String, folderName: String) =
         prefs.saveDefaultSaveFolder(uriString, folderName)
     suspend fun clearDefaultSaveFolder() = prefs.clearDefaultSaveFolder()
+
+    suspend fun upsertAssistantChatSession(session: SavedAssistantChatSession) {
+        val current = prefs.savedAssistantChatsFlow.first()
+        val updated = (listOf(session) + current.filterNot { it.id == session.id }).take(40)
+        prefs.saveAssistantChats(updated)
+    }
+
+    suspend fun deleteAssistantChatSession(sessionId: String) {
+        val current = prefs.savedAssistantChatsFlow.first()
+        prefs.saveAssistantChats(current.filterNot { it.id == sessionId })
+    }
+
+    suspend fun toggleFavoriteOnlineSound(item: OnlineSoundItem): Boolean {
+        val current = prefs.favoriteOnlineSoundsFlow.first()
+        val exists = current.any { it.identifier == item.identifier }
+        val updated = if (exists) {
+            current.filterNot { it.identifier == item.identifier }
+        } else {
+            (listOf(item) + current).take(80)
+        }
+        prefs.saveFavoriteOnlineSounds(updated)
+        return !exists
+    }
+
+    suspend fun recordOnlineSoundListen(item: OnlineSoundItem) {
+        val current = prefs.onlineListeningHistoryFlow.first()
+        val entry = OnlineSoundHistoryItem(sound = item, listenedAtMs = System.currentTimeMillis())
+        val updated = (listOf(entry) + current.filterNot { it.sound.identifier == item.identifier }).take(60)
+        prefs.saveOnlineListeningHistory(updated)
+    }
+
+    suspend fun clearOnlineListeningHistory() {
+        prefs.saveOnlineListeningHistory(emptyList())
+    }
 
     suspend fun signInLocalEmail(email: String, password: String): AuthResult {
         val cleanEmail = email.trim().lowercase()

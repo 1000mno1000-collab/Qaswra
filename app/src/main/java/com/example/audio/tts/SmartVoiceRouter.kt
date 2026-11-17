@@ -11,6 +11,7 @@ import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
 import com.example.model.TtsEngineMode
 import com.example.model.TtsGender
+import com.example.util.SafeTextGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -235,17 +236,13 @@ class SmartVoiceRouter {
         val words = text.split(Regex("\\s+"))
         val current = StringBuilder()
         for (word in words) {
+            if (word.isEmpty()) continue
             if (word.length > maxChars) {
                 if (current.isNotEmpty()) {
                     result.add(current.toString().trim())
                     current.clear()
                 }
-                var idx = 0
-                while (idx < word.length) {
-                    val end = minOf(idx + maxChars, word.length)
-                    result.add(word.substring(idx, end))
-                    idx = end
-                }
+                result.addAll(SafeTextGuard.safeChunkWord(word, maxChars))
             } else if (current.length + word.length + 1 > maxChars) {
                 result.add(current.toString().trim())
                 current.clear()

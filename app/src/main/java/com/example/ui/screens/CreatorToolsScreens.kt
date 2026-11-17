@@ -281,26 +281,35 @@ fun SpeechToTextScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (stt.isListening) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(StudioColors.RoseBright),
-                        )
-                        LinearProgressIndicator(
-                            progress = { (stt.rmsDb / 10f).coerceIn(0.08f, 1f) },
-                            color = StudioColors.Cyan,
-                            trackColor = StudioColors.BgTop,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(6.dp)
-                                .clip(CircleShape),
-                        )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(StudioColors.RoseBright),
+                            )
+                            LinearProgressIndicator(
+                                progress = { (stt.rmsDb / 10f).coerceIn(0.08f, 1f) },
+                                color = StudioColors.Cyan,
+                                trackColor = StudioColors.BgTop,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(6.dp)
+                                    .clip(CircleShape),
+                            )
+                        }
+                        if (!stt.isRoutingClip) {
+                            Text(
+                                text = t(lang, "stt_continuous_active"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioColors.Emerald,
+                            )
+                        }
                     }
                 }
 

@@ -8,6 +8,7 @@ import android.os.Build
 import androidx.compose.runtime.Immutable
 import com.example.audio.network.NetworkFetchOutcome
 import com.example.audio.network.NetworkImmunityManager
+import com.example.util.SafeTextGuard
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -87,7 +88,8 @@ object AppUpdateManager {
                     }
                 }
                 is NetworkFetchOutcome.Success -> {
-                    val json = JSONObject(outcome.value.body)
+                    val json = SafeTextGuard.safeParseJsonObject(outcome.value.body)
+                        ?: return@withContext AppUpdateOutcome.Error("Malformed update response payload")
                     val tagRaw = json.optString("tag_name").trim()
                     val latestClean = tagRaw.removePrefix("v").removePrefix("V").ifBlank { currentVersion }
                     val htmlUrl = NetworkImmunityManager.enforceHttps(

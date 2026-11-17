@@ -9,6 +9,7 @@ import com.example.audio.normalizeAudio
 import com.example.model.CompressorParams
 import com.example.model.StereoAudioBuffer
 import com.example.model.TtsDeliveryStyle
+import com.example.util.SafeTextGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -138,7 +139,12 @@ object StudioLuxuryAudioFilter {
             val args = trimmed.substringAfter('=', "").split(':')
                 .mapNotNull { kv ->
                     val eqIdx = kv.indexOf('=')
-                    if (eqIdx > 0) kv.substring(0, eqIdx).trim() to kv.substring(eqIdx + 1).trim() else null
+                    if (eqIdx > 0) {
+                        SafeTextGuard.safeSubstring(kv, 0, eqIdx).trim() to
+                            SafeTextGuard.safeSubstring(kv, eqIdx + 1).trim()
+                    } else {
+                        null
+                    }
                 }
                 .toMap()
 

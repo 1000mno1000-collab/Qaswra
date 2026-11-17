@@ -39,6 +39,9 @@ class StudioSpeechTranscriber(private val context: Context) {
     private var recognizer: SpeechRecognizer? = null
     @Volatile private var keepListening = false
     @Volatile private var currentLocaleTag = "ar-SA"
+    @Volatile private var currentSessionId = 0L
+
+    private var endOfSpeechWatchdog: Runnable? = null
 
     fun isAvailable(): Boolean = runCatching {
         SpeechRecognizer.isRecognitionAvailable(context.applicationContext)
@@ -47,6 +50,13 @@ class StudioSpeechTranscriber(private val context: Context) {
     fun setLocale(localeTag: String) {
         currentLocaleTag = localeTag
         _state.update { it.copy(localeTag = localeTag) }
+        if (keepListening) {
+            mainHandler.post {
+                if (keepListening) {
+                    scheduleNextLoop(delayMs = 120L)
+                }
+            }
+        }
     }
 
     fun setEditedText(newText: String) {
@@ -82,6 +92,8 @@ class StudioSpeechTranscriber(private val context: Context) {
                 }
                 return@post
             }
+            cancelEndOfSpeechWatchdog()
+            mainHandler.removeCallbacksAndMessages(null)
             keepListening = true
             _state.update {
                 it.copy(
@@ -92,12 +104,14 @@ class StudioSpeechTranscriber(private val context: Context) {
                     errorMessage = null,
                 )
             }
-            beginSessionOnMain()
+            beginSessionOnMain(++currentSessionId)
         }
     }
 
     fun stop() {
         keepListening = false
+        currentSessionId++
+        cancelEndOfSpeechWatchdog()
         mainHandler.removeCallbacksAndMessages(null)
         mainHandler.post {
             runCatching { recognizer?.stopListening() }
@@ -112,14 +126,52 @@ class StudioSpeechTranscriber(private val context: Context) {
                     partialText = "",
                     committedText = merged,
                     rmsDb = 0f,
+                    errorMessage = null,
                 )
             }
         }
     }
 
-    private fun beginSessionOnMain() {
+    private fun cancelEndOfSpeechWatchdog() {
+        endOfSpeechWatchdog?.let { mainHandler.removeCallbacks(it) }
+        endOfSpeechWatchdog = null
+    }
+
+    private fun commitPartialIntoTranscript() {
+        _state.update { cur ->
+            val pending = cur.partialText.trim()
+            if (pending.isEmpty()) {
+                cur
+            } else {
+                val base = cur.committedText.trim()
+                val merged = when {
+                    base.isEmpty() -> pending
+                    base.endsWith(pending) -> base
+                    else -> "$base $pending"
+                }
+                cur.copy(committedText = merged, partialText = "")
+            }
+        }
+    }
+
+    private fun scheduleNextLoop(delayMs: Long) {
         if (!keepListening) return
+        cancelEndOfSpeechWatchdog()
+        val nextId = ++currentSessionId
+        mainHandler.postDelayed({
+            if (keepListening && currentSessionId == nextId) {
+                beginSessionOnMain(nextId)
+            }
+        }, delayMs)
+    }
+
+    private fun beginSessionOnMain(sessionId: Long) {
+        if (!keepListening || sessionId != currentSessionId) return
+        cancelEndOfSpeechWatchdog()
+        runCatching { recognizer?.cancel() }
         runCatching { recognizer?.destroy() }
+        recognizer = null
+
         val sr = runCatching { SpeechRecognizer.createSpeechRecognizer(context.applicationContext) }.getOrNull()
         if (sr == null) {
             keepListening = false
@@ -134,32 +186,69 @@ class StudioSpeechTranscriber(private val context: Context) {
         }
         recognizer = sr
         sr.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) = Unit
-            override fun onBeginningOfSpeech() = Unit
+            override fun onReadyForSpeech(params: Bundle?) {
+                if (sessionId != currentSessionId) return
+                _state.update { it.copy(errorMessage = null) }
+            }
+
+            override fun onBeginningOfSpeech() {
+                if (sessionId != currentSessionId) return
+                cancelEndOfSpeechWatchdog()
+            }
+
             override fun onRmsChanged(rmsdB: Float) {
+                if (sessionId != currentSessionId) return
                 _state.update { it.copy(rmsDb = rmsdB.coerceAtLeast(0f)) }
             }
 
             override fun onBufferReceived(buffer: ByteArray?) = Unit
-            override fun onEndOfSpeech() = Unit
+
+            override fun onEndOfSpeech() {
+                if (!keepListening || sessionId != currentSessionId) return
+                cancelEndOfSpeechWatchdog()
+                // Fallback watchdog in case some OEM speech engines stall after onEndOfSpeech
+                val watchdog = Runnable {
+                    if (keepListening && sessionId == currentSessionId) {
+                        commitPartialIntoTranscript()
+                        scheduleNextLoop(delayMs = 150L)
+                    }
+                }
+                endOfSpeechWatchdog = watchdog
+                mainHandler.postDelayed(watchdog, 2600L)
+            }
 
             override fun onError(error: Int) {
-                val shouldRetry = keepListening && (
-                    error == SpeechRecognizer.ERROR_NO_MATCH ||
-                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-                    )
-                if (shouldRetry) {
-                    mainHandler.postDelayed({ beginSessionOnMain() }, 240L)
+                if (sessionId != currentSessionId) return
+                cancelEndOfSpeechWatchdog()
+
+                // Continuous Dictation Loop: preserve any partial words & restart immediately on silence/timeout/busy
+                val recoverableLoopError =
+                    error == SpeechRecognizer.ERROR_NO_MATCH ||       // code 7
+                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || // code 6
+                        error == SpeechRecognizer.ERROR_CLIENT ||         // code 5
+                        error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||// code 8
+                        error == SpeechRecognizer.ERROR_AUDIO             // transient audio focus hiccup
+
+                if (keepListening && recoverableLoopError) {
+                    commitPartialIntoTranscript()
+                    _state.update { it.copy(errorMessage = null, rmsDb = 0f) }
+                    val restartDelay = when (error) {
+                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 280L
+                        SpeechRecognizer.ERROR_AUDIO -> 320L
+                        else -> 120L
+                    }
+                    scheduleNextLoop(delayMs = restartDelay)
                     return
                 }
-                if (error == SpeechRecognizer.ERROR_CLIENT) return
+
+                // Fatal errors only (e.g., revoked mic permission / missing offline pack / network error)
                 keepListening = false
+                commitPartialIntoTranscript()
                 val msg = when (error) {
-                    SpeechRecognizer.ERROR_AUDIO -> "Audio recording error while capturing speech."
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is required for speech recognition."
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                        "Microphone permission is required for speech recognition."
                     SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
                         "Speech recognizer network unavailable (enable offline speech pack or check connection)."
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Speech recognizer is busy; please retry."
                     SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED, SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
                         "Selected recognition language pack is not installed on this device."
                     else -> "Speech recognition stopped (code $error)."
@@ -168,7 +257,6 @@ class StudioSpeechTranscriber(private val context: Context) {
                     cur.copy(
                         isListening = false,
                         isRoutingClip = false,
-                        committedText = cur.displayText,
                         partialText = "",
                         rmsDb = 0f,
                         errorMessage = msg,
@@ -177,28 +265,34 @@ class StudioSpeechTranscriber(private val context: Context) {
             }
 
             override fun onResults(results: Bundle?) {
+                if (sessionId != currentSessionId) return
+                cancelEndOfSpeechWatchdog()
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val top = matches?.firstOrNull()?.trim().orEmpty()
                 if (top.isNotEmpty()) {
                     _state.update { cur ->
-                        val nextCommitted = if (cur.committedText.isBlank()) top else "${cur.committedText.trim()} $top"
-                        cur.copy(committedText = nextCommitted, partialText = "")
+                        val base = cur.committedText.trim()
+                        val nextCommitted = if (base.isEmpty()) top else "$base $top"
+                        cur.copy(committedText = nextCommitted, partialText = "", errorMessage = null)
                     }
                 } else {
-                    _state.update { it.copy(partialText = "") }
+                    commitPartialIntoTranscript()
                 }
                 if (keepListening) {
-                    mainHandler.postDelayed({ beginSessionOnMain() }, 180L)
+                    scheduleNextLoop(delayMs = 110L)
+                } else {
+                    _state.update { it.copy(isListening = false, isRoutingClip = false, rmsDb = 0f) }
                 }
             }
 
             override fun onPartialResults(partialResults: Bundle?) {
+                if (sessionId != currentSessionId) return
                 val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     ?.firstOrNull()
                     ?.trim()
                     .orEmpty()
                 if (partial.isNotEmpty()) {
-                    _state.update { it.copy(partialText = partial) }
+                    _state.update { it.copy(partialText = partial, errorMessage = null) }
                 }
             }
 
@@ -211,23 +305,32 @@ class StudioSpeechTranscriber(private val context: Context) {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, currentLocaleTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 8_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 5_000L)
         }
         runCatching { sr.startListening(intent) }.onFailure { err ->
-            keepListening = false
-            _state.update {
-                it.copy(
-                    isListening = false,
-                    isRoutingClip = false,
-                    errorMessage = err.localizedMessage ?: "Failed to start SpeechRecognizer",
-                )
+            if (keepListening) {
+                scheduleNextLoop(delayMs = 260L)
+            } else {
+                _state.update {
+                    it.copy(
+                        isListening = false,
+                        isRoutingClip = false,
+                        errorMessage = err.localizedMessage ?: "Failed to start SpeechRecognizer",
+                    )
+                }
             }
         }
     }
 
     fun destroy() {
         keepListening = false
+        currentSessionId++
+        cancelEndOfSpeechWatchdog()
         mainHandler.removeCallbacksAndMessages(null)
         mainHandler.post {
+            runCatching { recognizer?.cancel() }
             runCatching { recognizer?.destroy() }
             recognizer = null
         }

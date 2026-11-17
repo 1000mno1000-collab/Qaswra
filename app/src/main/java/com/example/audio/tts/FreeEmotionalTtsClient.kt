@@ -23,6 +23,7 @@ import com.example.model.StereoAudioBuffer
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
 import com.example.model.TtsGender
+import com.example.util.SafeTextGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -612,17 +613,13 @@ object FreeEmotionalTtsClient {
         val words = text.split(Regex("\\s+"))
         val cur = StringBuilder()
         for (word in words) {
+            if (word.isEmpty()) continue
             if (word.length > maxChars) {
                 if (cur.isNotEmpty()) {
                     out += cur.toString().trim()
                     cur.clear()
                 }
-                var idx = 0
-                while (idx < word.length) {
-                    val end = min(idx + maxChars, word.length)
-                    out += word.substring(idx, end)
-                    idx = end
-                }
+                out += SafeTextGuard.safeChunkWord(word, maxChars)
             } else if (cur.length + 1 + word.length > maxChars) {
                 out += cur.toString().trim()
                 cur.clear()

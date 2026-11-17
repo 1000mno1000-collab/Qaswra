@@ -1,5 +1,7 @@
 package com.example.audio.tts
 
+import com.example.util.SafeTextGuard
+
 /**
  * Smart Arabic Text Diacritics & Punctuation Normalizer before Cloud TTS synthesis:
  * - Normalizes irregular spaces, tatweel stretching, and multiple punctuation marks.
@@ -77,7 +79,7 @@ object ArabicTextDiacritizer {
         val containsArabic = cleaned.any { it in '\u0600'..'\u06FF' }
         if (!containsArabic) return cleaned
 
-        // Process word-by-word preserving punctuation boundaries
+        // Process word-by-word preserving punctuation boundaries safely
         val tokens = cleaned.split(Regex("(?<=\\s)|(?=\\s)"))
         val out = StringBuilder(cleaned.length + 32)
         for (token in tokens) {
@@ -86,8 +88,13 @@ object ArabicTextDiacritizer {
                 continue
             }
             val leading = token.takeWhile { !it.isLetterOrDigit() }
+            if (leading.length >= token.length) {
+                out.append(token)
+                continue
+            }
             val trailing = token.takeLastWhile { !it.isLetterOrDigit() }
-            val core = token.substring(leading.length, token.length - trailing.length)
+            val safeEnd = (token.length - trailing.length).coerceIn(leading.length, token.length)
+            val core = SafeTextGuard.safeSubstring(token, leading.length, safeEnd)
 
             val transformed = if (core.isEmpty() || DIACRITICS_REGEX.containsMatchIn(core)) {
                 core

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.example.audio.OnlineGuard
 import com.example.diagnostics.AppDiagnosticLog
+import com.example.util.SafeTextGuard
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -80,7 +81,7 @@ object NetworkImmunityManager {
         if (trimmed.isEmpty()) return trimmed
         return when {
             trimmed.startsWith("https://", ignoreCase = true) -> trimmed
-            trimmed.startsWith("http://", ignoreCase = true) -> "https://" + trimmed.substring(7)
+            trimmed.startsWith("http://", ignoreCase = true) -> "https://" + SafeTextGuard.safeSubstring(trimmed, 7)
             trimmed.contains("://") -> trimmed
             else -> "https://$trimmed"
         }
@@ -316,6 +317,45 @@ object NetworkImmunityManager {
             throw ce
         } catch (t: Throwable) {
             NetworkFetchOutcome.Failure(t.javaClass.simpleName, t.localizedMessage ?: "Timed out")
+        }
+    }
+
+    /**
+     * Fast single-attempt HTTPS/TLS1.2+ isolated request (no multi-second retry backoff)
+     * intended for parallel model racing and concurrent metadata batches.
+     */
+    suspend fun fetchTextFast(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        postJsonBody: String? = null,
+        connectTimeoutMs: Int = 6_000,
+        readTimeoutMs: Int = 12_000,
+        timeoutMs: Long = 14_000L,
+    ): NetworkFetchOutcome<NetworkTextResponse> = withContext(Dispatchers.IO) {
+        val safeUrl = enforceHttps(url)
+        try {
+            withTimeout(timeoutMs) {
+                coroutineContext.ensureActive()
+                val resp = executeTextRequest(
+                    urlStr = safeUrl,
+                    headers = headers,
+                    postJsonBody = postJsonBody,
+                    connectTimeoutMs = connectTimeoutMs,
+                    readTimeoutMs = readTimeoutMs,
+                )
+                if (resp.httpCode in 200..299 && resp.body.isNotBlank()) {
+                    NetworkFetchOutcome.Success(resp, 1)
+                } else {
+                    NetworkFetchOutcome.Failure(
+                        errorCode = "HTTP_${resp.httpCode}",
+                        message = "HTTP ${resp.httpCode}",
+                    )
+                }
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            NetworkFetchOutcome.Failure(t.javaClass.simpleName, t.localizedMessage ?: "Fast request failed")
         }
     }
 

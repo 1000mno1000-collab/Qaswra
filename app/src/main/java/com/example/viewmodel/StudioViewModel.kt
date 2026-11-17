@@ -25,6 +25,7 @@ import com.example.audio.MergeStudioParams
 import com.example.audio.NativeSpeechState
 import com.example.audio.OnlineGuard
 import com.example.audio.ReelsTemplateParams
+import com.example.audio.ai.OnlineSoundHistoryItem
 import com.example.audio.ai.OnlineSoundItem
 import com.example.audio.ai.SmartAssistantAndSearch
 import com.example.audio.ai.ToolGuideResult
@@ -117,6 +118,7 @@ import com.example.model.PlatformLoudnessTarget
 import com.example.model.PlaybackTelemetry
 import com.example.model.RecorderTelemetry
 import com.example.model.RecordingSourceType
+import com.example.model.SavedAssistantChatSession
 import com.example.model.SleepTimerOption
 import com.example.model.SmartMasterAnalysis
 import com.example.model.StereoAudioBuffer
@@ -242,9 +244,13 @@ data class StudioUiState(
     val assistantGuideOfflineError: String? = null,
     val assistantGuideResults: List<ToolGuideResult> = emptyList(),
     val assistantChatMessages: List<AssistantChatMessage> = emptyList(),
+    val activeAssistantChatId: String? = null,
+    val savedAssistantChats: List<SavedAssistantChatSession> = emptyList(),
     val onlineSearchCategory: OnlineSearchCategory = OnlineSearchCategory.VOICES_CLIPS,
     val soundSearchOfflineError: String? = null,
     val onlineSoundCategories: Map<String, List<OnlineSoundItem>> = emptyMap(),
+    val favoriteOnlineSounds: List<OnlineSoundItem> = emptyList(),
+    val onlineListeningHistory: List<OnlineSoundHistoryItem> = emptyList(),
     val isSearchingOnlineSounds: Boolean = false,
     val previewingOnlineUrl: String? = null,
     val loadingOnlineSoundId: String? = null,
@@ -433,6 +439,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(safeCoroutineHandler) {
             speechTranscriber.state.collect { st ->
                 _uiState.update { it.copy(speechState = st) }
+            }
+        }
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.savedAssistantChatsFlow.collect { chats ->
+                _uiState.update { it.copy(savedAssistantChats = chats) }
+            }
+        }
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.favoriteOnlineSoundsFlow.collect { favs ->
+                _uiState.update { it.copy(favoriteOnlineSounds = favs) }
+            }
+        }
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.onlineListeningHistoryFlow.collect { hist ->
+                _uiState.update { it.copy(onlineListeningHistory = hist) }
             }
         }
 
@@ -3640,50 +3661,71 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             postBanner(offlineMsg)
             return
         }
+        val nowMs = System.currentTimeMillis()
+        val sessionId = _uiState.value.activeAssistantChatId ?: "chat_${UUID.randomUUID()}"
         val userMsg = AssistantChatMessage(
             id = "u_${UUID.randomUUID()}",
             isUser = true,
             text = clean,
+            timestampMs = nowMs,
         )
         val historyBefore = _uiState.value.assistantChatMessages
+        val sessionCreatedAt = historyBefore.firstOrNull()?.timestampMs?.takeIf { it > 0L } ?: nowMs
+        val sessionTitle = historyBefore.firstOrNull { it.isUser }?.text?.take(48) ?: clean.take(48)
+
         _uiState.update {
             it.copy(
                 isLoadingAiGuide = true,
                 isOnlineTaskRunning = true,
                 onlineTaskLabel = "AI Assistant",
                 assistantGuideOfflineError = null,
+                activeAssistantChatId = sessionId,
                 assistantChatMessages = historyBefore + userMsg,
             )
         }
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             try {
-                if (!NetworkImmunityManager.pingReachable(getApplication())) {
-                    val pingOffline = OnlineGuard.offlineErrorMessage(lang)
-                    _uiState.update { it.copy(assistantGuideOfflineError = pingOffline) }
-                    postBanner(pingOffline)
-                    return@launch
-                }
                 val turn = SmartAssistantAndSearch.askPollinationsChat(
                     history = historyBefore,
                     userMessage = clean,
                     language = lang,
                     context = getApplication(),
                 )
+                if (turn.isOfflineError) {
+                    _uiState.update {
+                        it.copy(
+                            assistantGuideOfflineError = turn.replyText,
+                            assistantChatMessages = historyBefore,
+                        )
+                    }
+                    postBanner(turn.replyText)
+                    return@launch
+                }
                 val botMsg = AssistantChatMessage(
                     id = "a_${UUID.randomUUID()}",
                     isUser = false,
                     text = turn.replyText,
                     recommendedToolId = turn.recommendedToolId,
                     recommendedToolLabel = turn.recommendedToolLabel,
+                    timestampMs = System.currentTimeMillis(),
                 )
+                val finalMessages = _uiState.value.assistantChatMessages + botMsg
                 _uiState.update {
                     it.copy(
                         assistantAiSummary = turn.replyText,
-                        assistantChatMessages = it.assistantChatMessages + botMsg,
+                        assistantChatMessages = finalMessages,
                         assistantGuideOfflineError = null,
                     )
                 }
+                val savedSession = SavedAssistantChatSession(
+                    id = sessionId,
+                    title = sessionTitle,
+                    createdAtMs = sessionCreatedAt,
+                    updatedAtMs = System.currentTimeMillis(),
+                    messages = finalMessages,
+                )
+                repository.upsertAssistantChatSession(savedSession)
             } finally {
                 _uiState.update {
                     it.copy(
@@ -3697,13 +3739,69 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun clearAssistantChat() {
+        startNewAssistantChat()
+    }
+
+    fun startNewAssistantChat() {
         _uiState.update {
             it.copy(
+                activeAssistantChatId = null,
                 assistantChatMessages = emptyList(),
                 assistantAiSummary = null,
                 assistantGuideResults = emptyList(),
                 assistantGuideOfflineError = null,
             )
+        }
+    }
+
+    fun openSavedAssistantChat(sessionId: String) {
+        val target = _uiState.value.savedAssistantChats.firstOrNull { it.id == sessionId } ?: return
+        _uiState.update {
+            it.copy(
+                activeAssistantChatId = target.id,
+                assistantChatMessages = target.messages,
+                assistantAiSummary = target.messages.lastOrNull { m -> !m.isUser }?.text,
+                assistantGuideOfflineError = null,
+            )
+        }
+    }
+
+    fun deleteSavedAssistantChat(sessionId: String) {
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.deleteAssistantChatSession(sessionId)
+            if (_uiState.value.activeAssistantChatId == sessionId) {
+                startNewAssistantChat()
+            }
+        }
+    }
+
+    fun formatAssistantChatForCopy(
+        messages: List<AssistantChatMessage> = _uiState.value.assistantChatMessages,
+    ): String {
+        val lang = _uiState.value.language
+        val userTag = if (lang == AppLanguage.EN) "You" else if (lang == AppLanguage.FA) "شما" else "أنت"
+        val aiTag = if (lang == AppLanguage.EN) "Sonix AI" else "Sonix ✦ AI"
+        return messages.joinToString("\n\n") { msg ->
+            val speaker = if (msg.isUser) userTag else aiTag
+            "$speaker:\n${msg.text}"
+        }
+    }
+
+    fun toggleOnlineSoundFavorite(item: OnlineSoundItem) {
+        viewModelScope.launch(safeCoroutineHandler) {
+            val added = repository.toggleFavoriteOnlineSound(item)
+            val msg = if (_uiState.value.language == AppLanguage.EN) {
+                if (added) "Added to favorites" else "Removed from favorites"
+            } else {
+                if (added) "تمت الإضافة إلى المفضلة ❤️" else "تمت الإزالة من المفضلة"
+            }
+            postBanner(msg)
+        }
+    }
+
+    fun clearOnlineListeningHistory() {
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.clearOnlineListeningHistory()
         }
     }
 
@@ -3799,6 +3897,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 postBanner(pingOffline)
                 return@launch
             }
+            repository.recordOnlineSoundListen(item)
             val safeUrl = NetworkImmunityManager.enforceHttps(item.streamUrl)
             val mp = MediaPlayer()
             val ok = runCatching {
@@ -3871,6 +3970,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 setActiveBuffer(buf, recordUndo = false, resetDspOnNewEntry = true)
                 _uiState.update { it.copy(activeProjectName = item.title.take(40)) }
                 repository.indexAudioRecording(item.title.take(40), buf, RecordingSourceType.IMPORTED)
+                repository.recordOnlineSoundListen(item)
                 postBanner("تمت إضافة \"${item.title.take(28)}\" بالصوت النقي إلى الاستوديو")
             } finally {
                 _uiState.update {
