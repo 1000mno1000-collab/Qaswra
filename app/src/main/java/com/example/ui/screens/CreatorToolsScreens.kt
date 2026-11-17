@@ -874,5 +874,7 @@ fun SmartMusicMixerScreen(
         onSaveToDevice = { fmt, name -> viewModel.exportSmartDuckingMix(fmt, name, shareAfter = false) },
         onShareAudio = { fmt, name -> viewModel.exportSmartDuckingMix(fmt, name, shareAfter = true) },
         onShareToPackage = { fmt, name, pkg -> viewModel.exportSmartDuckingMix(fmt, name, shareAfter = true, targetPackage = pkg) },
+        onSaveForUnity = { name -> viewModel.exportAudioForUnity(name, shareAfter = false, useSmartMixIfPresent = true) },
+        onShareForUnity = { name -> viewModel.exportAudioForUnity(name, shareAfter = true, useSmartMixIfPresent = true) },
     )
 }

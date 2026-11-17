@@ -81,6 +81,7 @@ import com.example.model.EchoPadAxisMode
 import com.example.model.EffectType
 import com.example.studio.ui.lit
 import com.example.ui.components.SaveDraftDialog
+import com.example.ui.components.SpectrumVisualizer
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioPreviewControlsBar
@@ -700,6 +701,14 @@ fun EffectsChainScreen(
             subtitle = t(lang, "chain_order_hint"),
             language = lang,
             onBack = onBack,
+        )
+
+        SpectrumVisualizer(
+            spectrumBands = uiState.playback.spectrumBands,
+            isActive = uiState.playback.isPlaying,
+            language = lang,
+            peakLevel = uiState.playback.outputLevel,
+            accentColor = StudioColors.VioletBright,
         )
 
         Card(

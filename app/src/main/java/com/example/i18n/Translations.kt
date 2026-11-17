@@ -337,6 +337,17 @@ private val AR_STRINGS = mapOf(
     "assistant_cloud_badge" to "سحابي مجاني (Online AI)",
     "online_ai_offline_notice" to "أنت غير متصل بالإنترنت — يرجى الاتصال بالإنترنت لتشغيل مرشد الذكاء الاصطناعي (Pollinations AI). جميع أدوات تعديل الصوت والفيديو في الاستوديو تعمل 100% بدون إنترنت.",
     "online_sfx_offline_notice" to "أنت غير متصل بالإنترنت — يرجى الاتصال بالإنترنت للبحث ومعاينة الأصوات المجانية من Archive.org.",
+    "unity_export_title" to "تصدير لمحرك الألعاب Unity (WAV 48kHz + C# Script)",
+    "unity_export_subtitle" to "صوت أحادي 48kHz 16-bit PCM بدون بيانات زائدة + سكربت C# جاهز",
+    "unity_export_badge" to "Unity Engine",
+    "unity_export_info_title" to "دليل إضافة الصوت لمحرك Unity",
+    "unity_export_info_body" to "1. اضغط (موافقة وبدء المعالجة) لحفظ حزمة Unity أو شاركها مباشرة.\n2. ضع ملف الصوت (.wav) وملف السكربت (.cs) معاً داخل مجلد Assets في مشروع Unity.\n3. أضف السكربت لأي GameObject وأفلت ملف الصوت في خانة sonixClip للتشغيل الفوري بدون تأخير.\n4. للمؤثرات الحية داخل لعبتك، استدعِ VoiceProcessor.startForUnity() و setEffectByName(\"DEEP\").",
+    "unity_share_bundle_btn" to "مشاركة (.wav + .cs)",
+    "spectrum_visualizer_title" to "محلل الطيف الترددي المباشر (60 FPS)",
+    "spectrum_visualizer_subtitle" to "مراقبة الترددات لحظياً من الباس العميق حتى الحدة",
+    "spectrum_visualizer_badge" to "60 FPS • FFT",
+    "spectrum_status_live" to "مباشر",
+    "spectrum_status_idle" to "خامل",
 )
 
 private val EN_STRINGS = mapOf(
@@ -674,6 +685,17 @@ private val EN_STRINGS = mapOf(
     "assistant_cloud_badge" to "Free Cloud AI",
     "online_ai_offline_notice" to "You are offline — please connect to the internet to use the online Pollinations AI Guide. All core studio audio/video tools work 100% offline.",
     "online_sfx_offline_notice" to "You are offline — please connect to the internet to search and preview sounds from Archive.org.",
+    "unity_export_title" to "Export for Unity Engine (WAV 48kHz + C# Script)",
+    "unity_export_subtitle" to "Mono 48kHz 16-bit PCM stripped of metadata + ready-to-drop C# script",
+    "unity_export_badge" to "Unity Engine",
+    "unity_export_info_title" to "Unity Assets Import Guide",
+    "unity_export_info_body" to "1. Tap (Approve & Start Processing) to save the Unity package or share both files directly.\n2. Drop the generated .wav audio clip and .cs script into your Unity project's Assets/ folder.\n3. Attach the script to any GameObject and assign the clip to sonixClip for zero-latency playback.\n4. For live mic FX in Unity C#, call VoiceProcessor.startForUnity() and setEffectByName(\"DEEP\").",
+    "unity_share_bundle_btn" to "Share (.wav + .cs)",
+    "spectrum_visualizer_title" to "Live Spectrum Visualizer (60 FPS)",
+    "spectrum_visualizer_subtitle" to "Real-time logarithmic frequency response from sub-bass to air",
+    "spectrum_visualizer_badge" to "60 FPS • FFT",
+    "spectrum_status_live" to "LIVE",
+    "spectrum_status_idle" to "IDLE",
 )
 
 private val FA_STRINGS = mapOf(
@@ -1011,6 +1033,17 @@ private val FA_STRINGS = mapOf(
     "assistant_cloud_badge" to "ابری رایگان (Online AI)",
     "online_ai_offline_notice" to "دستگاه آفلاین است — برای استفاده از راهنمای هوش مصنوعی (Pollinations AI) به اینترنت متصل شوید. ابزارهای استودیو ۱۰۰٪ بدون اینترنت کار می‌کنند.",
     "online_sfx_offline_notice" to "دستگاه آفلاین است — برای جستجو و پیش‌نمایش صداها از Archive.org به اینترنت متصل شوید.",
+    "unity_export_title" to "خروجی برای موتور بازی Unity (WAV 48kHz + C# Script)",
+    "unity_export_subtitle" to "صدای مونو 48kHz 16-bit PCM بدون متادیتا + اسکریپت آماده C#",
+    "unity_export_badge" to "Unity Engine",
+    "unity_export_info_title" to "راهنمای استفاده در موتور Unity",
+    "unity_export_info_body" to "۱. دکمه (تایید و شروع پردازش) را برای ذخیره بسته Unity بزنید یا فایل‌ها را مستقیماً به اشتراک بگذارید.\n۲. هر دو فایل .wav و .cs را در پوشه Assets پروژه Unity خود رها کنید.\n۳. اسکریپت را به یک GameObject متصل کرده و صدا را در فیلد sonixClip قرار دهید.\n۴. برای افکت زنده میکروفون در Unity، از VoiceProcessor.startForUnity() و setEffectByName(\"DEEP\") استفاده کنید.",
+    "unity_share_bundle_btn" to "اشتراک‌گذاری (.wav + .cs)",
+    "spectrum_visualizer_title" to "تحلیلگر طیف فرکانسی زنده (60 FPS)",
+    "spectrum_visualizer_subtitle" to "نمایش لحظه‌ای فرکانس‌ها از بیس عمیق تا شفافیت بالا",
+    "spectrum_visualizer_badge" to "60 FPS • FFT",
+    "spectrum_status_live" to "زنده",
+    "spectrum_status_idle" to "آماده",
 )
 
 fun t(lang: AppLanguage, key: String): String {

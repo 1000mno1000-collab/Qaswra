@@ -21,10 +21,16 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.floor
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 class StudioAudioPlayer(
     initialConfig: DspConfig,
@@ -45,7 +51,9 @@ class StudioAudioPlayer(
     private var audioTrack: AudioTrack? = null
 
     private var latestBars = List(48) { 0.06f }
+    private var latestSpectrum = List(32) { 0.03f }
     private var latestLevel = 0f
+    private val spectrumAnalyzer = RealTimeSpectrumAnalyzer()
 
     fun setBuffer(buffer: StereoAudioBuffer?, resetPosition: Boolean = true) {
         this.buffer = buffer
@@ -205,6 +213,7 @@ class StudioAudioPlayer(
                     if (written < 0) break
 
                     latestBars = newBars
+                    latestSpectrum = spectrumAnalyzer.analyzeStereo(tmpL, tmpR, blockFrames, sr)
                     latestLevel = peak
 
                     if (reachedEnd && !loopEnabled) {
@@ -219,6 +228,7 @@ class StudioAudioPlayer(
                             playhead = 0.0
                             latestLevel = 0f
                             latestBars = List(48) { 0.06f }
+                            latestSpectrum = List(32) { 0.03f }
                             break
                         }
                     }
@@ -246,6 +256,7 @@ class StudioAudioPlayer(
         playhead = 0.0
         latestLevel = 0f
         latestBars = List(48) { 0.06f }
+        latestSpectrum = List(32) { 0.03f }
         pipeline?.reset()
         stopAudioThreadOnly()
         emitTelemetry()
@@ -282,6 +293,7 @@ class StudioAudioPlayer(
                 gainReductionDb = pipeline?.currentGainReductionDb ?: 0f,
                 noiseSuppressionDb = pipeline?.currentNoiseSuppressionDb ?: 0f,
                 waveformBars = latestBars,
+                spectrumBands = latestSpectrum,
             ),
         )
     }
@@ -302,7 +314,9 @@ class StudioAudioRecorder(
     @Volatile private var isRecording = false
     @Volatile private var isPaused = false
     private var bars = List(48) { 0.05f }
+    private var spectrum = List(32) { 0.03f }
     private var level = 0f
+    private val spectrumAnalyzer = RealTimeSpectrumAnalyzer()
 
     fun hasMicPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -372,6 +386,7 @@ class StudioAudioRecorder(
                         nextBars.add(clamp(bars[b] * 0.4f + bp * 0.6f, 0.04f, 1f))
                     }
                     bars = nextBars
+                    spectrum = spectrumAnalyzer.analyzeMono(copy, read, sampleRate)
                     level = peak
                     emit()
                 }
@@ -407,6 +422,7 @@ class StudioAudioRecorder(
         isPaused = false
         level = 0f
         bars = List(48) { 0.05f }
+        spectrum = List(32) { 0.03f }
         emit()
 
         if (framesSnapshot <= 0) return null
@@ -431,6 +447,7 @@ class StudioAudioRecorder(
         isPaused = false
         level = 0f
         bars = List(48) { 0.05f }
+        spectrum = List(32) { 0.03f }
         emit()
     }
 
@@ -455,8 +472,119 @@ class StudioAudioRecorder(
                 elapsedMs = elapsedMs,
                 micLevel = level,
                 waveformBars = bars,
+                spectrumBands = spectrum,
             ),
         )
     }
 }
+
+/**
+ * Lightweight zero-allocation radix-2 FFT analyzer producing 32 logarithmic
+ * studio frequency bands (55 Hz – 14 kHz) from live PCM frames.
+ */
+private class RealTimeSpectrumAnalyzer(
+    private val bandCount: Int = 32,
+    private val fftSize: Int = 512,
+) {
+    private val re = FloatArray(fftSize)
+    private val im = FloatArray(fftSize)
+    private val mags = FloatArray(fftSize / 2)
+    private val hannWindow = FloatArray(fftSize) { i ->
+        (0.5 - 0.5 * cos(2.0 * PI * i / (fftSize - 1))).toFloat()
+    }
+    private val bandEdgesHz = DoubleArray(bandCount + 1) { i ->
+        55.0 * (14000.0 / 55.0).pow(i.toDouble() / bandCount.toDouble())
+    }
+    private val smoothed = FloatArray(bandCount) { 0.03f }
+
+    fun analyzeStereo(left: FloatArray, right: FloatArray, count: Int, sampleRate: Int): List<Float> {
+        val n = min(count, fftSize)
+        for (i in 0 until fftSize) {
+            val sample = if (i < n) (left[i] + right[i]) * 0.5f else 0f
+            re[i] = sample * hannWindow[i]
+            im[i] = 0f
+        }
+        return computeBands(sampleRate)
+    }
+
+    fun analyzeMono(mono: FloatArray, count: Int, sampleRate: Int): List<Float> {
+        val n = min(count, fftSize)
+        for (i in 0 until fftSize) {
+            val sample = if (i < n) mono[i] else 0f
+            re[i] = sample * hannWindow[i]
+            im[i] = 0f
+        }
+        return computeBands(sampleRate)
+    }
+
+    private fun computeBands(sampleRate: Int): List<Float> {
+        // Bit-reversal permutation
+        var j = 0
+        for (i in 1 until fftSize) {
+            var bit = fftSize shr 1
+            while ((j and bit) != 0) {
+                j = j xor bit
+                bit = bit shr 1
+            }
+            j = j xor bit
+            if (i < j) {
+                val tr = re[i]
+                re[i] = re[j]
+                re[j] = tr
+                val ti = im[i]
+                im[i] = im[j]
+                im[j] = ti
+            }
+        }
+
+        // Iterative Cooley-Tukey FFT
+        var len = 2
+        while (len <= fftSize) {
+            val half = len shr 1
+            val angleStep = -2.0 * PI / len
+            for (start in 0 until fftSize step len) {
+                for (k in 0 until half) {
+                    val angle = angleStep * k
+                    val wr = cos(angle).toFloat()
+                    val wi = sin(angle).toFloat()
+                    val evenIdx = start + k
+                    val oddIdx = evenIdx + half
+                    val tr = wr * re[oddIdx] - wi * im[oddIdx]
+                    val ti = wr * im[oddIdx] + wi * re[oddIdx]
+                    re[oddIdx] = re[evenIdx] - tr
+                    im[oddIdx] = im[evenIdx] - ti
+                    re[evenIdx] += tr
+                    im[evenIdx] += ti
+                }
+            }
+            len = len shl 1
+        }
+
+        val normFactor = 2.0f / fftSize
+        val halfBins = fftSize / 2
+        for (k in 0 until halfBins) {
+            val mag = sqrt(re[k] * re[k] + im[k] * im[k]) * normFactor
+            mags[k] = mag
+        }
+
+        val sr = sampleRate.coerceAtLeast(8000).toDouble()
+        val hzPerBin = sr / fftSize.toDouble()
+        val out = ArrayList<Float>(bandCount)
+
+        for (b in 0 until bandCount) {
+            val loBin = max(1, (bandEdgesHz[b] / hzPerBin).toInt())
+            val hiBin = max(loBin + 1, min(halfBins - 1, (bandEdgesHz[b + 1] / hzPerBin).toInt()))
+            var peakMag = 0f
+            for (bin in loBin..hiBin) {
+                if (mags[bin] > peakMag) peakMag = mags[bin]
+            }
+            val db = 20.0 * ln(peakMag.toDouble().coerceAtLeast(1e-5)) / ln(10.0)
+            val norm = ((db + 58.0) / 52.0).toFloat().coerceIn(0.03f, 1.0f)
+            smoothed[b] = clamp(smoothed[b] * 0.35f + norm * 0.65f, 0.03f, 1.0f)
+            out.add(smoothed[b])
+        }
+        return out
+    }
+}
+
 

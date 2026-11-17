@@ -347,6 +347,15 @@ private fun SonixRootApp(
                         context.startActivity(Intent.createChooser(shareIntent, effect.title))
                     }
                 }
+                is StudioSideEffect.LaunchMultiShareIntent -> {
+                    val shareIntent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                        type = effect.mimeType
+                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(effect.uris))
+                        putExtra(Intent.EXTRA_SUBJECT, effect.title)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, effect.title))
+                }
             }
         }
     }

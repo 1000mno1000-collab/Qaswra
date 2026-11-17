@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.MovieCreation
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -224,10 +226,14 @@ fun ExportFormatDialog(
     onSaveToDevice: (ExportAudioFormat, String) -> Unit,
     onShareAudio: (ExportAudioFormat, String) -> Unit,
     onShareToPackage: ((ExportAudioFormat, String, String?) -> Unit)? = null,
+    onSaveForUnity: ((String) -> Unit)? = null,
+    onShareForUnity: ((String) -> Unit)? = null,
 ) {
     if (!open) return
 
     var selectedFormat by remember { mutableStateOf(ExportAudioFormat.MP3) }
+    var isUnitySelected by remember(open) { mutableStateOf(false) }
+    var unityInfoOpen by remember(open) { mutableStateOf(false) }
     var fileName by remember(initialFileName, open) { mutableStateOf(initialFileName) }
 
     LaunchedEffect(initialFileName, open) {
@@ -311,7 +317,7 @@ fun ExportFormatDialog(
                 )
 
                 orderedFormats.forEach { fmt ->
-                    val selected = fmt == selectedFormat
+                    val selected = !isUnitySelected && fmt == selectedFormat
                     val badgeText = when (fmt) {
                         ExportAudioFormat.MP3 -> t(language, "format_mp3_badge")
                         ExportAudioFormat.WAV -> t(language, "format_wav_badge")
@@ -326,7 +332,10 @@ fun ExportFormatDialog(
                     }
                     val fmtInteraction = remember { MutableInteractionSource() }
                     Card(
-                        onClick = { selectedFormat = fmt },
+                        onClick = {
+                            selectedFormat = fmt
+                            isUnitySelected = false
+                        },
                         interactionSource = fmtInteraction,
                         shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(
@@ -397,58 +406,133 @@ fun ExportFormatDialog(
                     }
                 }
 
-                // 1-Tap Quick Share Directly To Creator Apps
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = t(language, "share_direct_apps"),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = StudioColors.TextPrimary,
-                    )
-                    Row(
+                if (onSaveForUnity != null || onShareForUnity != null) {
+                    val unityInteraction = remember { MutableInteractionSource() }
+                    Card(
+                        onClick = { isUnitySelected = true },
+                        interactionSource = unityInteraction,
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isUnitySelected) StudioColors.ElevatedSurface else StudioColors.BgMid,
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            if (isUnitySelected) StudioColors.Amber else StudioColors.Amber.copy(alpha = 0.45f),
+                        ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            .defaultMinSize(minHeight = 56.dp)
+                            .lit(unityInteraction, StudioColors.Amber, selected = isUnitySelected, cornerRadius = 14.dp)
+                            .testTag("export_format_unity"),
                     ) {
-                        shareTargets.forEach { target ->
-                            val cleanOutName = fileName.ifBlank { initialFileName }
-                            val targetInteraction = remember { MutableInteractionSource() }
-                            Surface(
-                                onClick = {
-                                    onDismiss()
-                                    if (onShareToPackage != null) {
-                                        onShareToPackage(selectedFormat, cleanOutName, target.packageName)
-                                    } else {
-                                        onShareAudio(selectedFormat, cleanOutName)
-                                    }
-                                },
-                                interactionSource = targetInteraction,
-                                shape = RoundedCornerShape(14.dp),
-                                color = target.accent.copy(alpha = 0.14f),
-                                border = BorderStroke(1.dp, target.accent.copy(alpha = 0.45f)),
-                                modifier = Modifier
-                                    .defaultMinSize(minHeight = 48.dp)
-                                    .lit(targetInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                                    .testTag("quick_share_${target.id}"),
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SportsEsports,
+                                contentDescription = null,
+                                tint = StudioColors.Amber,
+                                modifier = Modifier.size(22.dp),
+                            )
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
-                                    Icon(
-                                        imageVector = target.icon,
-                                        contentDescription = t(language, target.labelKey),
-                                        tint = target.accent,
-                                        modifier = Modifier.size(16.dp),
-                                    )
                                     Text(
-                                        text = t(language, target.labelKey),
-                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                        color = StudioColors.TextPrimary,
-                                        maxLines = 1,
+                                        text = t(language, "unity_export_title"),
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = if (isUnitySelected) StudioColors.Amber else StudioColors.TextPrimary,
+                                        modifier = Modifier.weight(1f, fill = false),
                                     )
+                                }
+                                Text(
+                                    text = t(language, "unity_export_subtitle"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioColors.TextSecondary,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            InfoBadgeButton(
+                                contentDescription = t(language, "unity_export_info_title"),
+                                testTag = "unity_export_info_button",
+                                accentColor = StudioColors.Amber,
+                                onClick = { unityInfoOpen = true },
+                            )
+                            if (isUnitySelected) {
+                                Icon(
+                                    imageVector = Icons.Rounded.CheckCircle,
+                                    contentDescription = t(language, "unity_export_badge"),
+                                    tint = StudioColors.Amber,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 1-Tap Quick Share Directly To Creator Apps
+                if (!isUnitySelected) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = t(language, "share_direct_apps"),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = StudioColors.TextPrimary,
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            shareTargets.forEach { target ->
+                                val cleanOutName = fileName.ifBlank { initialFileName }
+                                val targetInteraction = remember { MutableInteractionSource() }
+                                Surface(
+                                    onClick = {
+                                        onDismiss()
+                                        if (onShareToPackage != null) {
+                                            onShareToPackage(selectedFormat, cleanOutName, target.packageName)
+                                        } else {
+                                            onShareAudio(selectedFormat, cleanOutName)
+                                        }
+                                    },
+                                    interactionSource = targetInteraction,
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = target.accent.copy(alpha = 0.14f),
+                                    border = BorderStroke(1.dp, target.accent.copy(alpha = 0.45f)),
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .lit(targetInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                                        .testTag("quick_share_${target.id}"),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = target.icon,
+                                            contentDescription = t(language, target.labelKey),
+                                            tint = target.accent,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Text(
+                                            text = t(language, target.labelKey),
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                            color = StudioColors.TextPrimary,
+                                            maxLines = 1,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -456,27 +540,43 @@ fun ExportFormatDialog(
                 }
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val cleanOutName = fileName.ifBlank { initialFileName }
                     val saveBtnInteraction = remember { MutableInteractionSource() }
                     Button(
                         onClick = {
                             onDismiss()
-                            onSaveToDevice(selectedFormat, fileName.ifBlank { initialFileName })
+                            if (isUnitySelected && onSaveForUnity != null) {
+                                onSaveForUnity(cleanOutName)
+                            } else {
+                                onSaveToDevice(selectedFormat, cleanOutName)
+                            }
                         },
                         interactionSource = saveBtnInteraction,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = StudioColors.Cyan,
+                            containerColor = if (isUnitySelected) StudioColors.Amber else StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
                         ),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 48.dp)
-                            .lit(saveBtnInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                            .testTag("export_confirm_save_button"),
+                            .lit(
+                                saveBtnInteraction,
+                                if (isUnitySelected) StudioColors.Amber else MaterialTheme.colorScheme.primary,
+                                cornerRadius = 14.dp,
+                            )
+                            .testTag(if (isUnitySelected) "unity_export_approve_save_button" else "export_confirm_save_button"),
                     ) {
-                        Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(
+                            imageVector = if (isUnitySelected) Icons.Rounded.Code else Icons.Rounded.Save,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
                         Spacer(Modifier.width(8.dp))
-                        Text(t(language, "save_export_audio"), style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            text = if (isUnitySelected) t(language, "approve_and_start_processing") else t(language, "save_export_audio"),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
                     }
 
                     Row(
@@ -487,21 +587,35 @@ fun ExportFormatDialog(
                         OutlinedButton(
                             onClick = {
                                 onDismiss()
-                                onShareAudio(selectedFormat, fileName.ifBlank { initialFileName })
+                                if (isUnitySelected && onShareForUnity != null) {
+                                    onShareForUnity(cleanOutName)
+                                } else {
+                                    onShareAudio(selectedFormat, cleanOutName)
+                                }
                             },
                             interactionSource = shareBtnInteraction,
-                            border = BorderStroke(1.dp, StudioColors.Emerald),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Emerald),
+                            border = BorderStroke(1.dp, if (isUnitySelected) StudioColors.Amber else StudioColors.Emerald),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = if (isUnitySelected) StudioColors.Amber else StudioColors.Emerald,
+                            ),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp)
-                                .lit(shareBtnInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                                .lit(
+                                    shareBtnInteraction,
+                                    if (isUnitySelected) StudioColors.Amber else MaterialTheme.colorScheme.primary,
+                                    cornerRadius = 14.dp,
+                                )
                                 .testTag("export_confirm_share_button"),
                         ) {
                             Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text(t(language, "share_audio"), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                text = if (isUnitySelected) t(language, "unity_share_bundle_btn") else t(language, "share_audio"),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
 
                         val cancelBtnInteraction = remember { MutableInteractionSource() }
@@ -520,6 +634,14 @@ fun ExportFormatDialog(
             }
         }
     }
+
+    ToolInfoDialog(
+        open = unityInfoOpen,
+        title = t(language, "unity_export_info_title"),
+        description = t(language, "unity_export_info_body"),
+        language = language,
+        onDismiss = { unityInfoOpen = false },
+    )
 }
 
 @Composable

@@ -12,6 +12,7 @@ import android.media.audiofx.NoiseSuppressor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.PI
@@ -34,7 +35,7 @@ enum class VoiceEffect {
  * Live zero-latency microphone Voice Processor using Android AudioRecord + AudioTrack
  * with PitchShifter (glitch-free triangular OLA), Noise Gate, Ring-Modulation & Echo.
  */
-class VoiceProcessor(private val sampleRate: Int = 44100) {
+class VoiceProcessor @JvmOverloads constructor(private val sampleRate: Int = 44100) {
 
     @Volatile var effect: VoiceEffect = VoiceEffect.NONE
     @Volatile var noiseGateEnabled: Boolean = true
@@ -44,6 +45,7 @@ class VoiceProcessor(private val sampleRate: Int = 44100) {
     var onFrame: ((ShortArray) -> Unit)? = null
 
     private var job: Job? = null
+    private var unityScope: CoroutineScope? = null
 
     private val deep = PitchShifter(0.74f, size = 2048)
     private val dragonLow = PitchShifter(0.62f, size = 2048)
@@ -137,9 +139,31 @@ class VoiceProcessor(private val sampleRate: Int = 44100) {
         }
     }
 
+    /**
+     * Unity C# AndroidJavaObject helper: launches live zero-latency voice processing
+     * using an internal IO CoroutineScope without requiring coroutines on the C# side.
+     */
+    fun startForUnity() {
+        unityScope?.coroutineContext?.get(Job)?.cancel()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        unityScope = scope
+        start(scope)
+    }
+
+    /**
+     * Unity C# AndroidJavaObject helper: selects a real-time [VoiceEffect] by string name
+     * (e.g. "DEEP", "CHIPMUNK", "ROBOT", "ECHO", "CHILD_NATURAL", "ABYSSAL_DRAGON", "NONE").
+     */
+    fun setEffectByName(name: String) {
+        val clean = name.trim().uppercase()
+        effect = runCatching { VoiceEffect.valueOf(clean) }.getOrDefault(VoiceEffect.NONE)
+    }
+
     fun stop() {
         job?.cancel()
         job = null
+        unityScope?.coroutineContext?.get(Job)?.cancel()
+        unityScope = null
     }
 
     private fun process(buf: ShortArray, n: Int) {

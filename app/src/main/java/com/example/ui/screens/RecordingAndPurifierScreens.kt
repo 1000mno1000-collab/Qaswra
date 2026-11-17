@@ -87,6 +87,7 @@ import com.example.model.EffectType
 import com.example.model.VOICE_PURIFY_PRESETS
 import com.example.studio.ui.lit
 import com.example.ui.components.SaveDraftDialog
+import com.example.ui.components.SpectrumVisualizer
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioPreviewControlsBar
@@ -234,14 +235,29 @@ fun RecordingStudioScreen(
                     uiState.playback.waveformBars
                 }
 
+                val liveSpectrum = if (uiState.recorder.isRecording) {
+                    uiState.recorder.spectrumBands
+                } else {
+                    uiState.playback.spectrumBands
+                }
+                val liveActive = (uiState.recorder.isRecording && !uiState.recorder.isPaused) || uiState.playback.isPlaying
+
                 LiquidAudioWavePreview(
                     amplitude = liveAmplitude,
                     waveformBars = liveBars,
-                    isActive = (uiState.recorder.isRecording && !uiState.recorder.isPaused) || uiState.playback.isPlaying,
+                    isActive = liveActive,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(132.dp)
                         .testTag("recording_liquid_wave_preview"),
+                )
+
+                SpectrumVisualizer(
+                    spectrumBands = liveSpectrum,
+                    isActive = liveActive,
+                    language = lang,
+                    peakLevel = liveAmplitude,
+                    accentColor = if (uiState.recorder.isRecording) StudioColors.RoseBright else StudioColors.Cyan,
                 )
 
                 // Mic Input Meter
@@ -612,6 +628,14 @@ fun VoicePurifierScreen(
                 }
             }
         }
+
+        SpectrumVisualizer(
+            spectrumBands = uiState.playback.spectrumBands,
+            isActive = uiState.playback.isPlaying,
+            language = lang,
+            peakLevel = uiState.playback.outputLevel,
+            accentColor = StudioColors.Emerald,
+        )
 
         // 4 Voice Purify Presets
         Card(

@@ -832,6 +832,7 @@ data class PlaybackTelemetry(
     val gainReductionDb: Float = 0f,
     val noiseSuppressionDb: Float = 0f,
     val waveformBars: List<Float> = List(48) { 0.06f },
+    val spectrumBands: List<Float> = List(32) { 0.03f },
 )
 
 @Immutable
@@ -841,6 +842,7 @@ data class RecorderTelemetry(
     val elapsedMs: Long = 0L,
     val micLevel: Float = 0f,
     val waveformBars: List<Float> = List(48) { 0.05f },
+    val spectrumBands: List<Float> = List(32) { 0.03f },
 )
 
 enum class SleepTimerOption(val minutes: Int?, val labelKey: String) {

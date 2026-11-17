@@ -23,6 +23,7 @@ import com.example.audio.ai.ToolGuideResult
 import com.example.audio.fx.VoiceEffect
 import com.example.audio.fx.VoiceProcessor
 import com.example.audio.tts.SmartVoiceRouter
+import com.example.audio.unity.UnityExporter
 import com.example.audio.video.AudioToVideoCreator
 import com.example.audio.video.CinematicRenderParams
 import com.example.audio.video.CinematicVideoRenderer
@@ -126,6 +127,11 @@ sealed interface StudioSideEffect {
         val mimeType: String,
         val title: String,
         val targetPackage: String? = null,
+    ) : StudioSideEffect
+    data class LaunchMultiShareIntent(
+        val uris: List<Uri>,
+        val mimeType: String,
+        val title: String,
     ) : StudioSideEffect
 }
 
@@ -1638,6 +1644,81 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
             } catch (_: Throwable) {
                 postBanner("تعذر تصدير الملف الصوتي")
+            } finally {
+                _uiState.update { it.copy(isBusy = false, exportProgress = null) }
+            }
+        }
+    }
+
+    fun exportAudioForUnity(
+        assetName: String,
+        shareAfter: Boolean = false,
+        useSmartMixIfPresent: Boolean = false,
+    ) {
+        val src = activeBuffer ?: run {
+            postBanner("لا يوجد صوت لتصديره لمحرك Unity حالياً")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, exportProgress = 0.08f) }
+            try {
+                val cfg = _uiState.value.dspConfig
+                val bg = mixBgBuffer
+                val bgVol = _uiState.value.smartMixBgVolume
+                val rendered = withContext(Dispatchers.Default) {
+                    if (useSmartMixIfPresent && bg != null) {
+                        mixWithSidechainAutoDucking(
+                            voice = src,
+                            music = bg,
+                            musicBaseVolume = bgVol,
+                        )
+                    } else {
+                        renderOfflineDsp(src, cfg)
+                    }
+                }
+                _uiState.update { it.copy(exportProgress = 0.50f) }
+
+                val app = getApplication<Application>()
+                val unityDir = File(app.cacheDir, "exports/unity").apply { mkdirs() }
+                val bundle = UnityExporter.exportBufferForUnity(
+                    buffer = rendered,
+                    outputDir = unityDir,
+                    assetName = assetName.ifBlank { "SonixGameAudio" },
+                )
+                if (bundle == null) {
+                    postBanner("تعذر توليد حزمة الصوت لمحرك Unity")
+                    return@launch
+                }
+                _uiState.update { it.copy(exportProgress = 1.0f) }
+
+                val fileToSave = bundle.zipBundleFile ?: bundle.wavFile
+                val ext = if (bundle.zipBundleFile != null) "zip" else "wav"
+                val mime = if (bundle.zipBundleFile != null) "application/zip" else "audio/wav"
+                val res = ExportedAudioResult(fileToSave, ext, mime)
+                pendingExportResult = res
+
+                if (shareAfter) {
+                    val wavUri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", bundle.wavFile)
+                    val csUri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", bundle.csharpScriptFile)
+                    _sideEffects.tryEmit(
+                        StudioSideEffect.LaunchMultiShareIntent(
+                            uris = listOf(wavUri, csUri),
+                            mimeType = "*/*",
+                            title = "${bundle.wavFile.nameWithoutExtension} • Unity Assets",
+                        ),
+                    )
+                    postBanner("تم تجهيز ملف الصوت (${bundle.wavFile.name}) وسكربت (${bundle.csharpScriptFile.name}) لمحرك Unity")
+                } else {
+                    _sideEffects.tryEmit(
+                        StudioSideEffect.PromptSaveDocument(
+                            result = res,
+                            suggestedName = fileToSave.name,
+                        ),
+                    )
+                    postBanner("تم تجهيز حزمة Unity 48kHz (${bundle.wavFile.name} + ${bundle.csharpScriptFile.name})")
+                }
+            } catch (_: Throwable) {
+                postBanner("تعذر تصدير حزمة محرك الألعاب Unity")
             } finally {
                 _uiState.update { it.copy(isBusy = false, exportProgress = null) }
             }
