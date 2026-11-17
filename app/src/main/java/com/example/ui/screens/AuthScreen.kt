@@ -98,6 +98,7 @@ import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
 import com.google.firebase.FirebaseApp
@@ -308,14 +309,29 @@ fun AuthScreen(
             errorMsg = null
             scope.launch {
                 try {
-                    val googleIdOption = GetGoogleIdOption.Builder()
-                        .setFilterByAuthorizedAccounts(false)
-                        .setServerClientId(GOOGLE_WEB_CLIENT_ID)
-                        .build()
-                    val request = GetCredentialRequest.Builder()
-                        .addCredentialOption(googleIdOption)
-                        .build()
-                    val result = cm.getCredential(activity, request)
+                    val result = try {
+                        val googleIdOption = GetGoogleIdOption.Builder()
+                            .setFilterByAuthorizedAccounts(false)
+                            .setAutoSelectEnabled(false)
+                            .setServerClientId(GOOGLE_WEB_CLIENT_ID)
+                            .build()
+                        val request = GetCredentialRequest.Builder()
+                            .addCredentialOption(googleIdOption)
+                            .build()
+                        cm.getCredential(activity, request)
+                    } catch (noCred: NoCredentialException) {
+                        Log.w(
+                            "Auth",
+                            "GetGoogleIdOption found no cached credentials; retrying with GetSignInWithGoogleOption",
+                            noCred,
+                        )
+                        val signInWithGoogleOption =
+                            GetSignInWithGoogleOption.Builder(GOOGLE_WEB_CLIENT_ID).build()
+                        val fallbackRequest = GetCredentialRequest.Builder()
+                            .addCredentialOption(signInWithGoogleOption)
+                            .build()
+                        cm.getCredential(activity, fallbackRequest)
+                    }
                     val credential = result.credential
                     if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                         val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
