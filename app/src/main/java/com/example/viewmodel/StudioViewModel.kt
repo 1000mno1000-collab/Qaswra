@@ -377,9 +377,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     } else {
                         cur.activeProjectName
                     }
+                    val effectiveSession = if (
+                        snap.authSession is AuthSession.SignedOut &&
+                        cur.authSession is AuthSession.SignedIn &&
+                        runCatching { FirebaseAuth.getInstance().currentUser != null }.getOrDefault(false)
+                    ) {
+                        cur.authSession
+                    } else {
+                        snap.authSession
+                    }
                     cur.copy(
                         language = snap.language,
-                        authSession = snap.authSession,
+                        authSession = effectiveSession,
                         autoLoopOnPlayback = snap.autoLoop,
                         projects = snap.projects,
                         recordings = snap.recordings,
@@ -482,13 +491,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val cleanName = displayName.trim().ifEmpty {
             email.substringBefore('@').ifEmpty { "Google User" }
         }
-        repository.saveAuthSession(
-            AuthSession.SignedIn(
-                uid = uid,
-                displayName = cleanName,
-                email = email.trim(),
-            ),
+        val session = AuthSession.SignedIn(
+            uid = uid,
+            displayName = cleanName,
+            email = email.trim(),
         )
+        _uiState.update { it.copy(authSession = session) }
+        attachCloudListeners(uid)
+        repository.saveAuthSession(session)
+    }
+
+    fun onGoogleLoginSuccess(uid: String, displayName: String, email: String) {
+        val cleanName = displayName.trim().ifEmpty {
+            email.substringBefore('@').ifEmpty { "Google User" }
+        }
+        val session = AuthSession.SignedIn(
+            uid = uid,
+            displayName = cleanName,
+            email = email.trim(),
+        )
+        _uiState.update { it.copy(authSession = session) }
+        attachCloudListeners(uid)
+        viewModelScope.launch {
+            repository.saveAuthSession(session)
+        }
     }
 
     fun signOut() {

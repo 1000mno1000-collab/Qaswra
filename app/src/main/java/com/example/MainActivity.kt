@@ -378,7 +378,13 @@ private fun SonixRootApp(
                 .background(bgBrush),
         ) {
             if (uiState.authSession is AuthSession.SignedOut) {
-                AuthScreen(uiState = uiState, viewModel = viewModel)
+                AuthScreen(
+                    uiState = uiState,
+                    viewModel = viewModel,
+                    onLoginSuccess = {
+                        viewModel.clearBanner()
+                    },
+                )
             } else {
                 val uidKey = (uiState.authSession as? AuthSession.SignedIn)?.uid ?: "guest"
                 key(uidKey) {
