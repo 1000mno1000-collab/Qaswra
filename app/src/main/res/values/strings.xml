@@ -3,4 +3,5 @@
     <string name="studio_brand_title">Sonix ✦</string>
     <string name="studio_aura_cd">Sonix ✦ Studio Aura Banner</string>
     <string name="app_logo_cd">Sonix ✦ Logo</string>
+    <string name="default_web_client_id" translatable="false">default_client_id</string>
 </resources>
