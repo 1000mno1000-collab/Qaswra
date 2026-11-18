@@ -1,3 +1,6 @@
+import java.net.HttpURLConnection
+import java.net.URI
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -64,6 +67,66 @@ android {
     }
 }
 
+val sherpaLibsDir = file("libs")
+val sherpaAarFile = file("libs/sherpa-onnx-1.12.35.aar")
+if (!sherpaAarFile.exists() || sherpaAarFile.length() < 100_000L) {
+    sherpaLibsDir.mkdirs()
+    val tmpFile = file("libs/sherpa-onnx-1.12.35.aar.part")
+    val urls = listOf(
+        "https://huggingface.co/csukuangfj2/sherpa-onnx-libs/resolve/main/android/aar/1.12.35/sherpa-onnx-1.12.35.aar",
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.35/sherpa-onnx-1.12.35.aar"
+    )
+    var downloaded = false
+    for (startUrl in urls) {
+        try {
+            var currentUrl = startUrl
+            var conn: HttpURLConnection? = null
+            for (hop in 0 until 8) {
+                val u = URI(currentUrl).toURL()
+                conn = (u.openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = false
+                    connectTimeout = 15_000
+                    readTimeout = 60_000
+                    setRequestProperty("User-Agent", "SonixGradle/1.0")
+                }
+                val code = conn.responseCode
+                if (code in 300..308 && code != 304) {
+                    val loc = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (loc.isNullOrBlank()) throw IllegalStateException("Redirect missing Location")
+                    currentUrl = URI(currentUrl).resolve(loc).toString()
+                    continue
+                }
+                if (code !in 200..299) {
+                    conn.disconnect()
+                    throw IllegalStateException("HTTP $code")
+                }
+                break
+            }
+            conn!!.inputStream.use { input ->
+                tmpFile.outputStream().use { output ->
+                    input.copyTo(output, bufferSize = 32 * 1024)
+                }
+            }
+            conn.disconnect()
+            if (tmpFile.length() >= 100_000L) {
+                if (sherpaAarFile.exists()) sherpaAarFile.delete()
+                tmpFile.renameTo(sherpaAarFile)
+                downloaded = true
+                break
+            } else {
+                tmpFile.delete()
+            }
+        } catch (e: Exception) {
+            tmpFile.delete()
+            logger.warn("Could not fetch sherpa-onnx AAR from $startUrl: ${e.message}")
+        }
+    }
+    if (!downloaded) {
+        logger.warn("Continuing without bundled sherpa-onnx AAR; runtime fallback will be used.")
+    }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -90,6 +153,10 @@ dependencies {
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services)
     implementation(libs.googleid)
+
+    // Sherpa-ONNX (Kokoro / Nabra-82M) AAR + Maintained FFmpegKit (16KB page size + Android 15/16)
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:8.1.9")
 
     debugImplementation(libs.androidx.ui.tooling)
 }
