@@ -66,7 +66,12 @@ object EdgeTtsClient {
         val ticks100Ns = ticksSeconds * 10_000_000L
         val payload = "${ticks100Ns}$token"
         val digest = MessageDigest.getInstance("SHA-256").digest(payload.toByteArray(Charsets.US_ASCII))
-        return digest.joinToString("") { "%02X".format(it) }
+        return digest.joinToString("") { "%02X".format(Locale.US, it) }
+    }
+
+    private fun generateRandomMuid(): String {
+        val bytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        return bytes.joinToString("") { "%02X".format(Locale.US, it) }
     }
 
     private fun jsUtcString(): String {
@@ -83,12 +88,15 @@ object EdgeTtsClient {
         .replace("'", "&apos;")
 
     private fun formatNaturalSsmlText(rawText: String): String {
-        val escaped = escapeXml(rawText)
+        val noControl = buildString(rawText.length) {
+            for (ch in rawText) {
+                if (ch >= ' ' || ch == '\n' || ch == '\r' || ch == '\t') {
+                    append(ch)
+                }
+            }
+        }
+        return escapeXml(noControl)
             .replace(Regex("\\s+"), " ")
-            .trim()
-        return escaped
-            .replace(Regex("([،,;؛])\\s*"), "$1 <break time='105ms'/> ")
-            .replace(Regex("([.!؟?])\\s+"), "$1 <break time='185ms'/> ")
             .trim()
     }
 
@@ -129,9 +137,10 @@ object EdgeTtsClient {
         val totalPitchHz = (pitchFromSliderHz + pitchOffsetHz).coerceIn(-60, 60)
         val pitchStr = if (totalPitchHz >= 0) "+${totalPitchHz}Hz" else "${totalPitchHz}Hz"
 
+        val voiceLocale = voiceName.split("-").take(2).joinToString("-").ifBlank { localeTag }
         val cleanText = formatNaturalSsmlText(cleanInput)
         val ssml =
-            "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='$localeTag'>" +
+            "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='$voiceLocale'>" +
                 "<voice name='$voiceName'>" +
                 "<prosody pitch='$pitchStr' rate='$rateStr' volume='+0%'>$cleanText</prosody>" +
                 "</voice></speak>"
@@ -218,6 +227,8 @@ object EdgeTtsClient {
                 append("Sec-WebSocket-Version: 13\r\n")
                 append("Origin: $ORIGIN_HEADER\r\n")
                 append("User-Agent: $userAgent\r\n")
+                append("Accept-Language: en-US,en;q=0.9\r\n")
+                append("Cookie: muid=${generateRandomMuid()};\r\n")
                 append("Pragma: no-cache\r\n")
                 append("Cache-Control: no-cache\r\n")
                 append("\r\n")
@@ -236,7 +247,7 @@ object EdgeTtsClient {
                 "X-Timestamp:$timestamp\r\n" +
                     "Content-Type:application/json; charset=utf-8\r\n" +
                     "Path:speech.config\r\n\r\n" +
-                    """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-96kbitrate-mono-mp3"}}}}"""
+                    """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
             sendTextFrame(output, configMsg)
 
             val ssmlMsg =
@@ -248,8 +259,9 @@ object EdgeTtsClient {
             sendTextFrame(output, ssmlMsg)
 
             var done = false
+            var closeReason: String? = null
             while (!done) {
-                val frame = readWebSocketFrame(input) ?: break
+                val frame = readWebSocketFrame(input, output) ?: break
                 when (frame.opcode) {
                     0x1 -> {
                         val msgText = frame.payload.toString(Charsets.UTF_8)
@@ -270,14 +282,26 @@ object EdgeTtsClient {
                             }
                         }
                     }
-                    0x8 -> done = true
-                    0x9 -> sendControlFrame(output, 0xA, frame.payload)
+                    0x8 -> {
+                        closeReason = if (frame.payload.size >= 2) {
+                            val code = ((frame.payload[0].toInt() and 0xFF) shl 8) or (frame.payload[1].toInt() and 0xFF)
+                            val reasonText = if (frame.payload.size > 2) {
+                                frame.payload.copyOfRange(2, frame.payload.size).toString(Charsets.UTF_8).trim()
+                            } else {
+                                ""
+                            }
+                            if (reasonText.isNotEmpty()) "WS close $code ($reasonText)" else "WS close $code"
+                        } else {
+                            "WS close"
+                        }
+                        done = true
+                    }
                 }
             }
 
             val mp3Bytes = mp3Out.toByteArray()
             if (mp3Bytes.size < 512) {
-                EdgeTtsRawOutcome(null, "EdgeWS returned empty audio (${mp3Bytes.size}B)")
+                EdgeTtsRawOutcome(null, closeReason ?: "EdgeWS returned empty audio (${mp3Bytes.size}B)")
             } else {
                 EdgeTtsRawOutcome(mp3Bytes, null)
             }
@@ -388,7 +412,7 @@ object EdgeTtsClient {
         return buf
     }
 
-    private fun readWebSocketFrame(input: InputStream): WsFrame? {
+    private fun readWebSocketFrame(input: InputStream, output: OutputStream): WsFrame? {
         val msgStream = ByteArrayOutputStream()
         var firstOpcode = -1
         while (true) {
@@ -399,9 +423,6 @@ object EdgeTtsClient {
 
             val fin = (b0 and 0x80) != 0
             val opcode = b0 and 0x0F
-            if (opcode != 0x0 && firstOpcode == -1) {
-                firstOpcode = opcode
-            }
             val masked = (b1 and 0x80) != 0
             var length = (b1 and 0x7F).toLong()
             if (length == 126L) {
@@ -422,8 +443,16 @@ object EdgeTtsClient {
                     payload[i] = (payload[i].toInt() xor maskKey[i % 4].toInt()).toByte()
                 }
             }
-            if (opcode == 0x8 || opcode == 0x9 || opcode == 0xA) {
-                return WsFrame(opcode, payload)
+            when (opcode) {
+                0x8 -> return WsFrame(0x8, payload)
+                0x9 -> {
+                    sendControlFrame(output, 0xA, payload)
+                    continue
+                }
+                0xA -> continue
+            }
+            if (opcode != 0x0 && firstOpcode == -1) {
+                firstOpcode = opcode
             }
             msgStream.write(payload)
             if (fin) {

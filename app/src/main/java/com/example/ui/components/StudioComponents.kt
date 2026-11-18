@@ -64,10 +64,16 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -92,6 +98,7 @@ import com.example.model.AppLanguage
 import com.example.studio.ui.lit
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
+import com.example.model.PlaybackTelemetry
 import com.example.viewmodel.StudioUiState
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -324,11 +331,34 @@ fun StudioParamSlider(
     accentColor: Color = StudioColors.Cyan,
     steps: Int = 0,
     testTag: String,
+    debounceMs: Long = 60L,
     onValueChange: (Float) -> Unit,
 ) {
     var inputDialogOpen by remember { mutableStateOf(false) }
     var textValue by remember { mutableStateOf("") }
     val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+
+    val clampedExternal = value.coerceIn(min, max)
+    var localValue by remember(min, max) { mutableFloatStateOf(clampedExternal) }
+    var isDragging by remember { mutableStateOf(false) }
+    var pendingEmit by remember { mutableStateOf<Float?>(null) }
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+
+    LaunchedEffect(clampedExternal) {
+        if (!isDragging) {
+            localValue = clampedExternal
+            pendingEmit = null
+        }
+    }
+
+    LaunchedEffect(pendingEmit) {
+        val target = pendingEmit ?: return@LaunchedEffect
+        if (debounceMs > 0L) {
+            delay(debounceMs)
+        }
+        latestOnValueChange(target)
+        pendingEmit = null
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -356,7 +386,7 @@ fun StudioParamSlider(
                     .defaultMinSize(minHeight = 36.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .clickable {
-                        textValue = String.format(Locale.US, "%.2f", value.coerceIn(min, max))
+                        textValue = String.format(Locale.US, "%.2f", localValue.coerceIn(min, max))
                         inputDialogOpen = true
                     }
                     .testTag("${testTag}_counter"),
@@ -382,8 +412,19 @@ fun StudioParamSlider(
         }
 
         Slider(
-            value = value.coerceIn(min, max),
-            onValueChange = onValueChange,
+            value = localValue.coerceIn(min, max),
+            onValueChange = { next ->
+                isDragging = true
+                val clamped = next.coerceIn(min, max)
+                localValue = clamped
+                pendingEmit = clamped
+            },
+            onValueChangeFinished = {
+                isDragging = false
+                val finalVal = localValue.coerceIn(min, max)
+                pendingEmit = null
+                latestOnValueChange(finalVal)
+            },
             valueRange = min..max,
             steps = steps,
             colors = SliderDefaults.colors(
@@ -447,7 +488,11 @@ fun StudioParamSlider(
                             .replace(',', '.')
                             .toFloatOrNull()
                         if (parsed != null) {
-                            onValueChange(parsed.coerceIn(min, max))
+                            val clamped = parsed.coerceIn(min, max)
+                            isDragging = false
+                            localValue = clamped
+                            pendingEmit = null
+                            latestOnValueChange(clamped)
                         }
                         inputDialogOpen = false
                     },
@@ -790,21 +835,11 @@ fun PersistentTransportBar(
     onUndo: (() -> Unit)? = null,
     onRedo: (() -> Unit)? = null,
     includeNavBarsPadding: Boolean = true,
+    playbackFlow: StateFlow<PlaybackTelemetry>? = null,
     modifier: Modifier = Modifier,
 ) {
     val lang = uiState.language
-    val durationMs = if (uiState.playback.durationMs > 0L) uiState.playback.durationMs else uiState.durationMs
-    val progress = if (durationMs > 0L) {
-        (uiState.playback.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
-    }
     val effectiveBypass = uiState.dspConfig.bypassAll || uiState.isHoldBypassing
-    val meterColor = when {
-        uiState.playback.outputLevel > 0.85f -> StudioColors.Rose
-        uiState.playback.outputLevel > 0.6f -> StudioColors.Amber
-        else -> StudioColors.Emerald
-    }
 
     val barModifier = modifier
         .fillMaxWidth()
@@ -828,74 +863,25 @@ fun PersistentTransportBar(
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        text = formatDurationMs(uiState.playback.positionMs),
-                        style = TelemetryTextStyle,
-                        color = StudioColors.Cyan,
-                    )
-
-                    Slider(
-                        value = progress,
-                        onValueChange = onSeekFraction,
-                        enabled = uiState.hasAudio,
-                        colors = SliderDefaults.colors(
-                            thumbColor = StudioColors.Cyan,
-                            activeTrackColor = StudioColors.Cyan,
-                            inactiveTrackColor = StudioColors.ElevatedSurface,
-                            disabledThumbColor = StudioColors.TextMuted,
-                            disabledActiveTrackColor = StudioColors.WaveformInactive,
-                            disabledInactiveTrackColor = StudioColors.BgTop,
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(28.dp)
-                            .testTag("transport_seek_slider"),
-                    )
-
-                    Text(
-                        text = formatDurationMs(durationMs),
-                        style = TelemetryTextStyle,
-                        color = StudioColors.TextSecondary,
-                    )
-                }
+                TransportSeekRow(
+                    playbackFlow = playbackFlow,
+                    fallbackPlayback = uiState.playback,
+                    fallbackDurationMs = uiState.durationMs,
+                    hasAudio = uiState.hasAudio,
+                    onSeekFraction = onSeekFraction,
+                )
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    val playInteraction = remember { MutableInteractionSource() }
-                    Button(
-                        onClick = onPlayPause,
-                        interactionSource = playInteraction,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (uiState.playback.isPlaying) StudioColors.Amber else StudioColors.Cyan,
-                            contentColor = StudioColors.BgTop,
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                        modifier = Modifier
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(playInteraction, MaterialTheme.colorScheme.primary, selected = uiState.playback.isPlaying, cornerRadius = 14.dp)
-                            .testTag("transport_play_pause_button"),
-                    ) {
-                        Icon(
-                            imageVector = if (uiState.playback.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = if (uiState.playback.isPlaying) t(lang, "pause") else t(lang, "play"),
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = if (uiState.playback.isPlaying) t(lang, "pause") else t(lang, "play"),
-                            style = MaterialTheme.typography.labelLarge,
-                            maxLines = 1,
-                        )
-                    }
+                    TransportPlayPauseButton(
+                        playbackFlow = playbackFlow,
+                        fallbackIsPlaying = uiState.playback.isPlaying,
+                        lang = lang,
+                        onPlayPause = onPlayPause,
+                    )
 
                     val loopInteraction = remember { MutableInteractionSource() }
                     IconButton(
@@ -1003,33 +989,11 @@ fun PersistentTransportBar(
                         }
                     }
 
-                    // Output level meter pill
-                    Column(
+                    TransportOutputMeter(
+                        playbackFlow = playbackFlow,
+                        fallbackLevel = uiState.playback.outputLevel,
                         modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                                .clip(CircleShape)
-                                .background(StudioColors.BgTop),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth(uiState.playback.outputLevel.coerceIn(0.02f, 1f))
-                                    .height(6.dp)
-                                    .clip(CircleShape)
-                                    .background(meterColor),
-                            )
-                        }
-                        Text(
-                            text = "${(uiState.playback.outputLevel * 100f).roundToInt()}%",
-                            style = TelemetryTextStyle.copy(fontSize = 10.sp),
-                            color = StudioColors.TextMuted,
-                            maxLines = 1,
-                        )
-                    }
+                    )
 
                     // A/B Compare / Bypass chip supporting tap-to-toggle AND press-and-hold
                     val bypassInteraction = remember { MutableInteractionSource() }
@@ -1088,6 +1052,139 @@ fun PersistentTransportBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TransportSeekRow(
+    playbackFlow: StateFlow<PlaybackTelemetry>?,
+    fallbackPlayback: PlaybackTelemetry,
+    fallbackDurationMs: Long,
+    hasAudio: Boolean,
+    onSeekFraction: (Float) -> Unit,
+) {
+    val collected = playbackFlow?.collectAsStateWithLifecycle()
+    val telemetry = collected?.value ?: fallbackPlayback
+    val durationMs = if (telemetry.durationMs > 0L) telemetry.durationMs else fallbackDurationMs
+    val progress = if (durationMs > 0L) {
+        (telemetry.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = formatDurationMs(telemetry.positionMs),
+            style = TelemetryTextStyle,
+            color = StudioColors.Cyan,
+        )
+
+        Slider(
+            value = progress,
+            onValueChange = onSeekFraction,
+            enabled = hasAudio,
+            colors = SliderDefaults.colors(
+                thumbColor = StudioColors.Cyan,
+                activeTrackColor = StudioColors.Cyan,
+                inactiveTrackColor = StudioColors.ElevatedSurface,
+                disabledThumbColor = StudioColors.TextMuted,
+                disabledActiveTrackColor = StudioColors.WaveformInactive,
+                disabledInactiveTrackColor = StudioColors.BgTop,
+            ),
+            modifier = Modifier
+                .weight(1f)
+                .height(28.dp)
+                .testTag("transport_seek_slider"),
+        )
+
+        Text(
+            text = formatDurationMs(durationMs),
+            style = TelemetryTextStyle,
+            color = StudioColors.TextSecondary,
+        )
+    }
+}
+
+@Composable
+private fun TransportPlayPauseButton(
+    playbackFlow: StateFlow<PlaybackTelemetry>?,
+    fallbackIsPlaying: Boolean,
+    lang: AppLanguage,
+    onPlayPause: () -> Unit,
+) {
+    val collected = playbackFlow?.collectAsStateWithLifecycle()
+    val isPlaying = collected?.value?.isPlaying ?: fallbackIsPlaying
+    val playInteraction = remember { MutableInteractionSource() }
+    Button(
+        onClick = onPlayPause,
+        interactionSource = playInteraction,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (isPlaying) StudioColors.Amber else StudioColors.Cyan,
+            contentColor = StudioColors.BgTop,
+        ),
+        shape = RoundedCornerShape(14.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        modifier = Modifier
+            .defaultMinSize(minHeight = 48.dp)
+            .lit(playInteraction, MaterialTheme.colorScheme.primary, selected = isPlaying, cornerRadius = 14.dp)
+            .testTag("transport_play_pause_button"),
+    ) {
+        Icon(
+            imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+            contentDescription = if (isPlaying) t(lang, "pause") else t(lang, "play"),
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = if (isPlaying) t(lang, "pause") else t(lang, "play"),
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun TransportOutputMeter(
+    playbackFlow: StateFlow<PlaybackTelemetry>?,
+    fallbackLevel: Float,
+    modifier: Modifier = Modifier,
+) {
+    val collected = playbackFlow?.collectAsStateWithLifecycle()
+    val level = collected?.value?.outputLevel ?: fallbackLevel
+    val meterColor = when {
+        level > 0.85f -> StudioColors.Rose
+        level > 0.6f -> StudioColors.Amber
+        else -> StudioColors.Emerald
+    }
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(CircleShape)
+                .background(StudioColors.BgTop),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(level.coerceIn(0.02f, 1f))
+                    .height(6.dp)
+                    .clip(CircleShape)
+                    .background(meterColor),
+            )
+        }
+        Text(
+            text = "${(level * 100f).roundToInt()}%",
+            style = TelemetryTextStyle.copy(fontSize = 10.sp),
+            color = StudioColors.TextMuted,
+            maxLines = 1,
+        )
     }
 }
 

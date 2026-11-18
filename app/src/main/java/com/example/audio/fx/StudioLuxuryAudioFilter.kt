@@ -195,17 +195,15 @@ object StudioLuxuryAudioFilter {
         inputFile: File,
         filterGraph: String,
     ): StereoAudioBuffer? = withContext(Dispatchers.IO) {
+        if (!FfmpegKitBridge.isAvailable()) return@withContext null
         val outFile = File(context.cacheDir, "ff_luxury_${UUID.randomUUID()}.wav")
         try {
-            val ffmpegClass = Class.forName("com.arthenica.ffmpegkit.FFmpegKit")
-            val returnCodeClass = Class.forName("com.arthenica.ffmpegkit.ReturnCode")
-            val executeMethod = ffmpegClass.getMethod("execute", String::class.java)
             val cmd = "-y -i \"${inputFile.absolutePath}\" -af \"$filterGraph\" -ar 44100 -ac 2 \"${outFile.absolutePath}\""
-            val session = executeMethod.invoke(null, cmd) ?: return@withContext null
-            val getReturnCode = session.javaClass.getMethod("getReturnCode")
-            val returnCode = getReturnCode.invoke(session) ?: return@withContext null
-            val isSuccessMethod = returnCodeClass.getMethod("isSuccess", returnCodeClass)
-            val ok = (isSuccessMethod.invoke(null, returnCode) as? Boolean) == true
+            val ok = FfmpegKitBridge.execute(
+                command = cmd,
+                toolName = "StudioLuxuryAudioFilter",
+                logNonZeroFailure = false,
+            )
             if (ok && outFile.exists() && outFile.length() > 44L) {
                 AudioDecoder.decodeFile(outFile)
             } else {

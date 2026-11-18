@@ -950,6 +950,10 @@ suspend fun stageLargeFileToCleanAsciiCache(
     prefix: String = "large",
 ): File = withContext(Dispatchers.IO) {
     val stagedDir = File(context.cacheDir, "staged_inputs").apply { mkdirs() }
+    val isAsciiPath = uploadedFile.name.all { ch -> ch in 'a'..'z' || ch in 'A'..'Z' || ch in '0'..'9' || ch == '_' || ch == '-' || ch == '.' }
+    if (isAsciiPath && uploadedFile.parentFile == stagedDir && uploadedFile.exists() && uploadedFile.length() > 0L) {
+        return@withContext uploadedFile
+    }
     val cleanExt = uploadedFile.extension.lowercase()
         .replace(Regex("[^a-z0-9]"), "")
         .take(8)
@@ -958,9 +962,9 @@ suspend fun stageLargeFileToCleanAsciiCache(
     if (uploadedFile.renameTo(target) && target.exists() && target.length() > 0L) {
         return@withContext target
     }
-    uploadedFile.inputStream().buffered(8192).use { inp ->
-        java.io.BufferedOutputStream(java.io.FileOutputStream(target), 8192).use { out ->
-            inp.copyTo(out, 8192)
+    uploadedFile.inputStream().buffered(65536).use { inp ->
+        java.io.BufferedOutputStream(java.io.FileOutputStream(target), 65536).use { out ->
+            inp.copyTo(out, 65536)
             out.flush()
         }
     }

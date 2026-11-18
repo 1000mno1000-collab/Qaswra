@@ -98,8 +98,12 @@ import com.example.ui.components.StudioScrollColumn
 import com.example.ui.components.UndoRedoActionsRow
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.model.PlaybackTelemetry
+import com.example.model.RecorderTelemetry
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.PI
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -233,86 +237,13 @@ fun RecordingStudioScreen(
                     )
                 }
 
-                Text(
-                    text = formatDurationMs(uiState.recorder.elapsedMs),
-                    style = TelemetryTextStyle.copy(fontSize = 32.sp),
-                    color = if (uiState.recorder.isRecording) StudioColors.RoseBright else StudioColors.TextPrimary,
-                )
-
-                val liveAmplitude = when {
-                    uiState.recorder.isRecording && !uiState.recorder.isPaused -> uiState.recorder.micLevel
-                    uiState.playback.isPlaying -> uiState.playback.outputLevel
-                    else -> 0f
-                }
-                val liveBars = if (uiState.recorder.isRecording) {
-                    uiState.recorder.waveformBars
-                } else {
-                    uiState.playback.waveformBars
-                }
-
-                val liveSpectrum = if (uiState.recorder.isRecording) {
-                    uiState.recorder.spectrumBands
-                } else {
-                    uiState.playback.spectrumBands
-                }
-                val liveActive = (uiState.recorder.isRecording && !uiState.recorder.isPaused) || uiState.playback.isPlaying
-
-                LiquidAudioWavePreview(
-                    amplitude = liveAmplitude,
-                    waveformBars = liveBars,
-                    isActive = liveActive,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(132.dp)
-                        .testTag("recording_liquid_wave_preview"),
-                )
-
-                SpectrumVisualizer(
-                    spectrumBands = liveSpectrum,
-                    isActive = liveActive,
+                RecorderLiveTelemetrySection(
                     language = lang,
-                    peakLevel = liveAmplitude,
-                    accentColor = if (uiState.recorder.isRecording) StudioColors.RoseBright else StudioColors.Cyan,
+                    isRecording = uiState.recorder.isRecording,
+                    isPaused = uiState.recorder.isPaused,
+                    recorderFlow = viewModel.recorderTelemetry,
+                    playbackFlow = viewModel.playbackTelemetry,
                 )
-
-                // Mic Input Meter
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(
-                            text = t(lang, "mic_level"),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = StudioColors.TextSecondary,
-                        )
-                        Text(
-                            text = "${(uiState.recorder.micLevel * 100f).roundToInt()}%",
-                            style = TelemetryTextStyle,
-                            color = StudioColors.Cyan,
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(8.dp)
-                            .clip(CircleShape)
-                            .background(StudioColors.BgTop),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(uiState.recorder.micLevel.coerceIn(0.02f, 1f))
-                                .height(8.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (uiState.recorder.micLevel > 0.85f) StudioColors.Rose else StudioColors.Emerald,
-                                ),
-                        )
-                    }
-                }
 
                 if (!uiState.recorder.isRecording) {
                     val startRecInteraction = remember { MutableInteractionSource() }
@@ -589,7 +520,6 @@ fun VoicePurifierScreen(
     val lang = uiState.language
     val nr = uiState.dspConfig.noiseReduction
     val enabled = uiState.dspConfig.isEnabled(EffectType.NOISE_REDUCTION)
-    val suppNorm = (uiState.playback.noiseSuppressionDb / 32f).coerceIn(0f, 1f)
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -688,60 +618,10 @@ fun VoicePurifierScreen(
             onOpenSaveDraft = { saveDraftDialogOpen = true },
         )
 
-        // Live Noise Suppression Telemetry Meter
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-            border = BorderStroke(1.dp, StudioColors.Border),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = if (lang == AppLanguage.EN) "Live Noise Suppression" else "مستوى عزل الضوضاء المباشر",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = StudioColors.TextPrimary,
-                    )
-                    Text(
-                        text = "-${"%.1f".format(uiState.playback.noiseSuppressionDb)} dB",
-                        style = TelemetryTextStyle,
-                        color = StudioColors.Emerald,
-                    )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(10.dp)
-                        .clip(CircleShape)
-                        .background(StudioColors.BgTop),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(suppNorm.coerceAtLeast(0.02f))
-                            .height(10.dp)
-                            .clip(CircleShape)
-                            .background(StudioColors.Emerald),
-                    )
-                }
-            }
-        }
-
-        SpectrumVisualizer(
-            spectrumBands = uiState.playback.spectrumBands,
-            isActive = uiState.playback.isPlaying,
+        // Live Noise Suppression Telemetry Meter (isolated telemetry collector)
+        PurifierLiveTelemetrySection(
             language = lang,
-            peakLevel = uiState.playback.outputLevel,
-            accentColor = StudioColors.Emerald,
+            playbackFlow = viewModel.playbackTelemetry,
         )
 
         // 4 Voice Purify Presets
@@ -1247,5 +1127,161 @@ fun LiquidAudioWavePreview(
             )
         }
     }
+}
+
+@Composable
+private fun RecorderLiveTelemetrySection(
+    language: AppLanguage,
+    isRecording: Boolean,
+    isPaused: Boolean,
+    recorderFlow: StateFlow<RecorderTelemetry>,
+    playbackFlow: StateFlow<PlaybackTelemetry>,
+) {
+    val rec by recorderFlow.collectAsStateWithLifecycle()
+    val playback by playbackFlow.collectAsStateWithLifecycle()
+
+    Text(
+        text = formatDurationMs(rec.elapsedMs),
+        style = TelemetryTextStyle.copy(fontSize = 32.sp),
+        color = if (isRecording) StudioColors.RoseBright else StudioColors.TextPrimary,
+    )
+
+    val liveAmplitude = when {
+        isRecording && !isPaused -> rec.micLevel
+        playback.isPlaying -> playback.outputLevel
+        else -> 0f
+    }
+    val liveBars = if (isRecording) {
+        rec.waveformBars
+    } else {
+        playback.waveformBars
+    }
+    val liveSpectrum = if (isRecording) {
+        rec.spectrumBands
+    } else {
+        playback.spectrumBands
+    }
+    val liveActive = (isRecording && !isPaused) || playback.isPlaying
+
+    LiquidAudioWavePreview(
+        amplitude = liveAmplitude,
+        waveformBars = liveBars,
+        isActive = liveActive,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(132.dp)
+            .testTag("recording_liquid_wave_preview"),
+    )
+
+    SpectrumVisualizer(
+        spectrumBands = liveSpectrum,
+        isActive = liveActive,
+        language = language,
+        peakLevel = liveAmplitude,
+        accentColor = if (isRecording) StudioColors.RoseBright else StudioColors.Cyan,
+    )
+
+    // Mic Input Meter
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = t(language, "mic_level"),
+                style = MaterialTheme.typography.labelMedium,
+                color = StudioColors.TextSecondary,
+            )
+            Text(
+                text = "${(rec.micLevel * 100f).roundToInt()}%",
+                style = TelemetryTextStyle,
+                color = StudioColors.Cyan,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(CircleShape)
+                .background(StudioColors.BgTop),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(rec.micLevel.coerceIn(0.02f, 1f))
+                    .height(8.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (rec.micLevel > 0.85f) StudioColors.Rose else StudioColors.Emerald,
+                    ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun PurifierLiveTelemetrySection(
+    language: AppLanguage,
+    playbackFlow: StateFlow<PlaybackTelemetry>,
+) {
+    val playback by playbackFlow.collectAsStateWithLifecycle()
+    val suppNorm = (playback.noiseSuppressionDb / 32f).coerceIn(0f, 1f)
+
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+        border = BorderStroke(1.dp, StudioColors.Border),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (language == AppLanguage.EN) "Live Noise Suppression" else "مستوى عزل الضوضاء المباشر",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = StudioColors.TextPrimary,
+                )
+                Text(
+                    text = "-${"%.1f".format(playback.noiseSuppressionDb)} dB",
+                    style = TelemetryTextStyle,
+                    color = StudioColors.Emerald,
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(10.dp)
+                    .clip(CircleShape)
+                    .background(StudioColors.BgTop),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(suppNorm.coerceAtLeast(0.02f))
+                        .height(10.dp)
+                        .clip(CircleShape)
+                        .background(StudioColors.Emerald),
+                )
+            }
+        }
+    }
+
+    SpectrumVisualizer(
+        spectrumBands = playback.spectrumBands,
+        isActive = playback.isPlaying,
+        language = language,
+        peakLevel = playback.outputLevel,
+        accentColor = StudioColors.Emerald,
+    )
 }
 

@@ -112,7 +112,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.model.PlaybackTelemetry
+import com.example.model.RecorderTelemetry
+import kotlinx.coroutines.flow.StateFlow
 import com.example.audio.formatDurationMs
 import com.example.data.RecentEditEntry
 import com.example.diagnostics.AppDiagnosticLog
@@ -583,14 +587,10 @@ fun HomeScreen(
                             )
                         }
 
-                        // Row 3: Live Audio Waveform Visualizer
-                        RealTimeWaveformCanvas(
-                            bars = if (uiState.recorder.isRecording) uiState.recorder.waveformBars else uiState.playback.waveformBars,
-                            isActive = uiState.playback.isPlaying || uiState.recorder.isRecording,
-                            accentColor = if (uiState.recorder.isRecording) StudioColors.Rose else StudioColors.Cyan,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(44.dp),
+                        // Row 3: Live Audio Waveform Visualizer (isolated telemetry collector)
+                        HomeLiveWaveformSection(
+                            playbackFlow = viewModel.playbackTelemetry,
+                            recorderFlow = viewModel.recorderTelemetry,
                         )
                     }
                 }
@@ -1593,5 +1593,27 @@ private fun AccountSheetShortcutRow(
             )
         }
     }
+}
+
+@Composable
+private fun HomeLiveWaveformSection(
+    playbackFlow: StateFlow<PlaybackTelemetry>,
+    recorderFlow: StateFlow<RecorderTelemetry>,
+) {
+    val playback by playbackFlow.collectAsStateWithLifecycle()
+    val recorder by recorderFlow.collectAsStateWithLifecycle()
+    val isActive = recorder.isRecording || playback.isPlaying
+    val bars = if (recorder.isRecording) recorder.waveformBars else playback.waveformBars
+    val accentColor = if (recorder.isRecording) StudioColors.RoseBright else StudioColors.Cyan
+
+    RealTimeWaveformCanvas(
+        bars = bars,
+        isActive = isActive,
+        accentColor = accentColor,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .testTag("home_waveform"),
+    )
 }
 

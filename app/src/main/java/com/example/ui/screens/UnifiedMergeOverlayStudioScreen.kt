@@ -103,8 +103,12 @@ import com.example.ui.components.UndoRedoActionsRow
 import com.example.ui.components.rememberEditHistory
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
+import androidx.compose.runtime.State
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.model.PlaybackTelemetry
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -432,7 +436,7 @@ fun UnifiedMergeOverlayStudioScreen(
                 hasPrimary = hasPrimary,
                 hasSecondary = hasSecondary,
                 params = params,
-                playbackPosMs = uiState.playback.positionMs,
+                playbackFlow = viewModel.playbackTelemetry,
                 onSeekFraction = { frac -> viewModel.seekToFraction(frac) },
                 onUpdateParams = { debounceMs, transform -> updateParams(debounceMs, transform) },
             )
@@ -689,16 +693,12 @@ fun UnifiedMergeOverlayStudioScreen(
                     )
                 }
 
-                val isPreviewActive = uiState.isToolPreviewPlaying || (canProcess && uiState.playback.isPlaying)
-                PreviewAndApplyActionRow(
-                    isPreviewPlaying = isPreviewActive,
-                    previewEnabled = canProcess && !uiState.isBusy,
-                    applyEnabled = canProcess && !uiState.isBusy,
+                MergeStudioPreviewApplyRow(
+                    isToolPreviewPlaying = uiState.isToolPreviewPlaying,
+                    playbackFlow = viewModel.playbackTelemetry,
+                    canProcess = canProcess,
+                    isBusy = uiState.isBusy,
                     language = lang,
-                    previewTag = "merge_studio_preview_button",
-                    applyTag = "merge_studio_apply_button",
-                    applyLabel = t(lang, "apply_now"),
-                    applyColor = StudioColors.Violet,
                     onPreviewClick = { viewModel.previewUnifiedMergeOverlay(params) },
                     onApplyClick = {
                         preferVmUndo = true
@@ -845,7 +845,7 @@ private fun DualTrackInteractiveTimelineCard(
     hasPrimary: Boolean,
     hasSecondary: Boolean,
     params: MergeStudioParams,
-    playbackPosMs: Long,
+    playbackFlow: StateFlow<PlaybackTelemetry>,
     onSeekFraction: (Float) -> Unit,
     onUpdateParams: (Long, (MergeStudioParams) -> MergeStudioParams) -> Unit,
 ) {
@@ -982,7 +982,7 @@ private fun DualTrackInteractiveTimelineCard(
                 ) {
                     val laneWidthDp = maxWidth
                     val laneWidthPx = with(LocalDensity.current) { laneWidthDp.toPx().coerceAtLeast(1f) }
-                    val playheadFrac = (playbackPosMs.toFloat() / spanMs.toFloat()).coerceIn(0f, 1f)
+                    val playbackState = playbackFlow.collectAsStateWithLifecycle()
                     val latestParams by rememberUpdatedState(params)
 
                     Column(
@@ -1098,24 +1098,64 @@ private fun DualTrackInteractiveTimelineCard(
                     }
 
                     // Continuous vertical synchronized Playhead spanning both tracks
-                    Canvas(modifier = Modifier.matchParentSize()) {
-                        val px = (playheadFrac * size.width).coerceIn(2f, size.width - 2f)
-                        drawLine(
-                            color = StudioColors.TextPrimary,
-                            start = Offset(px, 0f),
-                            end = Offset(px, size.height),
-                            strokeWidth = 2.2.dp.toPx(),
-                        )
-                        drawCircle(
-                            color = StudioColors.Cyan,
-                            radius = 5.dp.toPx(),
-                            center = Offset(px, 12.dp.toPx()),
-                        )
-                    }
+                    TimelinePlayheadOverlay(
+                        playbackState = playbackState,
+                        spanMs = spanMs,
+                        modifier = Modifier.matchParentSize(),
+                    )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun TimelinePlayheadOverlay(
+    playbackState: State<PlaybackTelemetry>,
+    spanMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        val playheadFrac = (playbackState.value.positionMs.toFloat() / spanMs.toFloat()).coerceIn(0f, 1f)
+        val px = (playheadFrac * size.width).coerceIn(2f, size.width - 2f)
+        drawLine(
+            color = StudioColors.TextPrimary,
+            start = Offset(px, 0f),
+            end = Offset(px, size.height),
+            strokeWidth = 2.2.dp.toPx(),
+        )
+        drawCircle(
+            color = StudioColors.Cyan,
+            radius = 5.dp.toPx(),
+            center = Offset(px, 12.dp.toPx()),
+        )
+    }
+}
+
+@Composable
+private fun MergeStudioPreviewApplyRow(
+    isToolPreviewPlaying: Boolean,
+    playbackFlow: StateFlow<PlaybackTelemetry>,
+    canProcess: Boolean,
+    isBusy: Boolean,
+    language: AppLanguage,
+    onPreviewClick: () -> Unit,
+    onApplyClick: () -> Unit,
+) {
+    val playback by playbackFlow.collectAsStateWithLifecycle()
+    val isPreviewActive = isToolPreviewPlaying || (canProcess && playback.isPlaying)
+    PreviewAndApplyActionRow(
+        isPreviewPlaying = isPreviewActive,
+        previewEnabled = canProcess && !isBusy,
+        applyEnabled = canProcess && !isBusy,
+        language = language,
+        previewTag = "merge_studio_preview_button",
+        applyTag = "merge_studio_apply_button",
+        applyLabel = t(language, "apply_now"),
+        applyColor = StudioColors.Violet,
+        onPreviewClick = onPreviewClick,
+        onApplyClick = onApplyClick,
+    )
 }
 
 @Composable

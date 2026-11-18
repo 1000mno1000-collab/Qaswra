@@ -5,16 +5,11 @@ import com.example.audio.AudioDecoder
 import com.example.audio.EdgeTtsClient
 import com.example.audio.EdgeTtsSynthResult
 import com.example.audio.OnlineGuard
-import com.example.audio.StereoBiquadFilter
 import com.example.audio.TARGET_SAMPLE_RATE
-import com.example.audio.applyPitchAndSpeedOffline
-import com.example.audio.buildPitchAndSpeedFfmpegChains
 import com.example.audio.cache.SmartCacheManager
 import com.example.audio.clamp
 import com.example.audio.fx.StudioLuxuryAudioFilter
-import com.example.audio.network.NetworkFetchOutcome
 import com.example.audio.network.NetworkImmunityManager
-import com.example.audio.normalizeAudio
 import com.example.audio.resampleStereo
 import com.example.audio.writeStereoWavFile
 import com.example.diagnostics.AppDiagnosticLog
@@ -33,14 +28,12 @@ import kotlinx.coroutines.withContext
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.net.URLEncoder
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
-import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -51,20 +44,18 @@ sealed interface FreeEmotionalTtsOutcome {
     data class Error(val message: String) : FreeEmotionalTtsOutcome
 }
 
-private data class CloudTtsSynthesisAttempt(
-    val buffer: StereoAudioBuffer?,
-    val prosodyAppliedInEngine: Boolean,
+private data class EdgeNeuralSynthesisAttempt(
+    val mp3File: File?,
+    val decodedBuffer: StereoAudioBuffer?,
     val errors: List<String>,
 )
 
 /**
- * 100% Online, free, keyless Cloud Human Neural Voice client:
- * 1. Primary: Microsoft Edge Neural Voices (`speech.platform.bing.com` — e.g. `ar-IQ-BasselNeural`,
- *    `ar-SA-HamedNeural`, `ar-EG-ShakirNeural`, `en-US-AndrewNeural`, `fa-IR-FaridNeural`, `tr-TR-AhmetNeural`)
- *    with native Rate (%), Pitch (Hz), emotional cadence & full Arabic diacritics.
- * 2. Fallback: Google Translate Neural TTS HD (`translate.googleapis.com` / `translate.google.com`)
- *    plus gender/emotion shaping.
- * 3. Optional FFmpegKit human vocal warmth & Arabic articulation mastering (clarity for هـ / خ / ح).
+ * 100% Online, free, keyless Microsoft Edge Neural TTS client (`wss://speech.platform.bing.com`).
+ * - Streams SSML directly via WebSocket (`audio-24khz-48kbitrate-mono-mp3`) with full Arabic diacritics,
+ *   rate (%), pitch (Hz), and multi-dialect human neural voices (`ar-IQ`, `ar-SA`, `ar-EG`, `ar-SY`, `ar-AE`, `ar-JO`).
+ * - Saves ready-to-play MP3 and runs FFmpegKit acoustic mastering for Documentary, Podcast, and Studio Luxury presets.
+ * - Zero Gemini API and zero Android legacy TTS dependency.
  */
 object FreeEmotionalTtsClient {
     private const val PREFS_NAME = "sonix_free_tts_prefs"
@@ -119,145 +110,127 @@ object FreeEmotionalTtsClient {
             else -> TtsPersonaAcousticMode.NATURAL
         }
 
-        // Background Arabic pronunciation shaping: Tashkeel, punctuation & documentary/podcast pauses
-        val neuralText = GeminiNeuralTtsClient.diacritizeArabicIfAvailable(
-            context = context,
-            rawText = rawClean,
-            dialect = dialect,
+        // Local high-speed Arabic pronunciation shaping & Tashkeel hinting (Zero Gemini API)
+        val neuralText = ArabicTextDiacritizer.normalizeAndHintForTts(rawClean, applyLightDiacritics = true)
+        val primaryVoice = resolveEdgeVoiceName(dialect = dialect, gender = gender)
+        val personaRateFactor = resolvePersonaRateFactor(persona)
+        val personaPitchHz = resolvePersonaPitchOffsetHz(persona)
+
+        // 1. Primary: Direct Microsoft Edge Neural TTS via WebSocket (audio-24khz-48kbitrate-mono-mp3)
+        var attempt = synthesizeViaEdgeWebSocket(
+            cacheDir = cacheDir,
+            text = neuralText,
+            voiceName = primaryVoice,
             style = style,
-            acousticMode = effectiveMode,
-        ) ?: ArabicTextDiacritizer.normalizeAndHintForTts(rawClean, applyLightDiacritics = true)
+            speechRate = speechRate * personaRateFactor,
+            pitch = pitch,
+            extraPitchOffsetHz = personaPitchHz,
+        )
+        collectedErrors += attempt.errors
 
-        // 1A. Primary: Hybrid Local ONNX Engine -> Gemini 2.5 Flash Native Human Audio TTS
-        var attempt = run {
-            val gem = GeminiNeuralTtsClient.synthesizeNaturalHumanSpeech(
-                context = context,
-                cacheDir = cacheDir,
-                text = neuralText,
-                dialect = dialect,
-                gender = gender,
-                style = style,
-                speechRate = speechRate,
-                language = language,
-                persona = persona,
-                acousticMode = effectiveMode,
-            )
-            if (gem.failureReason != null) collectedErrors += gem.failureReason
-            CloudTtsSynthesisAttempt(
-                buffer = gem.buffer,
-                prosodyAppliedInEngine = true,
-                errors = if (gem.failureReason != null) listOf(gem.failureReason) else emptyList(),
-            )
-        }
-
-        // 1B. Primary/High-Availability Neural: Microsoft Azure/Edge 96kbps HD Neural Voices
-        if (attempt.buffer == null || attempt.buffer.frameCount <= 0) {
-            val primaryVoice = if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
-            attempt = synthesizeViaEdgeNeural(
-                cacheDir = cacheDir,
-                text = neuralText,
-                voiceName = primaryVoice,
-                localeTag = dialect.localeTag,
-                style = style,
-                speechRate = speechRate,
-                pitch = pitch,
-            )
-            collectedErrors += attempt.errors
-        }
-
-        // 1C. Regional Neural Voice fallback (e.g., ar-SA neural) if specific regional Edge voice fails
-        if (attempt.buffer == null || attempt.buffer.frameCount <= 0) {
-            val primaryVoice = if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
+        // 2. Regional Neural Voice fallback if specific regional Edge voice fails
+        if (attempt.mp3File == null && (attempt.decodedBuffer == null || attempt.decodedBuffer.frameCount <= 0)) {
             val backupVoice = resolveBackupEdgeVoice(dialect, gender)
             if (backupVoice != null && backupVoice != primaryVoice) {
-                attempt = synthesizeViaEdgeNeural(
+                attempt = synthesizeViaEdgeWebSocket(
                     cacheDir = cacheDir,
                     text = neuralText,
                     voiceName = backupVoice,
-                    localeTag = dialect.fallbackLocaleTag,
                     style = style,
-                    speechRate = speechRate,
+                    speechRate = speechRate * personaRateFactor,
                     pitch = pitch,
+                    extraPitchOffsetHz = personaPitchHz,
                 )
                 collectedErrors += attempt.errors
             }
         }
 
-        // 2. Last-resort Online Fallback: Google Cloud Translate TTS HD (without harsh robotic pitch warping)
-        if (attempt.buffer == null || attempt.buffer.frameCount <= 0) {
-            attempt = synthesizeViaGoogleTranslateHd(
-                context = context,
-                cacheDir = cacheDir,
-                text = neuralText,
-                dialect = dialect,
-                style = style,
-                speechRate = speechRate,
-            )
-            collectedErrors += attempt.errors
-        }
-
-        val stitchedBuffer = attempt.buffer
-        if (stitchedBuffer == null || stitchedBuffer.frameCount <= 0) {
+        val rawMp3File = attempt.mp3File
+        val rawDecoded = attempt.decodedBuffer
+        if (rawMp3File == null && (rawDecoded == null || rawDecoded.frameCount <= 0)) {
             val detail = collectedErrors
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .distinct()
                 .take(3)
                 .joinToString(" | ")
-                .ifBlank { "Cloud neural TTS servers unreachable" }
+                .ifBlank { "Microsoft Edge Neural WebSocket unreachable" }
             AppDiagnosticLog.logRecoverable(
-                toolName = "Cloud Neural TTS",
-                titleAr = "تعذر توليد الصوت البشري السحابي",
-                titleEn = "Cloud Neural TTS Failed",
+                toolName = "Edge Neural TTS",
+                titleAr = "تعذر توليد الصوت البشري عبر Edge WebSocket",
+                titleEn = "Edge Neural TTS Failed",
                 causeAr = detail,
                 causeEn = detail,
-                errorCode = "CLOUD_NEURAL_TTS_ERR",
+                errorCode = "EDGE_WS_TTS_ERR",
             )
             val userMsg = when (language) {
-                AppLanguage.EN -> "Cloud AI Voice connection failed: $detail"
-                AppLanguage.FA -> "خطا در اتصال به موتور صدای ابری: $detail"
-                AppLanguage.AR -> "تعذر الاتصال بمحرك النطق السحابي: $detail"
+                AppLanguage.EN -> "Edge Neural Voice connection failed: $detail"
+                AppLanguage.FA -> "خطا در اتصال به سرور Microsoft Edge TTS: $detail"
+                AppLanguage.AR -> "تعذر الاتصال بمحرك Microsoft Edge Neural TTS: $detail"
             }
             return@withContext FreeEmotionalTtsOutcome.Error(userMsg)
         }
 
-        val shapedBuffer = applyEmotionAndLuxuryShaping(
+        // 3. Apply FFmpegKit Documentary / Podcast / Studio Luxury Mastering & save playable MP3
+        val masteredOutcome = processWithFfmpegKitAndSavePlayable(
             context = context,
             cacheDir = cacheDir,
-            inputBuffer = stitchedBuffer,
+            rawMp3File = rawMp3File,
+            fallbackDecodedBuffer = rawDecoded,
             gender = gender,
             style = style,
             acousticMode = effectiveMode,
-            speechRate = speechRate,
-            pitch = pitch,
-            prosodyAlreadyAppliedInEngine = attempt.prosodyAppliedInEngine,
             studioLuxuryEnhancement = studioLuxuryEnhancement,
         )
 
-        val previewWav = File(cacheDir, "cloud_tts_out_${UUID.randomUUID()}.wav")
-        val wroteWav = runCatching {
-            writeStereoWavFile(previewWav, shapedBuffer)
-            previewWav.exists() && previewWav.length() > 44L
-        }.getOrDefault(false)
-
-        if (!wroteWav) {
-            previewWav.delete()
+        if (masteredOutcome == null || masteredOutcome.buffer.frameCount <= 0) {
+            runCatching { rawMp3File?.delete() }
             return@withContext FreeEmotionalTtsOutcome.Error(
                 when (language) {
-                    AppLanguage.EN -> "Failed to write preview WAV file."
-                    AppLanguage.FA -> "ساخت فایل پیش‌نمایش صوتی ناموفق بود."
-                    AppLanguage.AR -> "فشل تجهيز ملف المعاينة الصوتي."
+                    AppLanguage.EN -> "Failed to decode synthesized MP3 stream."
+                    AppLanguage.FA -> "پردازش فایل MP3 ناموفق بود."
+                    AppLanguage.AR -> "فشل تجهيز أو فك ترميز ملف MP3 الصوتي."
                 },
             )
         }
-        SmartCacheManager.pruneManagedBuckets(context)
 
-        FreeEmotionalTtsOutcome.Success(
-            EdgeTtsSynthResult(
-                buffer = shapedBuffer,
-                mp3File = previewWav,
-            ),
-        )
+        SmartCacheManager.pruneManagedBuckets(context)
+        FreeEmotionalTtsOutcome.Success(masteredOutcome)
+    }
+
+    private fun resolveEdgeVoiceName(dialect: TtsDialect, gender: TtsGender): String {
+        return when (dialect.id) {
+            "iraqi" -> if (gender == TtsGender.MALE) "ar-IQ-BasselNeural" else "ar-IQ-RanaNeural"
+            "saudi" -> if (gender == TtsGender.MALE) "ar-SA-HamedNeural" else "ar-SA-ZariyahNeural"
+            "egyptian" -> if (gender == TtsGender.MALE) "ar-EG-ShakirNeural" else "ar-EG-SalmaNeural"
+            "syrian" -> if (gender == TtsGender.MALE) "ar-SY-LaithNeural" else "ar-SY-AmanyNeural"
+            "standard" -> if (gender == TtsGender.MALE) "ar-AE-HamdanNeural" else "ar-JO-SanaNeural"
+            else -> if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
+        }
+    }
+
+    private fun resolvePersonaRateFactor(persona: TtsVoicePersona?): Float = when (persona?.id) {
+        "male_doc_deep" -> 0.92f
+        "male_podcast_warm" -> 0.98f
+        "male_promo_dramatic" -> 1.02f
+        "male_modern_energetic" -> 1.06f
+        "female_doc_dignified" -> 0.93f
+        "female_podcast_host" -> 0.98f
+        "female_news_anchor" -> 1.00f
+        "female_story_soft" -> 0.92f
+        else -> 1.0f
+    }
+
+    private fun resolvePersonaPitchOffsetHz(persona: TtsVoicePersona?): Int = when (persona?.id) {
+        "male_doc_deep" -> -10
+        "male_podcast_warm" -> -4
+        "male_promo_dramatic" -> -6
+        "male_modern_energetic" -> 4
+        "female_doc_dignified" -> -5
+        "female_podcast_host" -> 0
+        "female_news_anchor" -> 2
+        "female_story_soft" -> 4
+        else -> 0
     }
 
     private fun resolveBackupEdgeVoice(dialect: TtsDialect, gender: TtsGender): String? {
@@ -271,27 +244,26 @@ object FreeEmotionalTtsClient {
         }
     }
 
-    private suspend fun synthesizeViaEdgeNeural(
+    private suspend fun synthesizeViaEdgeWebSocket(
         cacheDir: File,
         text: String,
         voiceName: String,
-        localeTag: String,
         style: TtsDeliveryStyle,
         speechRate: Float,
         pitch: Float,
-    ): CloudTtsSynthesisAttempt {
+        extraPitchOffsetHz: Int,
+    ): EdgeNeuralSynthesisAttempt {
         val errors = mutableListOf<String>()
-        // Large 1050-char paragraph slices keep human intonation continuous instead of choppy micro-clips
         val chunks = splitSentencesSmoothly(text, maxChars = 1050)
         if (chunks.isEmpty()) {
-            return CloudTtsSynthesisAttempt(null, true, listOf("EdgeNeural: Empty chunks"))
+            return EdgeNeuralSynthesisAttempt(null, null, listOf("EdgeNeural: Empty chunks"))
         }
 
-        val pauseMs = (style.breathPauseMs * 0.45f).roundToInt().coerceIn(70, 220)
-        val decodedChunks = ArrayList<StereoAudioBuffer>(chunks.size)
-        val combinedRate = clamp(speechRate * style.rateFactor, 0.65f, 1.55f)
+        val combinedRate = clamp(speechRate * style.rateFactor, 0.55f, 1.75f)
+        val localeTag = voiceName.split("-").take(2).joinToString("-").ifBlank { "ar-AE" }
+        val rawMp3Chunks = ArrayList<ByteArray>(chunks.size)
 
-        for ((index, chunk) in chunks.withIndex()) {
+        for (chunk in chunks) {
             coroutineContext.ensureActive()
             val edgeAttempt = EdgeTtsClient.synthesizeRawMp3WithReason(
                 text = chunk,
@@ -299,17 +271,41 @@ object FreeEmotionalTtsClient {
                 localeTag = localeTag,
                 speechRate = combinedRate,
                 pitch = pitch,
-                pitchOffsetHz = style.pitchOffsetHz,
+                pitchOffsetHz = style.pitchOffsetHz + extraPitchOffsetHz,
             )
             val bytes = edgeAttempt.bytes
             if (bytes == null || bytes.size < 512) {
                 errors += edgeAttempt.failureReason ?: "EdgeNeural($voiceName) returned empty audio"
-                return CloudTtsSynthesisAttempt(null, true, errors)
+                return EdgeNeuralSynthesisAttempt(null, null, errors)
             }
+            rawMp3Chunks += bytes
+        }
 
+        // Single chunk: save genuine audio-24khz-48kbitrate-mono-mp3 directly ready for playback & FFmpegKit
+        if (rawMp3Chunks.size == 1) {
+            val mp3File = File(cacheDir, "edge_raw_${UUID.randomUUID()}.mp3")
+            val wrote = runCatching {
+                BufferedOutputStream(FileOutputStream(mp3File), 16384).use { out ->
+                    out.write(rawMp3Chunks[0])
+                    out.flush()
+                }
+                mp3File.exists() && mp3File.length() > 512L
+            }.getOrDefault(false)
+            return if (wrote) {
+                EdgeNeuralSynthesisAttempt(mp3File = mp3File, decodedBuffer = null, errors = errors)
+            } else {
+                mp3File.delete()
+                EdgeNeuralSynthesisAttempt(null, null, errors + "Failed to save raw Edge MP3")
+            }
+        }
+
+        // Multi-chunk: decode & stitch cleanly with smooth breath pauses
+        val pauseMs = (style.breathPauseMs * 0.45f).roundToInt().coerceIn(70, 220)
+        val decodedChunks = ArrayList<StereoAudioBuffer>(rawMp3Chunks.size)
+        for ((index, bytes) in rawMp3Chunks.withIndex()) {
             val chunkFile = File(cacheDir, "edge_chunk_${UUID.randomUUID()}.mp3")
             val decoded = try {
-                BufferedOutputStream(FileOutputStream(chunkFile), 8192).use { out ->
+                BufferedOutputStream(FileOutputStream(chunkFile), 16384).use { out ->
                     out.write(bytes)
                     out.flush()
                 }
@@ -322,8 +318,8 @@ object FreeEmotionalTtsClient {
             }
 
             if (decoded == null || decoded.frameCount <= 0) {
-                errors += "EdgeNeural($voiceName): Invalid MP3 on chunk ${index + 1}/${chunks.size}"
-                return CloudTtsSynthesisAttempt(null, true, errors)
+                errors += "EdgeNeural($voiceName): Invalid MP3 on chunk ${index + 1}/${rawMp3Chunks.size}"
+                return EdgeNeuralSynthesisAttempt(null, null, errors)
             }
 
             val unified = if (decoded.sampleRate == TARGET_SAMPLE_RATE) {
@@ -335,242 +331,113 @@ object FreeEmotionalTtsClient {
         }
 
         val stitched = stitchSentenceBuffersSmoothly(decodedChunks, pauseMs)
-        return CloudTtsSynthesisAttempt(stitched, prosodyAppliedInEngine = true, errors = errors)
+        return EdgeNeuralSynthesisAttempt(mp3File = null, decodedBuffer = stitched, errors = errors)
     }
 
-    private suspend fun synthesizeViaGoogleTranslateHd(
+    private suspend fun processWithFfmpegKitAndSavePlayable(
         context: Context,
         cacheDir: File,
-        text: String,
-        dialect: TtsDialect,
-        style: TtsDeliveryStyle,
-        speechRate: Float,
-    ): CloudTtsSynthesisAttempt {
-        val errors = mutableListOf<String>()
-        val tl = resolveGoogleLangCode(dialect.localeTag)
-        val chunks = splitSentencesSmoothly(text, maxChars = 180)
-        if (chunks.isEmpty()) {
-            return CloudTtsSynthesisAttempt(null, false, listOf("GoogleTTS: Empty chunks"))
-        }
-
-        val pauseMs = (style.breathPauseMs * 0.50f).roundToInt().coerceIn(75, 240)
-        val speedParam = fmt(clamp(speechRate * style.rateFactor, 0.50f, 1.45f))
-        val decodedChunks = ArrayList<StereoAudioBuffer>(chunks.size)
-
-        for ((index, chunk) in chunks.withIndex()) {
-            coroutineContext.ensureActive()
-            val encoded = URLEncoder.encode(chunk, "UTF-8")
-            val urls = listOf(
-                "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&ttsspeed=$speedParam&q=$encoded",
-                "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&ttsspeed=$speedParam&q=$encoded",
-                "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=$tl&ttsspeed=$speedParam&q=$encoded",
-            )
-
-            val outcome = NetworkImmunityManager.fetchAudioWithFallback(
-                urls = urls,
-                context = context,
-                headers = mapOf("Referer" to "https://translate.google.com/"),
-                timeoutMs = 22_000L,
-                providerLabel = "GoogleCloudTTS($tl)",
-            )
-            val bytes = when (outcome) {
-                is NetworkFetchOutcome.Success -> outcome.value.bytes
-                is NetworkFetchOutcome.Offline -> {
-                    errors += outcome.reason
-                    return CloudTtsSynthesisAttempt(null, false, errors)
-                }
-                is NetworkFetchOutcome.Failure -> {
-                    errors += "${outcome.errorCode}: ${outcome.message}"
-                    return CloudTtsSynthesisAttempt(null, false, errors)
-                }
-            }
-
-            val chunkFile = File(cacheDir, "gtts_chunk_${UUID.randomUUID()}.mp3")
-            val decoded = try {
-                BufferedOutputStream(FileOutputStream(chunkFile), 8192).use { out ->
-                    out.write(bytes)
-                    out.flush()
-                }
-                AudioDecoder.decodeFile(chunkFile)
-            } catch (e: Exception) {
-                errors += "GoogleTTS decode ${e.javaClass.simpleName}: ${e.message ?: "decode failed"}"
-                null
-            } finally {
-                chunkFile.delete()
-            }
-
-            if (decoded == null || decoded.frameCount <= 0) {
-                errors += "GoogleTTS: Invalid stream on chunk ${index + 1}/${chunks.size}"
-                return CloudTtsSynthesisAttempt(null, false, errors)
-            }
-
-            val unified = if (decoded.sampleRate == TARGET_SAMPLE_RATE) {
-                decoded
-            } else {
-                resampleStereo(decoded, TARGET_SAMPLE_RATE)
-            }
-            decodedChunks += trimSilenceEdgesAndFade(unified, keepPadMs = 50)
-        }
-
-        val stitched = stitchSentenceBuffersSmoothly(decodedChunks, pauseMs)
-        return CloudTtsSynthesisAttempt(stitched, prosodyAppliedInEngine = false, errors = errors)
-    }
-
-    private fun resolveGoogleLangCode(localeTag: String): String {
-        val base = localeTag.substringBefore('-').lowercase(Locale.US)
-        return when (base) {
-            "ar", "en", "fa", "tr" -> base
-            else -> "ar"
-        }
-    }
-
-    private suspend fun applyEmotionAndLuxuryShaping(
-        context: Context,
-        cacheDir: File,
-        inputBuffer: StereoAudioBuffer,
+        rawMp3File: File?,
+        fallbackDecodedBuffer: StereoAudioBuffer?,
         gender: TtsGender,
         style: TtsDeliveryStyle,
         acousticMode: TtsPersonaAcousticMode,
-        speechRate: Float,
-        pitch: Float,
-        prosodyAlreadyAppliedInEngine: Boolean,
         studioLuxuryEnhancement: Boolean,
-    ): StereoAudioBuffer = withContext(Dispatchers.Default) {
-        if (inputBuffer.frameCount <= 0) return@withContext inputBuffer
+    ): EdgeTtsSynthResult? = withContext(Dispatchers.IO) {
+        val candidates = StudioLuxuryAudioFilter.buildAcousticMasteringFfmpegGraphCandidates(
+            mode = acousticMode,
+            style = style,
+            gender = gender,
+            luxuryBoost = studioLuxuryEnhancement,
+        )
 
-        val sr = inputBuffer.sampleRate.coerceAtLeast(8000)
+        var sourceWavForFfmpeg: File? = null
+        try {
+            val ffmpegInputFile = when {
+                rawMp3File != null && rawMp3File.exists() -> rawMp3File
+                fallbackDecodedBuffer != null && fallbackDecodedBuffer.frameCount > 0 -> {
+                    File(cacheDir, "edge_stitched_in_${UUID.randomUUID()}.wav").also { wav ->
+                        writeStereoWavFile(wav, fallbackDecodedBuffer)
+                        sourceWavForFfmpeg = wav
+                    }
+                }
+                else -> return@withContext null
+            }
 
-        // Preserve authentic Gemini / Edge Neural voice timbre with zero offline pitch/tempo warping
-        val sliderSemitones = (12.0 * ln(pitch.coerceIn(0.65f, 1.45f).toDouble()) / ln(2.0)).toFloat()
-        val totalSemitones = if (prosodyAlreadyAppliedInEngine) 0f else clamp(sliderSemitones, -4.5f, 4.5f)
-        val targetTempo = 1.0f
+            if (FfmpegKitBridge.isAvailable()) {
+                // Step 1: Try FFmpegKit acoustic mastering saving directly as ready-to-play MP3
+                val outMp3 = File(cacheDir, "tts_mastered_${UUID.randomUUID()}.mp3")
+                for (graph in candidates) {
+                    if (outMp3.exists()) outMp3.delete()
+                    val cmd = "-y -i \"${ffmpegInputFile.absolutePath}\" -af \"$graph\" -vn -ar 44100 -ac 2 -c:a libmp3lame -b:a 128k \"${outMp3.absolutePath}\""
+                    val ok = FfmpegKitBridge.execute(
+                        command = cmd,
+                        toolName = "EdgeTtsFfmpegMp3_${acousticMode.name}",
+                        logNonZeroFailure = false,
+                    )
+                    if (ok && outMp3.exists() && outMp3.length() > 512L) {
+                        val decodedMastered = AudioDecoder.decodeFile(outMp3)
+                        if (decodedMastered != null && decodedMastered.frameCount > 0) {
+                            runCatching { rawMp3File?.delete() }
+                            return@withContext EdgeTtsSynthResult(
+                                buffer = decodedMastered,
+                                mp3File = outMp3,
+                            )
+                        }
+                    }
+                }
+                runCatching { outMp3.delete() }
 
-        val needsPitchOrTempo = abs(totalSemitones) >= 0.08f || abs(targetTempo - 1.0f) >= 0.03f
+                // Step 2: If libmp3lame isn't bundled in device FFmpegKit build, apply exact FFmpegKit filters to WAV
+                val outWav = File(cacheDir, "tts_mastered_${UUID.randomUUID()}.wav")
+                for (graph in candidates) {
+                    if (outWav.exists()) outWav.delete()
+                    val cmd = "-y -i \"${ffmpegInputFile.absolutePath}\" -af \"$graph\" -ar 44100 -ac 2 \"${outWav.absolutePath}\""
+                    val ok = FfmpegKitBridge.execute(
+                        command = cmd,
+                        toolName = "EdgeTtsFfmpegWav_${acousticMode.name}",
+                        logNonZeroFailure = false,
+                    )
+                    if (ok && outWav.exists() && outWav.length() > 44L) {
+                        val decodedMastered = AudioDecoder.decodeFile(outWav)
+                        if (decodedMastered != null && decodedMastered.frameCount > 0) {
+                            val playableFile = if (rawMp3File != null && !studioLuxuryEnhancement && acousticMode == TtsPersonaAcousticMode.NATURAL) {
+                                runCatching { outWav.delete() }
+                                rawMp3File
+                            } else {
+                                runCatching { rawMp3File?.delete() }
+                                outWav
+                            }
+                            return@withContext EdgeTtsSynthResult(
+                                buffer = decodedMastered,
+                                mp3File = playableFile,
+                            )
+                        }
+                    }
+                }
+                runCatching { outWav.delete() }
+            }
 
-        if (!needsPitchOrTempo) {
-            return@withContext StudioLuxuryAudioFilter.applyAcousticMastering(
+            // Step 3: Pure-Kotlin acoustic mastering fallback when FFmpegKit is absent
+            val decoded = fallbackDecodedBuffer ?: (rawMp3File?.let { AudioDecoder.decodeFile(it) }) ?: return@withContext null
+            val mastered = StudioLuxuryAudioFilter.applyAcousticMastering(
                 context = context,
-                decodedBuffer = inputBuffer,
+                decodedBuffer = decoded,
                 mode = acousticMode,
                 style = style,
                 gender = gender,
                 luxuryBoost = studioLuxuryEnhancement,
             )
-        }
-
-        val (rubberbandChain, soxrFallbackChain) = buildPitchAndSpeedFfmpegChains(
-            semitones = totalSemitones,
-            tempoRatio = targetTempo,
-        )
-        val acousticCandidates = StudioLuxuryAudioFilter.buildAcousticMasteringFfmpegGraphCandidates(
-            mode = acousticMode,
-            style = style,
-            gender = gender,
-            luxuryBoost = studioLuxuryEnhancement,
-        )
-        val ffmpegCandidates: List<String> = buildList {
-            for (pitchChain in listOf(rubberbandChain, soxrFallbackChain)) {
-                for (acGraph in acousticCandidates) {
-                    add("$pitchChain,$acGraph")
-                }
+            if (rawMp3File != null && rawMp3File.exists() && !studioLuxuryEnhancement && acousticMode == TtsPersonaAcousticMode.NATURAL) {
+                return@withContext EdgeTtsSynthResult(buffer = mastered, mp3File = rawMp3File)
             }
-        }
-
-        val ffmpegResult = tryExecuteFfmpegKit(
-            cacheDir = cacheDir,
-            inputBuffer = inputBuffer,
-            sampleRate = sr,
-            filterGraphs = ffmpegCandidates,
-        )
-        if (ffmpegResult != null && ffmpegResult.frameCount > 0) {
-            return@withContext ffmpegResult
-        }
-
-        // Pure-Kotlin click-free fallback if FFmpegKit is unavailable
-        val pitchedAndTimed = applyPitchAndSpeedOffline(
-            buffer = inputBuffer,
-            semitones = totalSemitones,
-            tempoRatio = targetTempo,
-        )
-        StudioLuxuryAudioFilter.applyAcousticMastering(
-            context = context,
-            decodedBuffer = pitchedAndTimed,
-            mode = acousticMode,
-            style = style,
-            gender = gender,
-            luxuryBoost = studioLuxuryEnhancement,
-        )
-    }
-
-    private suspend fun tryExecuteFfmpegKit(
-        cacheDir: File,
-        inputBuffer: StereoAudioBuffer,
-        sampleRate: Int,
-        filterGraphs: List<String>,
-    ): StereoAudioBuffer? = withContext(Dispatchers.IO) {
-        val rawWav = File(cacheDir, "ff_in_${UUID.randomUUID()}.wav")
-        val outWav = File(cacheDir, "ff_out_${UUID.randomUUID()}.wav")
-        try {
-            if (!FfmpegKitBridge.isAvailable()) return@withContext null
-            writeStereoWavFile(rawWav, inputBuffer)
-            for (graph in filterGraphs) {
-                if (outWav.exists()) outWav.delete()
-                val cmd = "-y -i \"${rawWav.absolutePath}\" -af \"$graph\" -ar $sampleRate -ac 2 \"${outWav.absolutePath}\""
-                val ok = FfmpegKitBridge.execute(cmd, toolName = "CloudNeuralTTS", logNonZeroFailure = false)
-                if (ok && outWav.exists() && outWav.length() > 44L) {
-                    val decoded = AudioDecoder.decodeFile(outWav)
-                    if (decoded != null && decoded.frameCount > 0) {
-                        return@withContext decoded
-                    }
-                }
-            }
-            null
-        } catch (_: Throwable) {
-            null
+            val previewWav = File(cacheDir, "tts_out_${UUID.randomUUID()}.wav")
+            writeStereoWavFile(previewWav, mastered)
+            runCatching { rawMp3File?.delete() }
+            EdgeTtsSynthResult(buffer = mastered, mp3File = previewWav)
         } finally {
-            rawWav.delete()
-            outWav.delete()
+            runCatching { sourceWavForFfmpeg?.delete() }
         }
-    }
-
-    private fun applyEmotionalToneEqualizer(
-        buffer: StereoAudioBuffer,
-        warmthDb: Float,
-        presenceDb: Float,
-        airDb: Float,
-    ): StereoAudioBuffer {
-        val n = buffer.frameCount
-        if (n <= 0) return buffer
-        val sr = buffer.sampleRate.coerceAtLeast(8000)
-        val outL = buffer.left.copyOf()
-        val outR = buffer.right.copyOf()
-
-        val filters = listOf(
-            StereoBiquadFilter().apply { configureHighPass(sr, 65.0, 0.707) },
-            StereoBiquadFilter().apply { configurePeaking(sr, 155.0, 1.4, warmthDb.toDouble()) },
-            StereoBiquadFilter().apply { configurePeaking(sr, 315.0, 1.7, 1.4) },
-            StereoBiquadFilter().apply { configurePeaking(sr, 2450.0, 2.0, presenceDb.toDouble()) },
-            StereoBiquadFilter().apply { configurePeaking(sr, 4800.0, 2.4, -1.5) },
-            StereoBiquadFilter().apply { configurePeaking(sr, 9200.0, 2.2, airDb.toDouble()) },
-        )
-
-        val blockSize = 2048
-        val bL = FloatArray(blockSize)
-        val bR = FloatArray(blockSize)
-        var off = 0
-        while (off < n) {
-            val count = min(blockSize, n - off)
-            System.arraycopy(outL, off, bL, 0, count)
-            System.arraycopy(outR, off, bR, 0, count)
-            for (f in filters) {
-                f.processStereo(bL, bR, count)
-            }
-            System.arraycopy(bL, 0, outL, off, count)
-            System.arraycopy(bR, 0, outR, off, count)
-            off += blockSize
-        }
-
-        return StereoAudioBuffer(outL, outR, sr)
     }
 
     private fun trimSilenceEdgesAndFade(
@@ -580,7 +447,6 @@ object FreeEmotionalTtsClient {
         val n = buffer.frameCount
         if (n <= 64) return buffer
         val sr = buffer.sampleRate.coerceAtLeast(8000)
-        // Soft -58 dB threshold preserves natural Arabic breath consonants (هـ، ح، س، ش، ف)
         val thresh = 0.0012f
 
         var firstActive = 0
@@ -710,6 +576,4 @@ object FreeEmotionalTtsClient {
         if (cur.isNotEmpty()) out += cur.toString().trim()
         return out
     }
-
-    private fun fmt(value: Float): String = "%.2f".format(Locale.US, value)
 }

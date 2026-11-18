@@ -2,7 +2,6 @@ package com.example.viewmodel
 
 import android.app.Application
 import android.content.Intent
-import android.media.MediaPlayer
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -17,6 +16,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.audio.AudioDecodeOutcome
 import com.example.audio.AudioDecoder
 import com.example.audio.AudioFileUploader
+import com.example.audio.AudioPlayerManager
 import com.example.audio.AudioSignalAnalyzer
 import com.example.audio.AudioUploadOutcome
 import com.example.audio.ExportedAudioResult
@@ -65,7 +65,6 @@ import com.example.audio.applyPitchAndSpeedOffline
 import com.example.audio.cache.SmartCacheManager
 import com.example.audio.clamp
 import com.example.audio.computeMergeTimelineLayout
-import com.example.audio.computeWaveformPeaks
 import com.example.audio.computeWaveformPeaksAsync
 import com.example.audio.convertToSurroundStereoFromOffsets
 import com.example.audio.cutSelection
@@ -313,12 +312,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val aiRepository: AiRepository = SonixUnifiedAiRepository(application)
     private val smartVoiceRouter = SmartVoiceRouter()
     private val voiceProcessor = VoiceProcessor()
-    private var ttsPreviewPlayer: MediaPlayer? = null
     private var ttsPreviewTempFile: File? = null
-    private var mixPreviewPlayer: MediaPlayer? = null
-    private var toolPreviewPlayer: MediaPlayer? = null
     private var toolPreviewTempFile: File? = null
-    private var onlinePreviewPlayer: MediaPlayer? = null
     private val speechTranscriber = StudioSpeechTranscriber(application)
 
     private val safeCoroutineHandler = CoroutineExceptionHandler { _, throwable ->
@@ -351,6 +346,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _uiState = MutableStateFlow(StudioUiState())
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
 
+    // Dedicated high-frequency telemetry streams to isolate 60/120 FPS visualizers & playheads
+    // from triggering full-screen StudioUiState recompositions every audio buffer frame.
+    private val _playbackTelemetry = MutableStateFlow(PlaybackTelemetry())
+    val playbackTelemetry: StateFlow<PlaybackTelemetry> = _playbackTelemetry.asStateFlow()
+
+    private val _recorderTelemetry = MutableStateFlow(RecorderTelemetry())
+    val recorderTelemetry: StateFlow<RecorderTelemetry> = _recorderTelemetry.asStateFlow()
+
     private val _sideEffects = MutableSharedFlow<StudioSideEffect>(extraBufferCapacity = 8)
     val sideEffects = _sideEffects.asSharedFlow()
 
@@ -368,6 +371,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val dspConfig: DspConfig,
         val activePresetId: Long?,
         val selectedPresetLabel: String,
+        val waveformPeaks: List<Float> = emptyList(),
     )
 
     private data class LiveToolSessionSnapshot(
@@ -486,7 +490,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private val player = StudioAudioPlayer(_uiState.value.dspConfig, application) { telemetry ->
-        _uiState.update { it.copy(playback = telemetry) }
+        _playbackTelemetry.value = telemetry
+        val prevDiscrete = _uiState.value.playback
+        if (prevDiscrete.isPlaying != telemetry.isPlaying || prevDiscrete.durationMs != telemetry.durationMs) {
+            _uiState.update { cur ->
+                cur.copy(
+                    playback = cur.playback.copy(
+                        isPlaying = telemetry.isPlaying,
+                        durationMs = telemetry.durationMs,
+                    ),
+                )
+            }
+        }
         val now = System.currentTimeMillis()
         val stateFlipped = telemetry.isPlaying != lastNotifPlaying
         if (stateFlipped || (telemetry.isPlaying && now - lastNotifSyncMs >= 1500L)) {
@@ -508,21 +523,41 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private val recorder = StudioAudioRecorder(application) { telemetry ->
-        _uiState.update { it.copy(recorder = telemetry) }
+        _recorderTelemetry.value = telemetry
+        val prevRec = _uiState.value.recorder
+        if (prevRec.isRecording != telemetry.isRecording || prevRec.isPaused != telemetry.isPaused) {
+            _uiState.update { cur ->
+                cur.copy(
+                    recorder = cur.recorder.copy(
+                        isRecording = telemetry.isRecording,
+                        isPaused = telemetry.isPaused,
+                    ),
+                )
+            }
+        }
     }
 
     init {
         StudioPlaybackBridge.onTogglePlayPause = { togglePlayPause() }
         StudioPlaybackBridge.onStopPlayback = { stopPlayback() }
+        AudioPlayerManager.onBeforeStartExclusive = {
+            if (_playbackTelemetry.value.isPlaying) {
+                player.pause()
+            }
+        }
 
         val appCtx = getApplication<Application>()
-        AppDiagnosticLog.init(appCtx)
-        RecentEditsCacheManager.init(appCtx)
-        _uiState.update {
-            it.copy(
-                studioLuxuryEnhancement = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(appCtx),
-                localModelStatus = LocalNeuralVoiceEngine.detectLocalModels(appCtx),
-            )
+        viewModelScope.launch(Dispatchers.IO + safeCoroutineHandler) {
+            AppDiagnosticLog.init(appCtx)
+            RecentEditsCacheManager.init(appCtx)
+            val luxury = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(appCtx)
+            val modelStatus = LocalNeuralVoiceEngine.detectLocalModels(appCtx)
+            _uiState.update {
+                it.copy(
+                    studioLuxuryEnhancement = luxury,
+                    localModelStatus = modelStatus,
+                )
+            }
         }
 
         viewModelScope.launch(safeCoroutineHandler) {
@@ -812,6 +847,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             dspConfig = st.dspConfig,
             activePresetId = st.activePresetId,
             selectedPresetLabel = st.selectedPresetLabel,
+            waveformPeaks = st.waveformPeaks,
         )
     }
 
@@ -946,7 +982,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         replaceActiveSourceFile(null)
         activeBuffer = buf
         player.setBuffer(buf, resetPosition = true)
-        val peakDbfs = AudioSignalAnalyzer.analyzeBufferPeakDbfs(buf)
         val cleanCfg = DspConfig()
         if (resetDspOnNewEntry) {
             syncPlayerConfig(cleanCfg, holdBypass = false)
@@ -959,7 +994,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 hasAudio = true,
                 durationMs = buf.durationMs,
                 dspConfig = updatedCfg,
-                originalPeakDbfs = peakDbfs,
                 activePresetId = if (resetDspOnNewEntry) null else cur.activePresetId,
                 selectedPresetLabel = if (resetDspOnNewEntry) "" else cur.selectedPresetLabel,
                 activeCloudDraftId = if (resetDspOnNewEntry) null else cur.activeCloudDraftId,
@@ -973,12 +1007,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
         viewModelScope.launch(Dispatchers.Default) {
+            val peakDbfs = AudioSignalAnalyzer.analyzeBufferPeakDbfs(buf)
             val peaks = computeWaveformPeaksAsync(buf, 120)
             val nrWarn = computePurifierWarning(buf, evalCfg)
             val eqWarn = computeEqWarning(buf, evalCfg)
             if (activeBuffer === buf) {
                 _uiState.update {
                     it.copy(
+                        originalPeakDbfs = peakDbfs,
                         waveformPeaks = peaks,
                         fricativeWarningPurifier = nrWarn,
                         fricativeWarningEq = eqWarn,
@@ -1087,9 +1123,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun ensureLivePreviewPlaying() {
-        if (hasLoadedAudio() && !_uiState.value.playback.isPlaying) {
+        if (hasLoadedAudio() && !_playbackTelemetry.value.isPlaying) {
             stopToolPreview()
             stopMixPreviewPlayer()
+            AudioPlayerManager.releaseAll()
             livePreviewStartedPlayback = true
             player.play()
         }
@@ -1240,7 +1277,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         sliderDebounceJob?.cancel()
         sliderDebounceJob = viewModelScope.launch(Dispatchers.Default) {
-            delay(100L)
+            delay(60L)
             syncPlayerConfig(next)
             val nrWarn = computePurifierWarning(activeBuffer, next)
             val eqWarn = computeEqWarning(activeBuffer, next)
@@ -1351,9 +1388,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         livePreviewStartedPlayback = false
-        if (_uiState.value.playback.isPlaying) {
+        if (_playbackTelemetry.value.isPlaying) {
             player.pause()
         } else {
+            AudioPlayerManager.releaseAll()
             player.play()
         }
     }
@@ -2137,7 +2175,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun toggleSmartDuckingPreviewPlayback() {
-        if (_uiState.value.isSmartMixPreviewActive && mixPreviewPlayer?.isPlaying == true) {
+        if (_uiState.value.isSmartMixPreviewActive && AudioPlayerManager.isPlaying("mix_preview")) {
             stopMixPreviewPlayer()
             return
         }
@@ -2190,23 +2228,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
             _uiState.update { it.copy(previewWavPath = finalFile.absolutePath, isSmartMixPreviewActive = true) }
-            stopMixPreviewPlayer()
-            val mp = MediaPlayer().apply {
-                setDataSource(finalFile.absolutePath)
-                setOnCompletionListener {
-                    stopMixPreviewPlayer()
-                }
-                prepare()
-                start()
-            }
-            mixPreviewPlayer = mp
+            AudioPlayerManager.playFile(
+                file = finalFile,
+                tag = "mix_preview",
+                onCompletion = { stopMixPreviewPlayer() },
+                onError = { stopMixPreviewPlayer() },
+            )
         }
     }
 
     private fun stopMixPreviewPlayer() {
-        runCatching { mixPreviewPlayer?.stop() }
-        runCatching { mixPreviewPlayer?.release() }
-        mixPreviewPlayer = null
+        AudioPlayerManager.stop("mix_preview")
     }
 
     fun applySmartDuckingMixToStudio() {
@@ -2599,9 +2631,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         val restoredCfg = prev.dspConfig.normalized()
         syncPlayerConfig(restoredCfg)
+        val targetBuf = prev.buffer
+        val cachedPeaks = prev.waveformPeaks
         _uiState.update { cur ->
-            val targetBuf = prev.buffer
-            val newPeaks = if (bufferChanged && targetBuf != null) computeWaveformPeaks(targetBuf, 120) else cur.waveformPeaks
+            val newPeaks = if (bufferChanged && cachedPeaks.isNotEmpty()) cachedPeaks else cur.waveformPeaks
             cur.copy(
                 hasAudio = targetBuf != null || cur.hasAudio,
                 durationMs = if (bufferChanged && targetBuf != null) targetBuf.durationMs else cur.durationMs,
@@ -2615,6 +2648,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 canRedoEdit = redoStack.isNotEmpty(),
                 hasUnsavedChanges = true,
             )
+        }
+        if (bufferChanged && targetBuf != null && cachedPeaks.isEmpty()) {
+            viewModelScope.launch(Dispatchers.Default) {
+                val asyncPeaks = computeWaveformPeaksAsync(targetBuf, 120)
+                if (activeBuffer === targetBuf) {
+                    _uiState.update { it.copy(waveformPeaks = asyncPeaks) }
+                }
+            }
         }
         scheduleTempPreviewRender()
         postBanner("تم التراجع عن آخر تعديل")
@@ -2633,9 +2674,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         val restoredCfg = next.dspConfig.normalized()
         syncPlayerConfig(restoredCfg)
+        val targetBuf = next.buffer
+        val cachedPeaks = next.waveformPeaks
         _uiState.update { cur ->
-            val targetBuf = next.buffer
-            val newPeaks = if (bufferChanged && targetBuf != null) computeWaveformPeaks(targetBuf, 120) else cur.waveformPeaks
+            val newPeaks = if (bufferChanged && cachedPeaks.isNotEmpty()) cachedPeaks else cur.waveformPeaks
             cur.copy(
                 hasAudio = targetBuf != null || cur.hasAudio,
                 durationMs = if (bufferChanged && targetBuf != null) targetBuf.durationMs else cur.durationMs,
@@ -2649,6 +2691,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 canRedoEdit = redoStack.isNotEmpty(),
                 hasUnsavedChanges = true,
             )
+        }
+        if (bufferChanged && targetBuf != null && cachedPeaks.isEmpty()) {
+            viewModelScope.launch(Dispatchers.Default) {
+                val asyncPeaks = computeWaveformPeaksAsync(targetBuf, 120)
+                if (activeBuffer === targetBuf) {
+                    _uiState.update { it.copy(waveformPeaks = asyncPeaks) }
+                }
+            }
         }
         scheduleTempPreviewRender()
         postBanner("تمت إعادة التعديل")
@@ -3822,7 +3872,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         // Large disk file (>10MB) FFmpegKit preview stream
-        if (_uiState.value.isToolPreviewPlaying && toolPreviewPlayer?.isPlaying == true) {
+        if (_uiState.value.isToolPreviewPlaying && AudioPlayerManager.isPlaying("tool_preview")) {
             stopToolPreview()
             return
         }
@@ -3864,14 +3914,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     return@launchSingleFlightProcessing
                 }
                 toolPreviewTempFile = rendered
-                val mp = MediaPlayer().apply {
-                    setDataSource(rendered.absolutePath)
-                    setOnCompletionListener { stopToolPreview() }
-                    prepare()
-                    start()
+                val started = AudioPlayerManager.playFile(
+                    file = rendered,
+                    tag = "tool_preview",
+                    onCompletion = { stopToolPreview() },
+                    onError = { stopToolPreview() },
+                )
+                if (started) {
+                    _uiState.update { it.copy(isToolPreviewPlaying = true, exportProgress = 1.0f) }
+                } else {
+                    stopToolPreview()
                 }
-                toolPreviewPlayer = mp
-                _uiState.update { it.copy(isToolPreviewPlaying = true, exportProgress = 1.0f) }
             } finally {
                 if (del1) runCatching { f1?.delete() }
                 if (del2) runCatching { f2?.delete() }
@@ -4039,7 +4092,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         toolLabel: String,
         computePreview: suspend () -> StereoAudioBuffer?,
     ) {
-        if (_uiState.value.isToolPreviewPlaying && toolPreviewPlayer?.isPlaying == true) {
+        if (_uiState.value.isToolPreviewPlaying && AudioPlayerManager.isPlaying("tool_preview")) {
             stopToolPreview()
             return
         }
@@ -4057,14 +4110,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 val file = File(getApplication<Application>().cacheDir, "tool_preview.wav")
                 withContext(Dispatchers.IO) { writeStereoWavFile(file, buf) }
                 toolPreviewTempFile = file
-                val mp = MediaPlayer().apply {
-                    setDataSource(file.absolutePath)
-                    setOnCompletionListener { stopToolPreview() }
-                    prepare()
-                    start()
+                val started = AudioPlayerManager.playFile(
+                    file = file,
+                    tag = "tool_preview",
+                    onCompletion = { stopToolPreview() },
+                    onError = { stopToolPreview() },
+                )
+                if (started) {
+                    _uiState.update { it.copy(isToolPreviewPlaying = true) }
+                } else {
+                    stopToolPreview()
+                    postBanner("تعذر تشغيل المعاينة")
                 }
-                toolPreviewPlayer = mp
-                _uiState.update { it.copy(isToolPreviewPlaying = true) }
             } catch (t: Throwable) {
                 AppDiagnosticLog.logRecoverable(
                     toolName = toolLabel,
@@ -4084,9 +4141,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun stopToolPreview() {
-        runCatching { toolPreviewPlayer?.stop() }
-        runCatching { toolPreviewPlayer?.release() }
-        toolPreviewPlayer = null
+        AudioPlayerManager.stop("tool_preview")
         _uiState.update {
             it.copy(
                 isToolPreviewPlaying = false,
@@ -4417,10 +4472,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun releaseTtsPreviewPlayer() {
-        runCatching { ttsPreviewPlayer?.stop() }
-        runCatching { ttsPreviewPlayer?.release() }
-        ttsPreviewPlayer = null
-        ttsPreviewTempFile?.delete()
+        AudioPlayerManager.stop("tts_preview")
+        runCatching { ttsPreviewTempFile?.delete() }
         ttsPreviewTempFile = null
     }
 
@@ -4492,19 +4545,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     is VoiceRouteOutcome.Success -> {
                         val synthRes = outcome.result
                         ttsPreviewTempFile = synthRes.mp3File
-                        val mp = MediaPlayer()
-                        val prepared = runCatching {
-                            mp.setDataSource(synthRes.mp3File.absolutePath)
-                            mp.prepare()
-                            mp.setOnCompletionListener {
+                        val initiated = AudioPlayerManager.playFile(
+                            file = synthRes.mp3File,
+                            tag = "tts_preview",
+                            onCompletion = {
                                 releaseTtsPreviewPlayer()
                                 _uiState.update { it.copy(ttsUiState = it.ttsUiState.copy(isPreviewing = false)) }
-                            }
-                            mp.start()
-                            ttsPreviewPlayer = mp
-                            true
-                        }.getOrDefault(false)
-                        if (prepared) {
+                            },
+                            onError = {
+                                releaseTtsPreviewPlayer()
+                                _uiState.update {
+                                    it.copy(
+                                        ttsUiState = TtsStudioUiState(
+                                            selectedEngine = engineMode,
+                                            errorMessage = t(lang, "tts_cloud_required_error"),
+                                        ),
+                                    )
+                                }
+                            },
+                        )
+                        if (initiated) {
                             _uiState.update {
                                 it.copy(
                                     ttsUiState = TtsStudioUiState(
@@ -4517,9 +4577,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                                 )
                             }
                         } else {
-                            runCatching { mp.release() }
-                            synthRes.mp3File.delete()
-                            ttsPreviewTempFile = null
+                            releaseTtsPreviewPlayer()
                             _uiState.update {
                                 it.copy(
                                     ttsUiState = TtsStudioUiState(
@@ -5331,39 +5389,28 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
             repository.recordOnlineSoundListen(item)
             val safeUrl = NetworkImmunityManager.enforceHttps(item.streamUrl)
-            val mp = MediaPlayer()
-            val ok = runCatching {
-                mp.setDataSource(safeUrl)
-                mp.setOnPreparedListener { startedMp ->
-                    if (_uiState.value.previewingOnlineUrl == item.streamUrl) {
-                        startedMp.start()
-                    } else {
-                        runCatching { startedMp.release() }
+            val ok = AudioPlayerManager.playUrl(
+                url = safeUrl,
+                tag = "online_preview",
+                onPrepared = {
+                    if (_uiState.value.previewingOnlineUrl != item.streamUrl) {
+                        AudioPlayerManager.stop("online_preview")
                     }
-                }
-                mp.setOnCompletionListener {
-                    stopOnlineSoundPreview()
-                }
-                mp.setOnErrorListener { _, _, _ ->
+                },
+                onCompletion = { stopOnlineSoundPreview() },
+                onError = {
                     stopOnlineSoundPreview()
                     postBanner("تعذر تشغيل المعاينة من الإنترنت")
-                    true
-                }
-                onlinePreviewPlayer = mp
-                mp.prepareAsync()
-                true
-            }.getOrDefault(false)
+                },
+            )
             if (!ok) {
-                runCatching { mp.release() }
                 stopOnlineSoundPreview()
             }
         }
     }
 
     fun stopOnlineSoundPreview() {
-        runCatching { onlinePreviewPlayer?.stop() }
-        runCatching { onlinePreviewPlayer?.release() }
-        onlinePreviewPlayer = null
+        AudioPlayerManager.stop("online_preview")
         _uiState.update { it.copy(previewingOnlineUrl = null) }
     }
 
@@ -5471,7 +5518,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             postBanner(t(_uiState.value.language, "no_audio_loaded"))
             return
         }
-        val posMs = _uiState.value.playback.positionMs.coerceIn(0L, dur)
+        val posMs = _playbackTelemetry.value.positionMs.coerceIn(0L, dur)
         val frac = (posMs.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
         val existing = _uiState.value.audioMarkers
         val marker = AudioMarker(
@@ -6183,21 +6230,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             stopToolPreview()
             player.pause()
             stopMixPreviewPlayer()
-            try {
-                val mp = MediaPlayer().apply {
-                    setDataSource(file.absolutePath)
-                    setOnCompletionListener { stopToolPreview() }
-                    prepare()
-                    start()
-                }
-                toolPreviewPlayer = mp
+            val started = AudioPlayerManager.playFile(
+                file = file,
+                tag = "tool_preview",
+                onCompletion = { stopToolPreview() },
+                onError = {
+                    stopToolPreview()
+                    postBanner(
+                        if (_uiState.value.language == AppLanguage.EN) "Unable to play preview"
+                        else "تعذر تشغيل معاينة الملف الناتج",
+                    )
+                },
+            )
+            if (started) {
                 _uiState.update {
                     it.copy(
                         isToolPreviewPlaying = true,
                         batchQueueState = it.batchQueueState.copy(previewingItemId = item.id),
                     )
                 }
-            } catch (t: Throwable) {
+            } else {
                 stopToolPreview()
                 postBanner(
                     if (_uiState.value.language == AppLanguage.EN) "Unable to play preview"
@@ -6298,6 +6350,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         stopMixPreviewPlayer()
         stopOnlineSoundPreview()
         releaseTtsPreviewPlayer()
+        AudioPlayerManager.releaseAll()
         speechTranscriber.destroy()
         SmartCacheManager.trimSessionCache(getApplication(), keepCount = 5)
         SonixMediaPlaybackService.stopService(getApplication())

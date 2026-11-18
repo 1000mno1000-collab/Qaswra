@@ -87,6 +87,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.audio.formatDurationCentisMs
 import com.example.audio.AudioSignalAnalyzer
 import com.example.audio.formatDurationMs
@@ -519,11 +520,7 @@ fun AudioEditorScreen(
                             } else {
                                 List(80) { 0.08f }
                             }
-                            val playFrac = if (durationMs > 0L) {
-                                (uiState.playback.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                            } else {
-                                0f
-                            }
+                            val playbackState = viewModel.playbackTelemetry.collectAsStateWithLifecycle()
 
                             Canvas(modifier = Modifier.fillMaxSize()) {
                                 val maxSafeX = (size.width - edgePadPx).coerceAtLeast(edgePadPx)
@@ -555,6 +552,11 @@ fun AudioEditorScreen(
                                     )
                                 }
 
+                                val playFrac = if (durationMs > 0L) {
+                                    (playbackState.value.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                                } else {
+                                    0f
+                                }
                                 val pxMin = 2.dp.toPx()
                                 val pxMax = (size.width - pxMin).coerceAtLeast(pxMin)
                                 val px = (playFrac * size.width).coerceIn(pxMin, pxMax)

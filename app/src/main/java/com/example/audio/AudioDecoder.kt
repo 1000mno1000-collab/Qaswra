@@ -29,7 +29,8 @@ import kotlin.math.min
 const val LARGE_AUDIO_THRESHOLD_BYTES = 10L * 1024L * 1024L
 const val MAX_HEAP_DECODE_DURATION_MS = 360_000L // 6 minutes max into heap PCM
 private const val MAX_DECODED_PCM_BYTES = 140L * 1024L * 1024L
-private const val STREAM_CHUNK_BYTES = 8192
+private const val STREAM_CHUNK_BYTES = 65536
+private const val PEAK_SAMPLE_WINDOW_BYTES = 8192
 
 data class QuickAudioProbe(
     val durationMs: Long,
@@ -531,7 +532,7 @@ object AudioDecoder {
     ): List<Float> {
         val frameBytes = (meta.channels * (meta.bitsPerSample / 8)).coerceAtLeast(1)
         val totalFrames = (meta.dataSizeBytes / frameBytes).coerceAtLeast(1L)
-        val chunkBuf = ByteArray(STREAM_CHUNK_BYTES)
+        val chunkBuf = ByteArray(PEAK_SAMPLE_WINDOW_BYTES)
         val peaks = ArrayList<Float>(buckets)
         RandomAccessFile(file, "r").use { raf ->
             for (i in 0 until buckets) {
@@ -539,8 +540,8 @@ object AudioDecoder {
                 val startFrame = (i.toDouble() / buckets * totalFrames).toLong()
                 val bytePos = meta.dataOffset + startFrame * frameBytes
                 raf.seek(bytePos.coerceIn(meta.dataOffset, file.length()))
-                val framesToSample = min(STREAM_CHUNK_BYTES / frameBytes, max(1, (totalFrames / buckets).toInt()))
-                val bytesToRead = (framesToSample * frameBytes).coerceIn(frameBytes, STREAM_CHUNK_BYTES)
+                val framesToSample = min(PEAK_SAMPLE_WINDOW_BYTES / frameBytes, max(1, (totalFrames / buckets).toInt()))
+                val bytesToRead = (framesToSample * frameBytes).coerceIn(frameBytes, PEAK_SAMPLE_WINDOW_BYTES)
                 val got = raf.read(chunkBuf, 0, bytesToRead)
                 var peak = 0.04f
                 if (got >= frameBytes) {
@@ -579,10 +580,10 @@ object AudioDecoder {
         buckets: Int,
         onProgress: (Float) -> Unit,
     ): List<Float> {
-        val checkpoints = 24
+        val checkpoints = 16
         val rawSamples = FloatArray(checkpoints) { -1f }
         var validHits = 0
-        val deadlineMs = System.currentTimeMillis() + 650L
+        val deadlineMs = System.currentTimeMillis() + 350L
 
         if (durationMs > 200L) {
             val extractor = MediaExtractor()

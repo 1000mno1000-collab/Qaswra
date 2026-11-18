@@ -96,8 +96,11 @@ import com.example.ui.components.StudioSectionCard
 import com.example.ui.components.UndoRedoActionsRow
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.model.PlaybackTelemetry
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -879,12 +882,9 @@ fun EffectsChainScreen(
             },
         )
 
-        SpectrumVisualizer(
-            spectrumBands = uiState.playback.spectrumBands,
-            isActive = uiState.playback.isPlaying,
+        EffectsChainSpectrumSection(
+            playbackFlow = viewModel.playbackTelemetry,
             language = lang,
-            peakLevel = uiState.playback.outputLevel,
-            accentColor = StudioColors.VioletBright,
         )
 
         Card(
@@ -1458,39 +1458,10 @@ fun EffectDetailScreen(
 
                     EffectType.COMPRESSOR -> {
                         val comp = cfg.compressor
-                        val grNorm = (uiState.playback.gainReductionDb / 24f).coerceIn(0f, 1f)
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                            ) {
-                                Text(
-                                    text = if (lang == AppLanguage.EN) "Gain Reduction" else "خفض القمم (GR)",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = StudioColors.TextSecondary,
-                                )
-                                Text(
-                                    text = "-${"%.1f".format(uiState.playback.gainReductionDb)} dB",
-                                    style = TelemetryTextStyle,
-                                    color = StudioColors.Amber,
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(8.dp)
-                                    .clip(CircleShape)
-                                    .background(StudioColors.BgTop),
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(grNorm.coerceAtLeast(0.02f))
-                                        .height(8.dp)
-                                        .clip(CircleShape)
-                                        .background(StudioColors.Amber),
-                                )
-                            }
-                        }
+                        CompressorGainReductionMeter(
+                            language = lang,
+                            playbackFlow = viewModel.playbackTelemetry,
+                        )
 
                         StudioParamSlider("Threshold", comp.thresholdDb, -42f, -2f, "${comp.thresholdDb.roundToInt()} dB", StudioColors.Cyan, testTag = "comp_thresh") { v ->
                             viewModel.updateDspConfig { it.copy(compressor = it.compressor.copy(thresholdDb = v)).withSlotEnabled(EffectType.COMPRESSOR, true) }
@@ -1577,4 +1548,60 @@ fun EffectDetailScreen(
         onDismiss = { saveDraftDialogOpen = false },
         onSaveDraft = { draftName -> viewModel.saveCloudDraft(draftName) },
     )
+}
+
+@Composable
+private fun EffectsChainSpectrumSection(
+    playbackFlow: StateFlow<PlaybackTelemetry>,
+    language: AppLanguage,
+) {
+    val playback by playbackFlow.collectAsStateWithLifecycle()
+    SpectrumVisualizer(
+        spectrumBands = playback.spectrumBands,
+        isActive = playback.isPlaying,
+        language = language,
+        peakLevel = playback.outputLevel,
+        accentColor = StudioColors.VioletBright,
+    )
+}
+
+@Composable
+private fun CompressorGainReductionMeter(
+    language: AppLanguage,
+    playbackFlow: StateFlow<PlaybackTelemetry>,
+) {
+    val playback by playbackFlow.collectAsStateWithLifecycle()
+    val grNorm = (playback.gainReductionDb / 24f).coerceIn(0f, 1f)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = if (language == AppLanguage.EN) "Gain Reduction" else "خفض القمم (GR)",
+                style = MaterialTheme.typography.labelMedium,
+                color = StudioColors.TextSecondary,
+            )
+            Text(
+                text = "-${"%.1f".format(playback.gainReductionDb)} dB",
+                style = TelemetryTextStyle,
+                color = StudioColors.Amber,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(CircleShape)
+                .background(StudioColors.BgTop),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(grNorm.coerceAtLeast(0.02f))
+                    .height(8.dp)
+                    .clip(CircleShape)
+                    .background(StudioColors.Amber),
+            )
+        }
+    }
 }

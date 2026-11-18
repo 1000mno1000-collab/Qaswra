@@ -4,7 +4,6 @@ import android.content.Context
 import com.example.audio.EdgeTtsClient
 import com.example.audio.EdgeTtsSynthResult
 import com.example.audio.OnlineGuard
-import com.example.audio.network.NetworkFetchOutcome
 import com.example.audio.network.NetworkImmunityManager
 import com.example.model.AppLanguage
 import com.example.model.TtsDeliveryStyle
@@ -13,14 +12,11 @@ import com.example.model.TtsEngineMode
 import com.example.model.TtsGender
 import com.example.model.TtsPersonaAcousticMode
 import com.example.model.TtsVoicePersona
-import com.example.util.SafeTextGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.net.URLEncoder
-import java.util.Locale
 
 sealed interface VoiceRouteOutcome {
     data class Success(val result: EdgeTtsSynthResult, val engineUsed: TtsEngineMode) : VoiceRouteOutcome
@@ -31,9 +27,8 @@ sealed interface VoiceRouteOutcome {
 class SmartVoiceRouter {
 
     /**
-     * يوجّه النص إلى محركات النطق العصبي السحابي المجانية 100% (أونلاين فقط، بدون أي مفتاح API):
-     * 1. Microsoft Edge Neural TTS (الأصوات العصبية باللهجات العربية والعالمية)
-     * 2. Google Translate Neural TTS HD + معالجة دفء ونقاء مخارج الحروف عبر FFmpegKit
+     * يوجّه النص مباشرة إلى محرك Microsoft Edge Neural TTS عبر WebSocket (`wss://speech.platform.bing.com`)
+     * بصيغة `audio-24khz-48kbitrate-mono-mp3` + معالجة الوثائقي والبودكاست عبر FFmpegKit (أونلاين 100% ومجاني بدون Gemini API).
      */
     suspend fun synthesizeStudioVoiceWithStatus(
         context: Context,
@@ -77,8 +72,7 @@ class SmartVoiceRouter {
     }
 
     /**
-     * يوجّه النص مباشرة لمحرك Edge Neural TTS ثم Google Translate TTS HD المجاني السحابي
-     * دون أي خوادم معطلة أو مدفوعة (404 / 402).
+     * يوجّه النص مباشرة لمحرك Microsoft Edge Neural TTS عبر WebSocket وحفظه كملف MP3 جاهز للتشغيل.
      */
     suspend fun generateNaturalVoice(
         text: String,
@@ -93,24 +87,40 @@ class SmartVoiceRouter {
         outputFile.parentFile?.mkdirs()
 
         val localeTag = voiceCode.split("-").take(2).joinToString("-").ifBlank { "ar-IQ" }
-        val edgeBytes = EdgeTtsClient.synthesizeRawMp3(
+        var edgeBytes = EdgeTtsClient.synthesizeRawMp3(
             text = cleanText,
             voiceName = voiceCode,
             localeTag = localeTag,
         )
+        if (edgeBytes == null || !NetworkImmunityManager.isValidAudioPayload(edgeBytes, "audio/mpeg")) {
+            val backupVoice = if (voiceCode.contains("Rana", ignoreCase = true) ||
+                voiceCode.contains("Zariyah", ignoreCase = true) ||
+                voiceCode.contains("Salma", ignoreCase = true) ||
+                voiceCode.contains("Amany", ignoreCase = true) ||
+                voiceCode.contains("Sana", ignoreCase = true)
+            ) {
+                "ar-SA-ZariyahNeural"
+            } else {
+                "ar-SA-HamedNeural"
+            }
+            if (backupVoice != voiceCode) {
+                edgeBytes = EdgeTtsClient.synthesizeRawMp3(
+                    text = cleanText,
+                    voiceName = backupVoice,
+                    localeTag = "ar-SA",
+                )
+            }
+        }
         if (edgeBytes != null && NetworkImmunityManager.isValidAudioPayload(edgeBytes, "audio/mpeg")) {
-            val wrote = runCatching {
-                BufferedOutputStream(FileOutputStream(outputFile), 8192).use { out ->
+            return@withContext runCatching {
+                BufferedOutputStream(FileOutputStream(outputFile), 16384).use { out ->
                     out.write(edgeBytes)
                     out.flush()
                 }
                 outputFile.length() > 512L
             }.getOrDefault(false)
-            if (wrote) return@withContext true
         }
-
-        val googleOk = tryGoogleTranslateTtsHd(cleanText, localeTag, outputFile, context)
-        googleOk && outputFile.length() > 512L
+        false
     }
 
     suspend fun synthesizeStudioVoice(
@@ -140,67 +150,5 @@ class SmartVoiceRouter {
             is VoiceRouteOutcome.Success -> outcome.result
             else -> null
         }
-    }
-
-    private suspend fun tryGoogleTranslateTtsHd(
-        text: String,
-        localeTag: String,
-        out: File,
-        context: Context? = null,
-    ): Boolean {
-        val tl = localeTag.substringBefore('-').lowercase(Locale.US).ifBlank { "ar" }
-        val chunks = splitTextIntoChunks(text, maxChars = 180)
-        var totalWritten = 0L
-        val wrote = runCatching {
-            BufferedOutputStream(FileOutputStream(out), 8192).use { stream ->
-                for (chunk in chunks) {
-                    val encoded = URLEncoder.encode(chunk, "UTF-8")
-                    val urls = listOf(
-                        "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$encoded",
-                        "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$encoded",
-                        "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=$tl&q=$encoded",
-                    )
-                    val outcome = NetworkImmunityManager.fetchAudioWithFallback(
-                        urls = urls,
-                        context = context,
-                        headers = mapOf("Referer" to "https://translate.google.com/"),
-                        providerLabel = "GoogleCloudTTS($tl)",
-                    )
-                    val chunkBytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes ?: return false
-                    stream.write(chunkBytes)
-                    totalWritten += chunkBytes.size
-                }
-                stream.flush()
-            }
-            totalWritten > 512L
-        }.getOrDefault(false)
-        if (!wrote) runCatching { out.delete() }
-        return wrote
-    }
-
-    private fun splitTextIntoChunks(text: String, maxChars: Int): List<String> {
-        if (text.length <= maxChars) return listOf(text)
-        val result = mutableListOf<String>()
-        val words = text.split(Regex("\\s+"))
-        val current = StringBuilder()
-        for (word in words) {
-            if (word.isEmpty()) continue
-            if (word.length > maxChars) {
-                if (current.isNotEmpty()) {
-                    result.add(current.toString().trim())
-                    current.clear()
-                }
-                result.addAll(SafeTextGuard.safeChunkWord(word, maxChars))
-            } else if (current.length + word.length + 1 > maxChars) {
-                result.add(current.toString().trim())
-                current.clear()
-                current.append(word)
-            } else {
-                if (current.isNotEmpty()) current.append(' ')
-                current.append(word)
-            }
-        }
-        if (current.isNotEmpty()) result.add(current.toString().trim())
-        return result.ifEmpty { listOf(text.take(maxChars)) }
     }
 }

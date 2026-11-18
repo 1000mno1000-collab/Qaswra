@@ -3,7 +3,6 @@ package com.example.ui.screens
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -81,6 +80,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.audio.AudioFileUploader
+import com.example.audio.AudioPlayerManager
 import com.example.audio.AudioUploadOutcome
 import com.example.audio.formatDurationMs
 import com.example.data.MediaStoreAudioRepository
@@ -182,7 +182,6 @@ fun InAppAudioPickerScreen(
     var sortAscending by remember { mutableStateOf(false) }
 
     var previewingUri by remember { mutableStateOf<String?>(null) }
-    var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var previewCachedFile by remember { mutableStateOf<File?>(null) }
     var previewCopyJob by remember { mutableStateOf<Job?>(null) }
     var previewCopyProgress by remember { mutableStateOf<Float?>(null) }
@@ -193,9 +192,7 @@ fun InAppAudioPickerScreen(
         previewCopyJob = null
         previewCopyProgress = null
         previewCopyName = null
-        runCatching { previewPlayer?.stop() }
-        runCatching { previewPlayer?.release() }
-        previewPlayer = null
+        AudioPlayerManager.stop("picker_preview")
         runCatching { previewCachedFile?.delete() }
         previewCachedFile = null
         previewingUri = null
@@ -213,23 +210,16 @@ fun InAppAudioPickerScreen(
         previewCopyJob = scope.launch {
             try {
                 val uri = Uri.parse(item.uriString)
-                val directMp = MediaPlayer()
-                val directOk = runCatching {
-                    directMp.setDataSource(context, uri)
-                    directMp.setOnPreparedListener { prepared -> runCatching { prepared.start() } }
-                    directMp.setOnCompletionListener { stopPreview() }
-                    directMp.setOnErrorListener { _, what, extra ->
+                val directOk = AudioPlayerManager.playUri(
+                    context = context,
+                    uri = uri,
+                    tag = "picker_preview",
+                    onCompletion = { stopPreview() },
+                    onError = { err ->
                         stopPreview()
-                        viewModel.showStatusBanner("MediaPlayerError: what=$what extra=$extra")
-                        true
-                    }
-                    previewPlayer = directMp
-                    directMp.prepareAsync()
-                    true
-                }.getOrElse {
-                    runCatching { directMp.release() }
-                    false
-                }
+                        viewModel.showStatusBanner(err)
+                    },
+                )
                 if (directOk) {
                     previewCopyProgress = null
                     return@launch
@@ -249,26 +239,18 @@ fun InAppAudioPickerScreen(
                 }
                 previewCopyProgress = null
                 previewCachedFile = uploaded.file
-                val mp = MediaPlayer()
-                try {
-                    mp.setDataSource(uploaded.file.absolutePath)
-                    mp.setOnPreparedListener { prepared ->
-                        runCatching { prepared.start() }
-                    }
-                    mp.setOnCompletionListener {
+                val ok = AudioPlayerManager.playFile(
+                    file = uploaded.file,
+                    tag = "picker_preview",
+                    onCompletion = { stopPreview() },
+                    onError = { err ->
                         stopPreview()
-                    }
-                    mp.setOnErrorListener { _, what, extra ->
-                        stopPreview()
-                        viewModel.showStatusBanner("MediaPlayerError: what=$what extra=$extra")
-                        true
-                    }
-                    previewPlayer = mp
-                    mp.prepareAsync()
-                } catch (e: Exception) {
-                    runCatching { mp.release() }
+                        viewModel.showStatusBanner(err)
+                    },
+                )
+                if (!ok) {
                     stopPreview()
-                    viewModel.showStatusBanner("تعذر تشغيل المعاينة: ${e.javaClass.simpleName}: ${e.message}")
+                    viewModel.showStatusBanner("تعذر تشغيل المعاينة")
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -281,10 +263,7 @@ fun InAppAudioPickerScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            previewCopyJob?.cancel()
-            runCatching { previewPlayer?.stop() }
-            runCatching { previewPlayer?.release() }
-            runCatching { previewCachedFile?.delete() }
+            stopPreview()
         }
     }
 

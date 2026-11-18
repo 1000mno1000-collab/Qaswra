@@ -462,8 +462,9 @@ private fun SonixRootApp(
                         Column(modifier = Modifier.fillMaxWidth()) {
                             PersistentTransportBar(
                                 uiState = uiState,
+                                playbackFlow = viewModel.playbackTelemetry,
                                 onPlayPause = {
-                                    if (!uiState.playback.isPlaying &&
+                                    if (!viewModel.playbackTelemetry.value.isPlaying &&
                                         !askedNotificationOnce &&
                                         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                                         ContextCompat.checkSelfPermission(

@@ -43,7 +43,7 @@ sealed interface AudioUploadOutcome {
  * `MediaPlayer` / `FFmpegKit` only ever open completed local files via `file.absolutePath`.
  */
 object AudioFileUploader {
-    private const val COPY_BUFFER_SIZE = 8192
+    private const val COPY_BUFFER_SIZE = 65536
 
     suspend fun copyAudioUriToCache(
         context: Context,

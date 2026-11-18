@@ -109,8 +109,11 @@ import com.example.ui.components.UndoRedoActionsRow
 import com.example.ui.components.rememberEditHistory
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.model.PlaybackTelemetry
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.roundToInt
 
 private data class TtsEditorSnapshot(
@@ -958,18 +961,10 @@ fun TextToSpeechStudioScreen(
                                 color = StudioColors.TextSecondary,
                             )
                             Text(
-                                text = if (uiState.localModelStatus.isTtsReady) {
-                                    if (lang == AppLanguage.EN) {
-                                        "Hybrid Route: Local ONNX Ready + Gemini 2.5 Audio Cloud"
-                                    } else {
-                                        "المسار الهجين: محرك ONNX المحلي جاهز + سحابة Gemini 2.5"
-                                    }
+                                text = if (lang == AppLanguage.EN) {
+                                    "Direct WebSocket: Microsoft Edge Neural (24kHz MP3 + FFmpegKit)"
                                 } else {
-                                    if (lang == AppLanguage.EN) {
-                                        "Hybrid Route: Gemini 2.5 Audio Cloud (ONNX slot ready in assets/models/)"
-                                    } else {
-                                        "المسار الهجين: Gemini 2.5 Audio سحابياً (جاهز لاستقبال نماذج ONNX المحلية)"
-                                    }
+                                    "اتصال WebSocket مباشر: Microsoft Edge Neural (MP3 + FFmpegKit)"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = StudioColors.Cyan,
@@ -1070,18 +1065,10 @@ fun TextToSpeechStudioScreen(
             }
         }
 
-        LiquidAudioWavePreview(
-            amplitude = if (uiState.ttsUiState.isPreviewing || uiState.playback.isPlaying) {
-                0.72f.coerceAtLeast(uiState.playback.outputLevel)
-            } else {
-                0.15f
-            },
-            waveformBars = uiState.playback.waveformBars,
-            isActive = uiState.ttsUiState.isPreviewing || uiState.ttsUiState.isSynthesizingPreview || uiState.playback.isPlaying,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(106.dp)
-                .testTag("tts_liquid_wave"),
+        TtsLiveWavePreview(
+            isPreviewing = uiState.ttsUiState.isPreviewing,
+            isSynthesizingPreview = uiState.ttsUiState.isSynthesizingPreview,
+            playbackFlow = viewModel.playbackTelemetry,
         )
 
         Card(
@@ -1246,6 +1233,7 @@ fun TextToSpeechStudioScreen(
                     selectedPersona = selectedPersona,
                     selectedAcousticMode = selectedAcousticMode,
                     language = lang,
+                    isEdgeNeuralTts = true,
                     onSelectPersona = { persona ->
                         preferVmUndo = false
                         selectedPersona = persona
@@ -2506,6 +2494,7 @@ private fun CategorizedVoicePersonasSection(
     selectedPersona: TtsVoicePersona?,
     selectedAcousticMode: TtsPersonaAcousticMode,
     language: AppLanguage,
+    isEdgeNeuralTts: Boolean = false,
     onSelectPersona: (TtsVoicePersona) -> Unit,
     onSelectAcousticMode: (TtsPersonaAcousticMode) -> Unit,
 ) {
@@ -2517,7 +2506,12 @@ private fun CategorizedVoicePersonasSection(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            text = if (language == AppLanguage.EN) "Men's Voices (Gemini 2.5 Audio)" else "قسم نبرات الرجال (Gemini 2.5)",
+            text = when {
+                isEdgeNeuralTts && language == AppLanguage.EN -> "Men's Voices (Edge Neural)"
+                isEdgeNeuralTts -> "قسم نبرات الرجال (Edge Neural)"
+                language == AppLanguage.EN -> "Men's Voices (Gemini 2.5 Audio)"
+                else -> "قسم نبرات الرجال (Gemini 2.5)"
+            },
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
             color = StudioColors.Cyan,
         )
@@ -2532,6 +2526,7 @@ private fun CategorizedVoicePersonasSection(
                         selected = persona.id == selectedPersona?.id,
                         accentColor = StudioColors.Cyan,
                         language = language,
+                        isEdgeNeuralTts = isEdgeNeuralTts,
                         onClick = { onSelectPersona(persona) },
                         modifier = Modifier.weight(1f),
                     )
@@ -2546,7 +2541,12 @@ private fun CategorizedVoicePersonasSection(
         )
 
         Text(
-            text = if (language == AppLanguage.EN) "Women's Voices (Gemini 2.5 Audio)" else "قسم نبرات النساء (Gemini 2.5)",
+            text = when {
+                isEdgeNeuralTts && language == AppLanguage.EN -> "Women's Voices (Edge Neural)"
+                isEdgeNeuralTts -> "قسم نبرات النساء (Edge Neural)"
+                language == AppLanguage.EN -> "Women's Voices (Gemini 2.5 Audio)"
+                else -> "قسم نبرات النساء (Gemini 2.5)"
+            },
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
             color = StudioColors.Violet,
         )
@@ -2561,6 +2561,7 @@ private fun CategorizedVoicePersonasSection(
                         selected = persona.id == selectedPersona?.id,
                         accentColor = StudioColors.Violet,
                         language = language,
+                        isEdgeNeuralTts = isEdgeNeuralTts,
                         onClick = { onSelectPersona(persona) },
                         modifier = Modifier.weight(1f),
                     )
@@ -2642,10 +2643,20 @@ private fun VoicePersonaCard(
     selected: Boolean,
     accentColor: Color,
     language: AppLanguage,
+    isEdgeNeuralTts: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val personaInteraction = remember { MutableInteractionSource() }
+    val badgeText = if (isEdgeNeuralTts) {
+        if (language == AppLanguage.EN) {
+            persona.defaultAcousticMode.titleEn.substringBefore('(').trim()
+        } else {
+            persona.defaultAcousticMode.titleAr.substringBefore('(').trim()
+        }
+    } else {
+        persona.geminiVoiceName
+    }
     Surface(
         onClick = onClick,
         interactionSource = personaInteraction,
@@ -2671,7 +2682,7 @@ private fun VoicePersonaCard(
                     color = accentColor.copy(alpha = 0.16f),
                 ) {
                     Text(
-                        text = persona.geminiVoiceName,
+                        text = badgeText,
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = accentColor,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -2841,5 +2852,27 @@ fun SettingsScreen(
         currentLanguage = lang,
         onSelect = { viewModel.setLanguage(it) },
         onDismiss = { langDialogOpen = false },
+    )
+}
+
+@Composable
+private fun TtsLiveWavePreview(
+    isPreviewing: Boolean,
+    isSynthesizingPreview: Boolean,
+    playbackFlow: StateFlow<PlaybackTelemetry>,
+) {
+    val playback by playbackFlow.collectAsStateWithLifecycle()
+    LiquidAudioWavePreview(
+        amplitude = if (isPreviewing || playback.isPlaying) {
+            0.72f.coerceAtLeast(playback.outputLevel)
+        } else {
+            0.15f
+        },
+        waveformBars = playback.waveformBars,
+        isActive = isPreviewing || isSynthesizingPreview || playback.isPlaying,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(106.dp)
+            .testTag("tts_liquid_wave"),
     )
 }
