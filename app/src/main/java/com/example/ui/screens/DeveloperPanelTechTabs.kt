@@ -79,16 +79,10 @@ internal fun EnginesStatusTab(
             latestTest = devState.testRuns.firstOrNull { it.engineId == devState.voxCpmEngine.engineId },
             isEn = isEn,
         )
-        EngineStatusDetailCard(
-            engine = devState.audarFlashEngine,
-            latestTest = devState.testRuns.firstOrNull { it.engineId == devState.audarFlashEngine.engineId },
-            isEn = isEn,
-        )
 
-        val engineErrors = remember(devState.voxCpmEngine, devState.audarFlashEngine, diagnosticEntries) {
+        val engineErrors = remember(devState.voxCpmEngine, diagnosticEntries) {
             buildList {
                 devState.voxCpmEngine.lastError?.let { add("VoxCPM2" to it) }
-                devState.audarFlashEngine.lastError?.let { add("Audar-TTS-V1-Flash" to it) }
                 diagnosticEntries.take(8).forEach { entry ->
                     add("${entry.toolName} (${entry.errorCode})" to (if (isEn) entry.causeEn else entry.causeAr))
                 }
@@ -627,18 +621,11 @@ internal fun TestRunnerTab(
                     modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_voxcpm2"),
                 )
                 FilterChip(
-                    selected = devState.selectedTestEngineId == "audar_tts_flash",
-                    onClick = { onSelectEngine("audar_tts_flash") },
-                    label = { Text("Audar-Flash", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    selected = devState.selectedTestEngineId == "sonix_local_studio",
+                    onClick = { onSelectEngine("sonix_local_studio") },
+                    label = { Text("Local Studio", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingIcon = { Icon(Icons.Rounded.Memory, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_audar_flash"),
-                )
-                FilterChip(
-                    selected = devState.selectedTestEngineId == "edge_neural_free",
-                    onClick = { onSelectEngine("edge_neural_free") },
-                    label = { Text("Edge Free", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    leadingIcon = { Icon(Icons.Rounded.Memory, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_edge_neural"),
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_local_studio"),
                 )
             }
 

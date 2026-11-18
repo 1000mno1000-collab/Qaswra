@@ -468,6 +468,7 @@ object NabraOnnxDirectEngine {
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
         autoDownloadIfOnline: Boolean = true,
+        fixedSid: Int? = null,
     ): NabraSynthOutcome = withContext(Dispatchers.IO) {
         val cleanInput = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim(), applyLightDiacritics = true)
         if (cleanInput.isEmpty()) {
@@ -518,6 +519,7 @@ object NabraOnnxDirectEngine {
                     targetSpeed = targetSpeed,
                     targetPitch = targetPitch,
                     luxuryBoost = studioLuxuryEnhancement,
+                    fixedSid = fixedSid,
                 )
             }.onFailure { t ->
                 if (t is kotlinx.coroutines.CancellationException) throw t
@@ -554,6 +556,7 @@ object NabraOnnxDirectEngine {
                 studioLuxuryEnhancement = studioLuxuryEnhancement,
                 persona = persona,
                 acousticMode = acousticMode,
+                fixedSid = fixedSid,
             )
         ) {
             is LocalTtsOutcome.Success -> NabraSynthOutcome.Success(
@@ -574,6 +577,7 @@ object NabraOnnxDirectEngine {
         targetSpeed: Float,
         targetPitch: Float,
         luxuryBoost: Boolean,
+        fixedSid: Int? = null,
     ): LocalTtsSynthResult? = withContext(Dispatchers.IO) {
         val dir = modelDirectory(context)
         val espeakDir = espeakDataDirectory(context)
@@ -591,7 +595,7 @@ object NabraOnnxDirectEngine {
         var singleChunkFile: File? = null
 
         ttsMutex.withLock {
-            val sid = resolveSpeakerId(tts, gender)
+            val sid = resolveSpeakerId(tts, gender, fixedSid)
             for (chunk in chunks) {
                 coroutineContext.ensureActive()
                 val rawWav = File(workDir, "nabra_raw_${UUID.randomUUID()}.wav")
@@ -785,11 +789,18 @@ object NabraOnnxDirectEngine {
         return ttsCfg
     }
 
-    private fun resolveSpeakerId(tts: Any, gender: TtsGender): Int {
+    private fun resolveSpeakerId(tts: Any, gender: TtsGender, fixedSid: Int? = null): Int {
         val numSpeakers = runCatching {
             tts.javaClass.getMethod("numSpeakers").invoke(tts) as? Int
         }.getOrNull() ?: 1
-        return if (numSpeakers <= 1) 0 else if (gender == TtsGender.FEMALE) 0 else 1.coerceAtMost(numSpeakers - 1)
+        if (numSpeakers <= 1) return 0
+        if (fixedSid != null && fixedSid >= 0) {
+            return when (numSpeakers) {
+                2 -> if (gender == TtsGender.FEMALE) 0 else 1
+                else -> fixedSid % numSpeakers
+            }
+        }
+        return if (gender == TtsGender.FEMALE) 0 else 1.coerceAtMost(numSpeakers - 1)
     }
 
     private fun generateChunkWavViaOfflineTts(

@@ -37,10 +37,10 @@ import java.net.UnknownHostException
 import java.util.UUID
 import javax.net.ssl.SSLException
 import kotlin.coroutines.coroutineContext
+import kotlin.math.pow
 
 /**
- * Pluggable AI Voice Engine interface so providers (VoxCPM2, Audar-TTS-V1-Flash, custom GPU endpoints,
- * or on-device fallback) can be swapped cleanly without changing any UI code.
+ * Pluggable AI Voice Engine interface supporting VoxCPM2 (Cloud GPU) and Sonix Local Studio (Deterministic Offline).
  */
 interface AiVoiceStudioEngine {
     val kind: AiVoiceEngineKind
@@ -75,7 +75,6 @@ internal object BackendHttpHelper {
         if (path.isNullOrBlank()) return null
         val file = File(path)
         if (!file.exists() || !file.isFile || file.length() <= 44L) return null
-        // Cap reference clip to 12 MB raw bytes
         if (file.length() > 12L * 1024L * 1024L) return null
         return runCatching {
             Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
@@ -101,7 +100,7 @@ internal object BackendHttpHelper {
             readTimeout = timeoutMs
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             setRequestProperty("Accept", "audio/wav, audio/*, application/json")
-            setRequestProperty("User-Agent", "Sonix-AiVoiceStudio/1.1")
+            setRequestProperty("User-Agent", "Sonix-AiVoiceStudio/2.0")
             if (cleanServerBearer.isNotBlank()) {
                 setRequestProperty("X-Sonix-Bearer", cleanServerBearer)
             }
@@ -136,7 +135,7 @@ internal object BackendHttpHelper {
             connectTimeout = 15_000
             readTimeout = timeoutMs
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "Sonix-AiVoiceStudio/1.1")
+            setRequestProperty("User-Agent", "Sonix-AiVoiceStudio/2.0")
             if (cleanServerBearer.isNotBlank()) {
                 setRequestProperty("X-Sonix-Bearer", cleanServerBearer)
                 setRequestProperty("Authorization", "Bearer $cleanServerBearer")
@@ -169,7 +168,7 @@ internal object BackendHttpHelper {
             is SocketTimeoutException -> AiVoiceSynthOutcome.Error(
                 engine = engine,
                 messageAr = "انتهت مهلة انتظار خادم $serverLabel (قد يكون النموذج قيد التحميل الأول إلى GPU أو النص طويلاً).",
-                messageEn = "$serverLabel server timed out (cold model load or heavy inference): $detail",
+                messageEn = "$serverLabel server timed out: $detail",
                 technicalDetail = t.toString(),
             )
             is UnknownHostException -> AiVoiceSynthOutcome.Error(
@@ -180,13 +179,13 @@ internal object BackendHttpHelper {
             )
             is ConnectException -> AiVoiceSynthOutcome.Error(
                 engine = engine,
-                messageAr = "تعذر فتح اتصال مع خادم $serverLabel — تأكد من تشغيل خدمة FastAPI على الخادم.",
+                messageAr = "تعذر فتح اتصال مع خادم $serverLabel — تأكد من تشغيل الخدمة على الخادم.",
                 messageEn = "Connection refused by $serverLabel server: $detail",
                 technicalDetail = t.toString(),
             )
             is SSLException -> AiVoiceSynthOutcome.Error(
                 engine = engine,
-                messageAr = "فشل التحقق من شهادة SSL/HTTPS لخادم $serverLabel. استخدم رابط HTTPS صالحاً.",
+                messageAr = "فشل التحقق من شهادة SSL/HTTPS لخادم $serverLabel.",
                 messageEn = "SSL/HTTPS handshake failed for $serverLabel: $detail",
                 technicalDetail = t.toString(),
             )
@@ -209,20 +208,20 @@ internal object BackendHttpHelper {
         return when (code) {
             401, 403 -> AiVoiceSynthOutcome.Error(
                 engine = engine,
-                messageAr = "رفض خادم $serverLabel التصريح (HTTP $code): تأكد من رمز الخادم X-Sonix-Bearer أو تسجيل الدخول.",
-                messageEn = "$serverLabel rejected authentication (HTTP $code): check X-Sonix-Bearer token or sign-in.",
+                messageAr = "رفض خادم $serverLabel التصريح (HTTP $code): تأكد من رمز المصادقة أو تسجيل الدخول.",
+                messageEn = "$serverLabel rejected authentication (HTTP $code).",
                 technicalDetail = detail,
             )
             400, 413 -> AiVoiceSynthOutcome.Error(
                 engine = engine,
                 messageAr = "بيانات الطلب أو العينة المرجعية غير صالحة لـ $serverLabel (HTTP $code).",
-                messageEn = "Invalid synthesis request or reference audio for $serverLabel (HTTP $code).",
+                messageEn = "Invalid synthesis request for $serverLabel (HTTP $code).",
                 technicalDetail = detail,
             )
             503 -> AiVoiceSynthOutcome.Error(
                 engine = engine,
-                messageAr = "خادم $serverLabel غير جاهز حالياً (CUDA غير متاح أو نفدت ذاكرة GPU VRAM — HTTP 503).",
-                messageEn = "$serverLabel GPU service unavailable or VRAM OOM (HTTP 503).",
+                messageAr = "خادم $serverLabel غير جاهز حالياً (HTTP 503).",
+                messageEn = "$serverLabel GPU service unavailable (HTTP 503).",
                 technicalDetail = detail,
             )
             else -> AiVoiceSynthOutcome.Error(
@@ -236,10 +235,7 @@ internal object BackendHttpHelper {
 }
 
 /**
- * Primary Multilingual Engine: openbmb/VoxCPM2 (2B diffusion-AR, 48kHz).
- * Connects to configured GPU FastAPI Backend (`/v1/voice-studio/synthesize`), or probes
- * Hugging Face's official public Gradio Space (`openbmb/VoxCPM-Demo`) via HTTP Gradio API when
- * no private GPU server URL is provided. Never fabricates fake audio.
+ * Primary Multilingual Global Engine: openbmb/VoxCPM2 (48kHz, deterministic seed & fixed speaker conditioning).
  */
 class VoxCpm2CloudProvider : AiVoiceStudioEngine {
     override val kind: AiVoiceEngineKind = AiVoiceEngineKind.VOXCPM_2
@@ -265,7 +261,6 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
             }
             return@withContext false
         }
-        // Check whether official public Hugging Face Space is awake
         val (spaceCode, _) = runCatching {
             BackendHttpHelper.getJson("$PUBLIC_SPACE_BASE/gradio_api/info", timeoutMs = 8_000)
         }.getOrDefault(0 to "")
@@ -300,7 +295,6 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
             )
         }
 
-        // Try official Hugging Face Space Gradio API as zero-config public endpoint before asking user for GPU server
         callPublicVoxCpmSpace(context, request, textChunk, outWavFile)
     }
 
@@ -340,7 +334,7 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
             rawBytes = bytes,
             outWavFile = outWavFile,
             engineUsed = kind,
-            appliedPromptSummary = AiVoicePromptBuilder.buildVoxCpmInstruction(request),
+            appliedPromptSummary = "${request.emotion.titleAr} • seed=${request.fixedSeed}",
         )
     }
 
@@ -354,12 +348,12 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         if (!request.referenceAudioPath.isNullOrBlank()) {
             return AiVoiceSynthOutcome.ConfigurationRequired(
                 engine = kind,
-                titleAr = "استنساخ الصوت عبر VoxCPM2 يتطلب ربط خادم GPU الخلفي",
+                titleAr = "استنساخ الصوت عبر VoxCPM2 يتطلب ربط خادم GPU",
                 titleEn = "Voice Cloning Requires Your GPU Backend URL",
-                explanationAr = "الفضاء العام التجريبي على Hugging Face لا يقبل رفع ملفات الاستنساخ المرجعية الخاصة بك عبر API مباشرة، وخدمات Inference Providers لا تستضيف openbmb/VoxCPM2 كخدمة serverless مجانية.",
-                explanationEn = "The public Hugging Face Space does not support private reference audio uploads cleanly without a dedicated GPU server, and openbmb/VoxCPM2 has no managed serverless HF Inference Provider.",
-                setupStepsAr = "1. شغّل خادم `backend/` المرفق على GPU (RunPod / Modal / HF Endpoints / Docker).\n2. ضع رابط الخادم (HTTPS) في تبويب «السيرفر والربط».\n3. يمكنك فوراً اختيار «محرك الاستوديو المحلي» مؤقتاً كبديل بدون سيرفر.",
-                setupStepsEn = "1. Deploy the included `backend/` FastAPI GPU server.\n2. Enter its HTTPS URL in the Server Setup tab.\n3. Or choose the Local Studio Engine for immediate offline synthesis.",
+                explanationAr = "الفضاء العام التجريبي على Hugging Face لا يدعم رفع عينات الاستنساخ الخاصة بك مباشرة.",
+                explanationEn = "The public Space does not support private reference audio cloning directly.",
+                setupStepsAr = "1. استخدم «محرك الاستوديو المحلي (بدون سيرفر)» مباشرة للتوليد الفوري.\n2. أو أدخل رابط خادم GPU الخاص بك للاستنساخ السحابي.",
+                setupStepsEn = "1. Switch to Local Studio Engine for immediate synthesis.\n2. Or configure your GPU backend URL for cloud cloning.",
             )
         }
 
@@ -370,12 +364,12 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         if (infoCode !in 200..299 || infoJsonStr.isBlank()) {
             return AiVoiceSynthOutcome.ConfigurationRequired(
                 engine = kind,
-                titleAr = "خادم VoxCPM2 غير متصل أو يحتاج ربط GPU خاص",
-                titleEn = "VoxCPM2 Cloud Server Setup Required",
-                explanationAr = "نموذج openbmb/VoxCPM2 بحجم 2B باراميتر يحتاج GPU بسعة VRAM عالية ولا يتوفر له مزود Inference Serverless افتراضي على Hugging Face، كما أن الفضاء التجريبي العام متوقف أو مشغول حالياً (HTTP $infoCode).",
-                explanationEn = "openbmb/VoxCPM2 (2B params) requires GPU VRAM and has no managed serverless Inference Provider on Hugging Face, and the public Space is unavailable or sleeping (HTTP $infoCode).",
-                setupStepsAr = "1. انشر السيرفر الخلفي في مجلد `backend/` على أي خادم GPU مع مفتاح HF_TOKEN في متغيرات السيرفر فقط.\n2. أدخل رابط السيرفر الآمن HTTPS في تبويب «السيرفر والربط».\n3. أو بدّل الآن إلى «محرك الاستوديو المحلي» للمتابعة فوراً دون خادم.",
-                setupStepsEn = "1. Deploy `backend/` on a GPU instance (with server-side HF_TOKEN).\n2. Paste your HTTPS backend URL in Server Settings.\n3. Or switch to the Local Studio Engine to work immediately offline.",
+                titleAr = "خادم VoxCPM2 غير متاح حالياً (HTTP $infoCode)",
+                titleEn = "VoxCPM2 Cloud Server Unavailable",
+                explanationAr = "الفضاء التجريبي العام متوقف أو مشغول حالياً. يمكنك التوليد فوراً باستخدام محرك الاستوديو المحلي.",
+                explanationEn = "The public VoxCPM2 Space is sleeping or busy (HTTP $infoCode). Switch to Local Studio Engine immediately.",
+                setupStepsAr = "اضغط «تشغيل بالمحرك المحلي الآن» للمتابعة فوراً بدون سيرفر.",
+                setupStepsEn = "Tap 'Use Local Studio Engine Now' for instant offline synthesis.",
             )
         }
 
@@ -385,12 +379,12 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         if (endpointName == null) {
             return AiVoiceSynthOutcome.ConfigurationRequired(
                 engine = kind,
-                titleAr = "يلزم ربط خادم GPU الخاص لتشغيل VoxCPM2",
-                titleEn = "Dedicated GPU Backend Required for VoxCPM2",
-                explanationAr = "تعذر مطابقة واجهة الفضاء العام لـ VoxCPM تلقائياً. يرجى ربط خادم `backend/` الخاص بك للحصول على واجهة API ثابتة بدقة 48kHz.",
-                explanationEn = "Public Space Gradio endpoints changed or require authentication. Connect your `backend/` GPU server for stable 48kHz generation.",
-                setupStepsAr = "ضع رابط خادم FastAPI HTTPS من مجلد `backend/` داخل تبويب الإعدادات.",
-                setupStepsEn = "Configure your HTTPS `backend/` URL in the Server Setup tab.",
+                titleAr = "تعذر مطابقة واجهة VoxCPM2 العامة",
+                titleEn = "VoxCPM2 Endpoint Unavailable",
+                explanationAr = "الرجاء استخدام «محرك الاستوديو المحلي» للمتابعة فوراً.",
+                explanationEn = "Please use Local Studio Engine for immediate synthesis.",
+                setupStepsAr = "اضغط «تشغيل بالمحرك المحلي الآن».",
+                setupStepsEn = "Tap 'Use Local Studio Engine Now'.",
             )
         }
 
@@ -418,22 +412,21 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         if (eventId.isNullOrBlank()) {
             return AiVoiceSynthOutcome.ConfigurationRequired(
                 engine = kind,
-                titleAr = "الفضاء العام مزدحم أو مقيد (HTTP $submitCode)",
-                titleEn = "Public Space Queue Busy or Unavailable (HTTP $submitCode)",
-                explanationAr = "لم يتمكن الفضاء العام لـ VoxCPM2 من قبول الطلب في الوقت الحالي، ويفضّل ربط خادم GPU الخلفي في `backend/` لضمان الاستقرار والسرعة والخصوصية.",
-                explanationEn = "The public VoxCPM2 demo queue did not accept the job (HTTP $submitCode). Connect your private `backend/` GPU server for reliable synthesis.",
-                setupStepsAr = "أدخل رابط خادم GPU الخلفي HTTPS في تبويب «إعدادات السيرفر والربط» أو اختر «محرك الاستوديو المحلي» مؤقتاً.",
-                setupStepsEn = "Enter your HTTPS GPU backend URL in Server Setup, or choose Local Studio Engine.",
+                titleAr = "خادم VoxCPM2 العام مزدحم (HTTP $submitCode)",
+                titleEn = "Public Space Queue Busy (HTTP $submitCode)",
+                explanationAr = "لم يتمكن الفضاء العام من قبول الطلب حالياً، يمكنك المتابعة فوراً بالمحرك المحلي.",
+                explanationEn = "The public VoxCPM2 Space queue is busy (HTTP $submitCode).",
+                setupStepsAr = "اضغط «تشغيل بالمحرك المحلي الآن».",
+                setupStepsEn = "Tap 'Use Local Studio Engine Now'.",
             )
         }
 
-        // Poll SSE stream briefly for Gradio result
         val audioUrl = pollGradioEventForAudioUrl("$PUBLIC_SPACE_BASE/gradio_api/call/$apiSlug/$eventId")
         if (audioUrl.isNullOrBlank()) {
             return AiVoiceSynthOutcome.Error(
                 engine = kind,
-                messageAr = "انتهت مهلة الانتظار في صف الفضاء العام لـ VoxCPM2 دون ملف صوتي.",
-                messageEn = "Public VoxCPM2 Space queue timed out without returning audio.",
+                messageAr = "انتهت مهلة الانتظار في صف VoxCPM2 دون ملف صوتي.",
+                messageEn = "Public VoxCPM2 Space queue timed out.",
             )
         }
 
@@ -454,7 +447,7 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                 rawBytes = audioOutcome.value.bytes,
                 outWavFile = outWavFile,
                 engineUsed = kind,
-                appliedPromptSummary = instruction,
+                appliedPromptSummary = "${request.emotion.titleAr} • seed=${request.fixedSeed}",
             )
             is com.example.audio.network.NetworkFetchOutcome.Offline -> AiVoiceSynthOutcome.Error(
                 engine = kind,
@@ -503,6 +496,8 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                 key.contains("control") || key.contains("instruct") || key.contains("style") || key.contains("description") -> {
                     arr.put(instruction)
                 }
+                key.contains("randomize") || key.contains("random_seed") -> arr.put(false)
+                key.contains("seed") -> arr.put(request.fixedSeed)
                 key.contains("cfg") -> arr.put(request.cfgValue.toDouble())
                 key.contains("step") -> arr.put(request.inferenceTimesteps)
                 key.contains("normalize") -> arr.put(request.normalizeAudio)
@@ -543,107 +538,10 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
 }
 
 /**
- * Arabic Specialist Engine: audarai/Audar-TTS-V1-Flash (Open License v1.0, Arabic-first + inline tags + zero-shot clone)
- * with legacy support for audarai/Audar-TTS-V1-Turbo when configured on a licensed backend.
- * Neither model has a managed public Hugging Face Serverless Inference Provider, so cloud GPU
- * synthesis connects to our `backend/` server.
- */
-class AudarTtsCloudProvider(
-    override val kind: AiVoiceEngineKind = AiVoiceEngineKind.AUDAR_TTS_V1_FLASH,
-) : AiVoiceStudioEngine {
-
-    private val isFlash: Boolean
-        get() = kind == AiVoiceEngineKind.AUDAR_TTS_V1_FLASH
-
-    private val engineShortLabel: String
-        get() = if (isFlash) "Audar-TTS-V1-Flash" else "Audar-TTS-V1-Turbo"
-
-    override suspend fun checkHealth(
-        context: Context,
-        backendUrl: String,
-        bearerToken: String,
-    ): Boolean = withContext(Dispatchers.IO) {
-        val cleanBase = backendUrl.trim().trimEnd('/')
-        if (cleanBase.isEmpty() || !OnlineGuard.isOnline(context)) return@withContext false
-        val (code, body) = runCatching {
-            BackendHttpHelper.getJson("$cleanBase/health", bearerToken = bearerToken)
-        }.getOrDefault(0 to "")
-        if (code !in 200..299) return@withContext false
-        val obj = runCatching { JSONObject(body) }.getOrNull()
-        if (isFlash) {
-            obj?.optBoolean("audar_flash_ready", obj.optBoolean("audar_tts_ready", false)) ?: false
-        } else {
-            obj?.optBoolean("audar_tts_ready", false) ?: false
-        }
-    }
-
-    override suspend fun synthesizeChunk(
-        context: Context,
-        request: AiVoiceSynthRequest,
-        textChunk: String,
-        backendUrl: String,
-        outWavFile: File,
-        bearerToken: String,
-    ): AiVoiceSynthOutcome = withContext(Dispatchers.IO) {
-        val cleanBase = backendUrl.trim().trimEnd('/')
-        if (cleanBase.isEmpty()) {
-            return@withContext AiVoiceSynthOutcome.ConfigurationRequired(
-                engine = kind,
-                titleAr = "محرك $engineShortLabel يتطلب ربط خادم GPU الخلفي",
-                titleEn = "$engineShortLabel Requires Backend GPU Server",
-                explanationAr = "بحسب صفحة النموذج الرسمية على Hugging Face، فإن نموذج ${kind.modelRepoId} لا يتوفر له أي مزود Inference Serverless عام مجاني من Hugging Face ويحتاج إلى استضافة GPU عبر خادم `backend/` (llama.cpp + NeuCodec / Transformers).",
-                explanationEn = "Per Hugging Face's official model registry, ${kind.modelRepoId} has no managed public Serverless Inference Provider (`inference: false`) and requires connecting your GPU `backend/` server.",
-                setupStepsAr = "1. شغّل الخادم المرفق في مجلد `backend/` على أي خادم GPU (مع وضع HF_TOKEN في السيرفر فقط دون وضعه في التطبيق).\n2. أدخل رابط HTTPS للخادم في تبويب «السيرفر والربط».\n3. أو اختر الآن «محرك الاستوديو المحلي» للعمل فوراً على الهاتف بدون سيرفر.",
-                setupStepsEn = "1. Deploy the included `backend/` server on GPU (keeping HF_TOKEN strictly server-side).\n2. Enter the server HTTPS URL in the Server Setup tab.\n3. Or select the Local Studio Engine to synthesize immediately on-device.",
-            )
-        }
-
-        if (!OnlineGuard.isOnline(context)) {
-            return@withContext AiVoiceSynthOutcome.Error(
-                engine = kind,
-                messageAr = "لا يوجد اتصال نشط بالإنترنت للوصول إلى خادم $engineShortLabel.",
-                messageEn = "No internet connectivity to reach $engineShortLabel backend.",
-            )
-        }
-
-        val refB64 = BackendHttpHelper.encodeFileBase64OrNull(request.referenceAudioPath)
-        val payload = AiVoicePromptBuilder.buildBackendPayloadJson(request, textChunk, refB64)
-        val (code, bytes) = try {
-            BackendHttpHelper.postSynthesizeJson(
-                context = context,
-                endpointUrl = "$cleanBase/v1/voice-studio/synthesize",
-                payload = payload,
-                bearerToken = bearerToken,
-            )
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: Throwable) {
-            return@withContext BackendHttpHelper.mapConnectionError(kind, engineShortLabel, t)
-        }
-
-        if (code !in 200..299) {
-            return@withContext BackendHttpHelper.mapHttpError(kind, engineShortLabel, code, bytes)
-        }
-
-        val formattedPreview = AiVoicePromptBuilder.buildAudarExpressiveText(
-            textChunk,
-            request.emotion,
-            request.emotionIntensity,
-        )
-        persistAudioBytesAsWav(
-            context = context,
-            rawBytes = bytes,
-            outWavFile = outWavFile,
-            engineUsed = kind,
-            appliedPromptSummary = "$engineShortLabel • ${request.dialect.titleAr} • $formattedPreview",
-        )
-    }
-}
-
-/**
- * Explicit On-Device Fallback Engine (never masquerades as VoxCPM2 or Audar-TTS).
- * Uses Sonix's real local neural/TTS synthesis + expressive DSP shaping (whisper, sadness, anger,
- * child, elderly, cartoon, deep male) directly on device when user chooses local mode.
+ * Deterministic On-Device Studio Engine (No Server Required).
+ * Strictly binds each voice to its fixed speaker ID (`fixedSid`), fixed acoustic signature
+ * (pitch, formant shift, EQ), and mathematically locks every emotion + intensity % + speechRate
+ * with zero randomness.
  */
 class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
     override val kind: AiVoiceEngineKind = AiVoiceEngineKind.SONIX_LOCAL_STUDIO
@@ -663,27 +561,29 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
         outWavFile: File,
         bearerToken: String,
     ): AiVoiceSynthOutcome = withContext(Dispatchers.IO) {
-        val mappedDialect = mapToLocalDialect(request.language, request.dialect)
+        val mappedDialect = mapToLocalDialect(request.language)
         val mappedGender = when (request.category) {
-            AiVoiceCategory.FEMALE, AiVoiceCategory.CHILD -> TtsGender.FEMALE
-            else -> TtsGender.MALE
+            AiVoiceCategory.FEMALE -> TtsGender.FEMALE
+            AiVoiceCategory.MALE -> TtsGender.MALE
         }
         val mappedStyle = when (request.emotion) {
-            AiVoiceEmotion.SAD, AiVoiceEmotion.CRYING -> TtsDeliveryStyle.SAD
-            AiVoiceEmotion.ANGER -> TtsDeliveryStyle.ANGRY
-            AiVoiceEmotion.EXCITED, AiVoiceEmotion.JOY, AiVoiceEmotion.LAUGH -> TtsDeliveryStyle.ENERGETIC
+            AiVoiceEmotion.SAD -> TtsDeliveryStyle.SAD
+            AiVoiceEmotion.SERIOUS -> TtsDeliveryStyle.RADIO_ANCHOR
+            AiVoiceEmotion.EXCITED -> TtsDeliveryStyle.ENERGETIC
             AiVoiceEmotion.CALM, AiVoiceEmotion.WHISPER -> TtsDeliveryStyle.STORYTELLING
-            AiVoiceEmotion.FEAR, AiVoiceEmotion.SURPRISED -> TtsDeliveryStyle.DRAMATIC
             AiVoiceEmotion.NEUTRAL -> TtsDeliveryStyle.NATURAL_WARM
         }
-        val acousticMode = when (request.category) {
-            AiVoiceCategory.NARRATOR -> TtsPersonaAcousticMode.DOCUMENTARY
-            AiVoiceCategory.ELDERLY, AiVoiceCategory.MALE, AiVoiceCategory.FEMALE -> TtsPersonaAcousticMode.PODCAST
+        val acousticMode = when (request.fixedSid) {
+            1, 4 -> TtsPersonaAcousticMode.DOCUMENTARY
+            0, 3 -> TtsPersonaAcousticMode.PODCAST
             else -> TtsPersonaAcousticMode.NATURAL
         }
-        val speed = (request.pace.speedMultiplier * request.emotion.speedBiasFactor).coerceIn(0.60f, 1.60f)
-        val pitchRatio = Math.pow(2.0, ((request.pitchOffsetSemitones + request.emotion.pitchBiasSemitones) / 12.0)).toFloat()
-            .coerceIn(0.65f, 1.60f)
+
+        val intensity = request.emotionIntensity.coerceIn(0.10f, 1.0f)
+        val emotionSpeedFactor = 1.0f + (request.emotion.speedBiasFactor - 1.0f) * intensity
+        val finalSpeed = (request.speechRate * emotionSpeedFactor).coerceIn(0.55f, 1.75f)
+        val totalSemitones = request.pitchOffsetSemitones + (request.emotion.pitchBiasSemitones * intensity)
+        val finalPitchRatio = 2.0.pow(totalSemitones / 12.0).toFloat().coerceIn(0.62f, 1.65f)
 
         val appLang = when (request.language) {
             AiVoiceLanguage.EN -> AppLanguage.EN
@@ -697,12 +597,13 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
             dialect = mappedDialect,
             gender = mappedGender,
             style = mappedStyle,
-            speechRate = speed,
-            pitch = pitchRatio,
+            speechRate = finalSpeed,
+            pitch = finalPitchRatio,
             language = appLang,
             studioLuxuryEnhancement = true,
             acousticMode = acousticMode,
             autoDownloadIfOnline = false,
+            fixedSid = request.fixedSid,
         )
 
         when (outcome) {
@@ -713,11 +614,10 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
             )
             is VoiceRouteOutcome.Success -> {
                 var buf = outcome.result.buffer
-                buf = if (request.emotion == AiVoiceEmotion.WHISPER) {
-                    applySoftWhisperShaping(buf)
-                } else {
-                    applyCategoryFormantShaping(buf, request.category, request.emotion, request.emotionIntensity)
-                }
+                buf = applyDeterministicVoiceAndEmotionDsp(
+                    input = buf,
+                    request = request,
+                )
                 writeStereoWavFile(outWavFile, buf)
                 runCatching { outcome.result.audioFile.delete() }
                 AiVoiceSynthOutcome.Success(
@@ -725,167 +625,116 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
                     sampleRate = buf.sampleRate,
                     durationMs = buf.durationMs,
                     engineUsed = kind,
-                    appliedPromptSummary = "${request.category.titleAr} • ${request.emotion.titleAr} (محلي)",
+                    appliedPromptSummary = "${request.category.titleAr} (SID ${request.fixedSid}) • ${request.emotion.titleAr} ${(intensity * 100).toInt()}%",
                     isCloudGenerated = false,
                 )
             }
         }
     }
 
-    private suspend fun applyCategoryFormantShaping(
+    private suspend fun applyDeterministicVoiceAndEmotionDsp(
         input: StereoAudioBuffer,
-        category: AiVoiceCategory,
-        emotion: AiVoiceEmotion,
-        intensity: Float = 0.65f,
+        request: AiVoiceSynthRequest,
     ): StereoAudioBuffer {
-        val catShaped = when (category) {
-            AiVoiceCategory.CHILD -> transformVoiceOffline(
-                source = input,
-                pitchSemitones = 2.6f,
-                formantShift = 1.18f,
-                warmthDb = 0f,
-                presenceDb = 2.2f,
-                mix = 0.85f,
-                studioMasteringPolish = true,
-            )
-            AiVoiceCategory.CARTOON -> transformVoiceOffline(
-                source = input,
-                pitchSemitones = 4.2f,
-                formantShift = 1.28f,
-                warmthDb = -1f,
-                presenceDb = 3.0f,
-                mix = 0.90f,
-                studioMasteringPolish = true,
-            )
-            AiVoiceCategory.ELDERLY -> transformVoiceOffline(
-                source = input,
-                pitchSemitones = -1.6f,
-                formantShift = 0.92f,
-                warmthDb = 2.5f,
-                presenceDb = -1.5f,
-                mix = 0.80f,
-                vibratoHz = 5.4f,
-                vibratoDepth = if (emotion == AiVoiceEmotion.SAD || emotion == AiVoiceEmotion.CRYING) 0.14f else 0.08f,
-                studioMasteringPolish = true,
-            )
-            AiVoiceCategory.NARRATOR -> transformVoiceOffline(
-                source = input,
-                pitchSemitones = -1.4f,
-                formantShift = 0.94f,
-                warmthDb = 3.2f,
-                presenceDb = 2.5f,
-                mix = 0.78f,
-                bassBoostDb = 2.5f,
-                studioMasteringPolish = true,
-            )
-            else -> input
+        val roleShaped = transformVoiceOffline(
+            source = input,
+            pitchSemitones = 0f, // pitch already applied accurately at base speed/pitch stage
+            formantShift = request.fixedFormantShift.coerceIn(0.84f, 1.20f),
+            warmthDb = request.fixedEqLowDb,
+            presenceDb = request.fixedEqPresenceDb,
+            mix = 0.85f,
+            studioMasteringPolish = true,
+        )
+
+        if (request.emotion == AiVoiceEmotion.WHISPER) {
+            return applyDeterministicWhisperShaping(roleShaped, request.emotionIntensity)
         }
-        val k = intensity.coerceIn(0.25f, 1.0f)
-        return when (emotion) {
-            AiVoiceEmotion.CRYING -> transformVoiceOffline(
-                source = catShaped,
-                pitchSemitones = 0.25f * k,
-                formantShift = 0.98f,
-                warmthDb = 2.2f * k,
-                presenceDb = -1.2f * k,
-                mix = 0.65f,
-                vibratoHz = 6.2f,
-                vibratoDepth = 0.18f * k,
-                studioMasteringPolish = true,
-            )
-            AiVoiceEmotion.SAD -> transformVoiceOffline(
-                source = catShaped,
-                pitchSemitones = -0.5f * k,
-                formantShift = 0.97f,
-                warmthDb = 2.5f * k,
-                presenceDb = -1.5f * k,
-                mix = 0.55f,
-                vibratoHz = 4.4f,
-                vibratoDepth = 0.08f * k,
-                studioMasteringPolish = true,
-            )
-            AiVoiceEmotion.FEAR -> transformVoiceOffline(
-                source = catShaped,
-                pitchSemitones = 0.6f * k,
-                formantShift = 1.04f,
-                warmthDb = -1.0f * k,
-                presenceDb = 2.2f * k,
-                mix = 0.65f,
-                vibratoHz = 7.4f,
-                vibratoDepth = 0.20f * k,
-                studioMasteringPolish = true,
-            )
-            AiVoiceEmotion.ANGER -> transformVoiceOffline(
-                source = catShaped,
-                pitchSemitones = -0.3f * k,
-                formantShift = 0.96f,
-                warmthDb = 1.5f * k,
-                presenceDb = 3.8f * k,
-                mix = 0.70f,
-                bassBoostDb = 2.0f * k,
-                studioMasteringPolish = true,
-            )
-            AiVoiceEmotion.JOY, AiVoiceEmotion.EXCITED, AiVoiceEmotion.LAUGH, AiVoiceEmotion.SURPRISED -> transformVoiceOffline(
-                source = catShaped,
-                pitchSemitones = 0.7f * k,
-                formantShift = 1.04f,
-                warmthDb = 0.6f * k,
-                presenceDb = 2.8f * k,
-                mix = 0.60f,
-                vibratoHz = if (emotion == AiVoiceEmotion.LAUGH) 8.5f else 0f,
-                vibratoDepth = if (emotion == AiVoiceEmotion.LAUGH) 0.14f * k else 0f,
+
+        val k = request.emotionIntensity.coerceIn(0.10f, 1.0f)
+        return when (request.emotion) {
+            AiVoiceEmotion.NEUTRAL -> roleShaped
+            AiVoiceEmotion.EXCITED -> transformVoiceOffline(
+                source = roleShaped,
+                pitchSemitones = 0.30f * k,
+                formantShift = 1.0f + 0.04f * k,
+                warmthDb = 0.8f * k,
+                presenceDb = 3.2f * k,
+                mix = 0.72f,
                 studioMasteringPolish = true,
             )
             AiVoiceEmotion.CALM -> transformVoiceOffline(
-                source = catShaped,
-                pitchSemitones = -0.35f * k,
-                formantShift = 0.98f,
+                source = roleShaped,
+                pitchSemitones = -0.20f * k,
+                formantShift = 1.0f - 0.02f * k,
                 warmthDb = 3.0f * k,
-                presenceDb = -1.0f * k,
-                mix = 0.55f,
+                presenceDb = -1.2f * k,
+                mix = 0.68f,
                 studioMasteringPolish = true,
             )
-            else -> catShaped
+            AiVoiceEmotion.SAD -> transformVoiceOffline(
+                source = roleShaped,
+                pitchSemitones = -0.45f * k,
+                formantShift = 1.0f - 0.03f * k,
+                warmthDb = 2.6f * k,
+                presenceDb = -1.8f * k,
+                mix = 0.72f,
+                vibratoHz = 4.2f,
+                vibratoDepth = 0.08f * k,
+                studioMasteringPolish = true,
+            )
+            AiVoiceEmotion.SERIOUS -> transformVoiceOffline(
+                source = roleShaped,
+                pitchSemitones = -0.30f * k,
+                formantShift = 1.0f - 0.04f * k,
+                warmthDb = 3.2f * k,
+                presenceDb = 2.6f * k,
+                mix = 0.75f,
+                bassBoostDb = 2.0f * k,
+                studioMasteringPolish = true,
+            )
+            AiVoiceEmotion.WHISPER -> roleShaped
         }
     }
 
-    private fun mapToLocalDialect(lang: AiVoiceLanguage, dialect: AiArabicDialect): TtsDialect {
+    private fun mapToLocalDialect(lang: AiVoiceLanguage): TtsDialect {
         val list = com.example.model.TTS_DIALECTS
         return when (lang) {
             AiVoiceLanguage.EN -> list.firstOrNull { it.id == "en_us" } ?: list.first()
             AiVoiceLanguage.FA -> list.firstOrNull { it.id == "persian" } ?: list.first()
             AiVoiceLanguage.TR -> list.firstOrNull { it.id == "turkish" } ?: list.first()
-            AiVoiceLanguage.AR -> when (dialect) {
-                AiArabicDialect.IRAQI -> list.firstOrNull { it.id == "iraqi" } ?: list.first()
-                AiArabicDialect.GULF -> list.firstOrNull { it.id == "emirati" } ?: list.first()
-                AiArabicDialect.SAUDI -> list.firstOrNull { it.id == "saudi" } ?: list.first()
-                AiArabicDialect.LEVANTINE -> list.firstOrNull { it.id == "syrian" } ?: list.first()
-                AiArabicDialect.EGYPTIAN -> list.firstOrNull { it.id == "egyptian" } ?: list.first()
-                AiArabicDialect.MOROCCAN -> list.firstOrNull { it.id == "moroccan" } ?: list.first()
-                AiArabicDialect.JORDANIAN -> list.firstOrNull { it.id == "jordanian" } ?: list.first()
-                AiArabicDialect.MSA -> list.firstOrNull { it.id == "standard" } ?: list.first()
-            }
+            AiVoiceLanguage.AR -> list.firstOrNull { it.id == "standard" } ?: list.first()
             else -> list.firstOrNull { it.id == "en_us" } ?: list.first()
         }
     }
 
-    private fun applySoftWhisperShaping(input: StereoAudioBuffer): StereoAudioBuffer {
+    /**
+     * 100% deterministic airy whisper filter (fixed LCG seed + high-pass filter scaling smoothly with intensity).
+     */
+    private fun applyDeterministicWhisperShaping(
+        input: StereoAudioBuffer,
+        intensity: Float,
+    ): StereoAudioBuffer {
+        val k = intensity.coerceIn(0.15f, 1.0f)
         val n = input.frameCount
         val outL = FloatArray(n)
         val outR = FloatArray(n)
         var prevL = 0f
         var prevR = 0f
         var rng = 0x1234567
+        val breathGain = 0.015f + 0.025f * k
+        val dryBlend = (1.0f - 0.65f * k).coerceIn(0.25f, 0.85f)
+        val hpWeight = 0.55f + 0.20f * k
         for (i in 0 until n) {
             rng = rng * 1664525 + 1013904223
             val white = ((rng ushr 16) and 0x7FFF) / 32768f - 0.5f
-            val hpL = (input.left[i] - 0.92f * prevL) * 0.58f
-            val hpR = (input.right[i] - 0.92f * prevR) * 0.58f
+            val hpL = (input.left[i] - 0.92f * prevL) * hpWeight
+            val hpR = (input.right[i] - 0.92f * prevR) * hpWeight
             prevL = input.left[i]
             prevR = input.right[i]
-            val breath = white * 0.025f * kotlin.math.min(1f, kotlin.math.abs(hpL) * 6f)
-            outL[i] = (hpL + breath).coerceIn(-0.95f, 0.95f)
-            outR[i] = (hpR + breath).coerceIn(-0.95f, 0.95f)
+            val env = kotlin.math.min(1f, kotlin.math.abs(hpL) * 6f)
+            val breath = white * breathGain * env
+            outL[i] = (hpL * (1f - dryBlend * 0.4f) + input.left[i] * dryBlend * 0.25f + breath).coerceIn(-0.95f, 0.95f)
+            outR[i] = (hpR * (1f - dryBlend * 0.4f) + input.right[i] * dryBlend * 0.25f + breath).coerceIn(-0.95f, 0.95f)
         }
         return StereoAudioBuffer(outL, outR, input.sampleRate)
     }
@@ -924,7 +773,6 @@ internal suspend fun persistAudioBytesAsWav(
         )
     }
 
-    // If backend returned MP3/OGG/FLAC/M4A, decode cleanly into WAV so dialogue stitching and preview always work reliably
     val tmpCompressed = File(outWavFile.parentFile, "tmp_resp_${UUID.randomUUID()}.bin")
     FileOutputStream(tmpCompressed).use { it.write(rawBytes) }
     try {
@@ -953,15 +801,12 @@ internal suspend fun persistAudioBytesAsWav(
 
 /**
  * Central Coordinator routing Single Synthesis & Multi-Character Dialogue requests across
- * pluggable [AiVoiceStudioEngine] implementations.
+ * VoxCPM2 and Sonix Local Studio Engine with strict determinism.
  */
 class AiVoiceStudioCoordinator(
     providers: List<AiVoiceStudioEngine> = listOf(
         VoxCpm2CloudProvider(),
-        AudarTtsCloudProvider(AiVoiceEngineKind.AUDAR_TTS_V1_FLASH),
-        AudarTtsCloudProvider(AiVoiceEngineKind.AUDAR_TTS_V1_TURBO),
         SonixLocalStudioEngineProvider(),
-        EdgeNeuralCloudProvider(),
     ),
 ) {
     private val registry: Map<AiVoiceEngineKind, AiVoiceStudioEngine> = providers.associateBy { it.kind }
@@ -1000,7 +845,6 @@ class AiVoiceStudioCoordinator(
             if (code in 200..299 && body.isNotBlank()) {
                 val obj = runCatching { JSONObject(body) }.getOrNull()
                 val voxReady = obj?.optBoolean("voxcpm2_ready", false) ?: false
-                val audarReady = obj?.optBoolean("audar_flash_ready", obj.optBoolean("audar_tts_ready", false)) ?: false
                 val pkgInstalled = obj?.optBoolean("voxcpm2_package_installed", false) ?: false
                 val voxLoaded = obj?.optBoolean("voxcpm2_loaded", false) ?: false
                 val cudaAvail = obj?.optBoolean("cuda_available", false) ?: false
@@ -1028,13 +872,11 @@ class AiVoiceStudioCoordinator(
                     isChecking = false,
                     serverReachable = true,
                     voxCpm2Ready = voxReady,
-                    audarTurboReady = audarReady,
                     voxcpm2PackageInstalled = pkgInstalled,
                     voxcpm2Loaded = voxLoaded,
                     cudaAvailable = cudaAvail,
                     authRequired = authReq,
                     voxcpm2LoadError = loadErr,
-                    edgeNeuralReady = obj?.optBoolean("edge_neural_free_ready", true) ?: true,
                     statusDetail = statusMsg,
                     serverGpuInfo = gpuDisplay,
                 )
@@ -1055,9 +897,9 @@ class AiVoiceStudioCoordinator(
             voxCpmPublicSpaceChecked = true,
             voxCpmPublicSpaceAvailable = spaceOk,
             statusDetail = if (spaceOk) {
-                "الفضاء العام لـ VoxCPM2 متاح مؤقتاً؛ Audar-TTS-V1-Flash واستنساخ الصوت يتطلبان ربط خادم GPU"
+                "الفضاء العام لـ VoxCPM2 متاح مؤقتاً؛ واستنساخ الصوت يتطلب ربط خادم GPU"
             } else {
-                "لم يتم ربط خادم GPU خلفي بعد"
+                "لم يتم ربط خادم GPU خلفي بعد — المحرك المحلي يعمل فوراً"
             },
         )
     }
@@ -1190,7 +1032,13 @@ class AiVoiceStudioCoordinator(
                     emotion = turn.emotion,
                     emotionIntensity = turn.emotionIntensity,
                     pace = turn.pace,
+                    speechRate = turn.pace.speedMultiplier,
                     pitchOffsetSemitones = character.pitchOffsetSemitones,
+                    fixedSid = character.fixedSid,
+                    fixedSeed = character.fixedSeed,
+                    fixedFormantShift = character.fixedFormantShift,
+                    fixedEqLowDb = character.fixedEqLowDb,
+                    fixedEqPresenceDb = character.fixedEqPresenceDb,
                     referenceAudioPath = character.referenceAudioPath,
                     referenceTranscript = character.referenceTranscript,
                 )

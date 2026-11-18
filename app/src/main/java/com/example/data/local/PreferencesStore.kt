@@ -85,7 +85,22 @@ class PreferencesStore(private val context: Context) {
 
     val savedAiVoiceCharactersFlow: Flow<List<AiVoiceCharacter>> = context.studioPrefsDataStore.data.map { prefs ->
         val raw = prefs[KEY_AI_VOICE_CHARACTERS_JSON] ?: return@map emptyList()
-        runCatching { json.decodeFromString(aiVoiceCharacterListSerializer, raw) }.getOrDefault(emptyList())
+        val migrated = raw
+            .replace("\"AUDAR_TTS_V1_FLASH\"", "\"VOXCPM_2\"")
+            .replace("\"AUDAR_TTS_V1_TURBO\"", "\"VOXCPM_2\"")
+            .replace("\"EDGE_NEURAL_FREE\"", "\"SONIX_LOCAL_STUDIO\"")
+            .replace("\"ELDERLY\"", "\"MALE\"")
+            .replace("\"NARRATOR\"", "\"MALE\"")
+            .replace("\"CARTOON\"", "\"MALE\"")
+            .replace("\"CHILD\"", "\"FEMALE\"")
+            .replace("\"CUSTOM_DESIGN\"", "\"MALE\"")
+            .replace("\"ANGER\"", "\"SERIOUS\"")
+            .replace("\"CRYING\"", "\"SAD\"")
+            .replace("\"JOY\"", "\"EXCITED\"")
+            .replace("\"LAUGH\"", "\"EXCITED\"")
+            .replace("\"SURPRISED\"", "\"EXCITED\"")
+            .replace("\"FEAR\"", "\"CALM\"")
+        runCatching { json.decodeFromString(aiVoiceCharacterListSerializer, migrated) }.getOrDefault(emptyList())
     }
 
     val aiVoiceBackendUrlFlow: Flow<String> = context.studioPrefsDataStore.data.map { prefs ->

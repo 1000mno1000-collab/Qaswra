@@ -179,6 +179,7 @@ object LocalArabicTtsEngine {
         studioLuxuryEnhancement: Boolean = true,
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
+        fixedSid: Int? = null,
     ): LocalTtsOutcome = withContext(Dispatchers.IO) {
         val cleanInput = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim(), applyLightDiacritics = true)
         if (cleanInput.isEmpty()) {
@@ -232,6 +233,7 @@ object LocalArabicTtsEngine {
                             gender = gender,
                             tempWavFile = rawTtsWav,
                             language = language,
+                            fixedSid = fixedSid,
                         )
                         if (!synthResult.success || !rawTtsWav.exists() || rawTtsWav.length() <= 44L) {
                             val reason = synthResult.errorMessage ?: "Android TextToSpeech synthesizeToFile failed"
@@ -339,6 +341,7 @@ object LocalArabicTtsEngine {
         gender: TtsGender,
         tempWavFile: File,
         language: AppLanguage,
+        fixedSid: Int? = null,
     ): AndroidTtsChunkResult {
         tempWavFile.parentFile?.mkdirs()
         if (tempWavFile.exists()) tempWavFile.delete()
@@ -366,7 +369,7 @@ object LocalArabicTtsEngine {
                 return AndroidTtsChunkResult(false, msg)
             }
 
-            configureLocaleAndVoice(createdTts, dialect, gender)
+            configureLocaleAndVoice(createdTts, dialect, gender, fixedSid)
             runCatching { createdTts.setSpeechRate(1.0f) }
             runCatching { createdTts.setPitch(1.0f) }
 
@@ -453,6 +456,7 @@ object LocalArabicTtsEngine {
         tts: TextToSpeech,
         dialect: TtsDialect,
         gender: TtsGender,
+        fixedSid: Int? = null,
     ) {
         val primaryLocale = Locale.forLanguageTag(dialect.localeTag)
         val fallbackLocale = Locale.forLanguageTag(dialect.fallbackLocaleTag)
@@ -472,27 +476,38 @@ object LocalArabicTtsEngine {
         if (installedVoices.isEmpty()) return
 
         val targetLang = (chosenLocale ?: primaryLocale).language
-        val matchingVoices = installedVoices.filter { v ->
-            v.locale.language.equals(targetLang, ignoreCase = true) && !v.isNetworkConnectionRequired
-        }.ifEmpty {
-            installedVoices.filter { it.locale.language.equals(targetLang, ignoreCase = true) }
-        }
+        val matchingVoices = installedVoices
+            .filter { v ->
+                v.locale.language.equals(targetLang, ignoreCase = true) && !v.isNetworkConnectionRequired
+            }
+            .ifEmpty {
+                installedVoices.filter { it.locale.language.equals(targetLang, ignoreCase = true) }
+            }
+            .sortedBy { it.name.lowercase(Locale.US) }
         if (matchingVoices.isEmpty()) return
 
-        val preferred = pickGenderMatchedVoice(matchingVoices, gender) ?: matchingVoices.firstOrNull()
+        val preferred = pickGenderMatchedVoice(matchingVoices, gender, fixedSid) ?: matchingVoices.firstOrNull()
         if (preferred != null) {
             runCatching { tts.voice = preferred }
         }
     }
 
-    private fun pickGenderMatchedVoice(voices: List<Voice>, gender: TtsGender): Voice? {
+    private fun pickGenderMatchedVoice(
+        voices: List<Voice>,
+        gender: TtsGender,
+        fixedSid: Int? = null,
+    ): Voice? {
         val femaleHints = listOf("female", "woman", "sana", "zariyah", "salma", "rana", "amany", "fatima", "leda", "kore", "ard", "wavenet-a", "wavenet-c", "network-a", "x-ard", "local-a")
         val maleHints = listOf("male", "man", "hamed", "bassel", "shakir", "laith", "hamdan", "taim", "wavenet-b", "wavenet-d", "network-b", "x-arc", "local-b")
         val hints = if (gender == TtsGender.FEMALE) femaleHints else maleHints
-        return voices.firstOrNull { v ->
+        val matched = voices.filter { v ->
             val nameLower = v.name.lowercase(Locale.US)
             hints.any { hint -> nameLower.contains(hint) }
         }
+        val pool = matched.ifEmpty { voices }
+        if (pool.isEmpty()) return null
+        val index = if (fixedSid != null && fixedSid >= 0) fixedSid % pool.size else 0
+        return pool[index]
     }
 
     internal suspend fun applyStudioProfileWithFfmpegOrDsp(

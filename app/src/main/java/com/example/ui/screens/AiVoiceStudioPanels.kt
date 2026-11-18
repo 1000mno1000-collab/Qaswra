@@ -30,9 +30,12 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -45,11 +48,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -83,7 +89,6 @@ import com.example.audio.aivoice.AiVoiceEmotion
 import com.example.audio.aivoice.AiVoiceEngineKind
 import com.example.audio.aivoice.AiVoiceStudioUiState
 import com.example.audio.formatDurationMs
-import com.example.model.AppLanguage
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import kotlin.math.roundToInt
@@ -93,7 +98,6 @@ fun AiVoiceConfigurationBanner(
     state: AiVoiceStudioUiState,
     isEnglish: Boolean,
     onDismiss: () -> Unit,
-    onOpenServerTab: () -> Unit = {},
     onUseLocalFallback: () -> Unit,
 ) {
     val title = state.errorTitle ?: return
@@ -101,7 +105,7 @@ fun AiVoiceConfigurationBanner(
     val accent = if (isConfigRequired) StudioColors.Amber else StudioColors.RoseBright
 
     Card(
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
         border = BorderStroke(1.dp, accent.copy(alpha = 0.6f)),
         modifier = Modifier
@@ -159,7 +163,7 @@ fun AiVoiceConfigurationBanner(
 
             if (!state.setupRequiredGuide.isNullOrBlank()) {
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     color = StudioColors.ElevatedSurface,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -177,7 +181,7 @@ fun AiVoiceConfigurationBanner(
                         containerColor = StudioColors.Cyan,
                         contentColor = StudioColors.BgTop,
                     ),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
@@ -214,7 +218,7 @@ fun AiVoiceOutputPlayerCard(
     val posMs = state.playbackPositionMs.coerceIn(0L, durationMs)
 
     Card(
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = StudioColors.ElevatedSurface),
         border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.55f)),
         modifier = Modifier
@@ -224,7 +228,7 @@ fun AiVoiceOutputPlayerCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(
@@ -250,7 +254,7 @@ fun AiVoiceOutputPlayerCard(
                         )
                         state.lastOutputEngine?.let { eng ->
                             Text(
-                                text = "${if (isEnglish) eng.titleEn else eng.titleAr} • ${state.lastOutputSampleRate / 1000} kHz",
+                                text = "${if (isEnglish) eng.shortTitleEn else eng.shortTitleAr} • ${state.lastOutputSampleRate / 1000} kHz",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = StudioColors.Cyan,
                                 maxLines = 1,
@@ -301,7 +305,7 @@ fun AiVoiceOutputPlayerCard(
                         containerColor = StudioColors.Cyan,
                         contentColor = StudioColors.BgTop,
                     ),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .weight(1.4f)
                         .defaultMinSize(minHeight = 48.dp)
@@ -323,7 +327,7 @@ fun AiVoiceOutputPlayerCard(
                 }
                 OutlinedButton(
                     onClick = onReplay,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .defaultMinSize(minHeight = 48.dp)
@@ -353,7 +357,7 @@ fun AiVoiceOutputPlayerCard(
             ) {
                 OutlinedButton(
                     onClick = onSaveWav,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .defaultMinSize(minHeight = 48.dp)
@@ -365,7 +369,7 @@ fun AiVoiceOutputPlayerCard(
                 }
                 OutlinedButton(
                     onClick = onShare,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .defaultMinSize(minHeight = 48.dp)
@@ -381,7 +385,7 @@ fun AiVoiceOutputPlayerCard(
                         containerColor = StudioColors.Violet,
                         contentColor = StudioColors.TextPrimary,
                     ),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier
                         .weight(1.3f)
                         .defaultMinSize(minHeight = 48.dp)
@@ -417,7 +421,7 @@ fun AiVoiceDialogueTab(
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Card(
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
             border = BorderStroke(1.dp, StudioColors.Border),
             modifier = Modifier.fillMaxWidth(),
@@ -433,9 +437,9 @@ fun AiVoiceDialogueTab(
                 )
                 Text(
                     text = if (isEnglish) {
-                        "Assign distinct voice characters, emotions, pacing, and pauses for each line, then stitch everything into one cohesive WAV audio file."
+                        "Assign fixed professional voices, emotions, and pauses for each line, then stitch everything into one cohesive WAV audio file."
                     } else {
-                        "خصّص لكل متحدث شخصيته الصوتية وانفعاله وسرعته وفترة الصمت بعد جملته، وسيتم دمج الحوار بالكامل في ملف صوتي واحد متصل."
+                        "خصّص لكل متحدث صوته الثابت ونبرته وفترة الصمت بعد جملته، وسيتم دمج الحوار بالكامل في ملف صوتي واحد متصل."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = StudioColors.TextSecondary,
@@ -448,7 +452,7 @@ fun AiVoiceDialogueTab(
             var charMenuOpen by remember(turn.id) { mutableStateOf(false) }
 
             Card(
-                shape = RoundedCornerShape(18.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
                 border = BorderStroke(1.dp, StudioColors.BorderBright),
                 modifier = Modifier
@@ -500,7 +504,7 @@ fun AiVoiceDialogueTab(
                                 focusManager.clearFocus()
                                 charMenuOpen = true
                             },
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = 48.dp),
@@ -526,7 +530,7 @@ fun AiVoiceDialogueTab(
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                text = "${ch.displayName(isEnglish)} (${if (isEnglish) ch.dialect.titleEn else ch.dialect.titleAr})",
+                                                text = "${ch.displayName(isEnglish)} (${if (isEnglish) ch.category.titleEn else ch.category.titleAr})",
                                                 color = if (ch.id == selectedChar.id) StudioColors.Cyan else StudioColors.TextPrimary,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
@@ -534,12 +538,7 @@ fun AiVoiceDialogueTab(
                                         },
                                         onClick = {
                                             focusManager.clearFocus()
-                                            val nextEngine = when (state.selectedEngine) {
-                                                AiVoiceEngineKind.SONIX_LOCAL_STUDIO -> AiVoiceEngineKind.SONIX_LOCAL_STUDIO
-                                                AiVoiceEngineKind.EDGE_NEURAL_FREE -> AiVoiceEngineKind.EDGE_NEURAL_FREE
-                                                else -> ch.preferredEngine
-                                            }
-                                            val safeEmotion = if (ch.defaultEmotion in nextEngine.supportedEmotions()) {
+                                            val safeEmotion = if (ch.defaultEmotion in state.selectedEngine.supportedEmotions()) {
                                                 ch.defaultEmotion
                                             } else {
                                                 AiVoiceEmotion.NEUTRAL
@@ -574,13 +573,8 @@ fun AiVoiceDialogueTab(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
-                    val turnSupportedEmotions = remember(state.selectedEngine, selectedChar.preferredEngine) {
-                        val effectiveEngine = when (state.selectedEngine) {
-                            AiVoiceEngineKind.SONIX_LOCAL_STUDIO -> AiVoiceEngineKind.SONIX_LOCAL_STUDIO
-                            AiVoiceEngineKind.EDGE_NEURAL_FREE -> AiVoiceEngineKind.EDGE_NEURAL_FREE
-                            else -> selectedChar.preferredEngine
-                        }
-                        effectiveEngine.supportedEmotions()
+                    val turnSupportedEmotions = remember(state.selectedEngine) {
+                        state.selectedEngine.supportedEmotions()
                     }
 
                     FlowRow(
@@ -647,7 +641,7 @@ fun AiVoiceDialogueTab(
 
         OutlinedButton(
             onClick = onAddTurn,
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(10.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .defaultMinSize(minHeight = 48.dp)
@@ -689,7 +683,7 @@ fun AiVoiceDialogueTab(
                     containerColor = StudioColors.Cyan,
                     contentColor = StudioColors.BgTop,
                 ),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = 52.dp)
@@ -707,17 +701,183 @@ fun AiVoiceDialogueTab(
 @Composable
 fun AiVoiceCharactersTab(
     state: AiVoiceStudioUiState,
+    hasStudioAudio: Boolean,
     isEnglish: Boolean,
     onApplyCharacterToStudio: (AiVoiceCharacter) -> Unit,
     onAddCharacterToDialogue: (AiVoiceCharacter) -> Unit,
     onSaveCurrentAsCharacter: (String, String) -> Unit,
     onDeleteSavedCharacter: (String) -> Unit,
+    onPickReferenceFile: () -> Unit,
+    onUseStudioBufferAsReference: () -> Unit,
+    onClearReference: () -> Unit,
+    onReferenceTranscriptChange: (String) -> Unit,
+    onRightsConfirmedChange: (Boolean) -> Unit,
+    onSaveOutputWav: () -> Unit,
+    onShareOutput: () -> Unit,
 ) {
     var saveDialogOpen by remember { mutableStateOf(false) }
     var newNameAr by remember { mutableStateOf("") }
     var newNameEn by remember { mutableStateOf("") }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // Voice Cloning section (isolated safely from the main 4-card Studio screen)
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("studio_cloning_card"),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = if (isEnglish) "Voice Cloning (Reference Audio)" else "استنساخ الصوت (عينة مرجعية)",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = StudioColors.Cyan,
+                )
+                if (state.selectedEngine.supportsVoiceCloning()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = onPickReferenceFile,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("ai_voice_pick_ref_button"),
+                        ) {
+                            Icon(Icons.Rounded.LibraryMusic, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (isEnglish) "Upload Audio" else "رفع عينة", maxLines = 1)
+                        }
+                        OutlinedButton(
+                            onClick = onUseStudioBufferAsReference,
+                            enabled = hasStudioAudio,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("ai_voice_use_studio_ref_button"),
+                        ) {
+                            Icon(Icons.Rounded.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (isEnglish) "From Studio" else "من الاستوديو", maxLines = 1)
+                        }
+                    }
+
+                    if (!state.referenceAudioName.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = StudioColors.ElevatedSurface,
+                            border = BorderStroke(1.dp, StudioColors.Emerald.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = state.referenceAudioName,
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = StudioColors.Emerald,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = formatDurationMs(state.referenceAudioDurationMs),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = StudioColors.TextSecondary,
+                                    )
+                                }
+                                IconButton(onClick = onClearReference, modifier = Modifier.size(48.dp)) {
+                                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "Clear Ref", tint = StudioColors.RoseBright)
+                                }
+                            }
+                        }
+                        OutlinedTextField(
+                            value = state.referenceTranscript,
+                            onValueChange = onReferenceTranscriptChange,
+                            label = {
+                                Text(if (isEnglish) "Reference spoken words" else "نص العينة المرجعية")
+                            },
+                            maxLines = 2,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = state.referenceRightsConfirmed,
+                                onCheckedChange = onRightsConfirmedChange,
+                                colors = CheckboxDefaults.colors(checkedColor = StudioColors.Cyan),
+                            )
+                            Text(
+                                text = if (isEnglish) {
+                                    "I confirm legal rights/consent to use this reference voice."
+                                } else {
+                                    "أؤكد امتلاك الإذن القانوني لاستخدام هذا الصوت."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioColors.TextSecondary,
+                            )
+                        }
+                    }
+                } else {
+                    Text(
+                        text = if (isEnglish) {
+                            "Voice Cloning is available when selecting VoxCPM2 engine."
+                        } else {
+                            "استنساخ الصوت متاح عند اختيار المحرك الأساسي العالمي (VoxCPM2)."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.TextSecondary,
+                    )
+                }
+
+                HorizontalDivider(color = StudioColors.Border)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onSaveOutputWav,
+                        enabled = !state.lastOutputWavPath.isNullOrBlank(),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("ai_voice_adv_save_wav_button"),
+                    ) {
+                        Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (isEnglish) "Export WAV" else "تصدير WAV", maxLines = 1)
+                    }
+                    IconButton(
+                        onClick = onShareOutput,
+                        enabled = !state.lastOutputWavPath.isNullOrBlank(),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("ai_voice_adv_share_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Share,
+                            contentDescription = if (isEnglish) "Share" else "مشاركة",
+                            tint = if (!state.lastOutputWavPath.isNullOrBlank()) StudioColors.Cyan else StudioColors.TextMuted,
+                        )
+                    }
+                }
+            }
+        }
+
         Button(
             onClick = {
                 newNameAr = ""
@@ -728,7 +888,7 @@ fun AiVoiceCharactersTab(
                 containerColor = StudioColors.Violet,
                 contentColor = StudioColors.TextPrimary,
             ),
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .defaultMinSize(minHeight = 50.dp)
@@ -737,7 +897,7 @@ fun AiVoiceCharactersTab(
             Icon(Icons.Rounded.BookmarkAdd, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text(
-                text = if (isEnglish) "Save Current Voice Design as Character" else "حفظ إعدادات الصوت الحالية كشخصية مفضلة",
+                text = if (isEnglish) "Save Current Voice Design" else "حفظ إعدادات الصوت الحالية كنسخة مفضلة",
                 fontWeight = FontWeight.Bold,
             )
         }
@@ -745,7 +905,7 @@ fun AiVoiceCharactersTab(
         state.allCharacters.forEach { character ->
             val isSelected = state.selectedCharacterId == character.id
             Card(
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
                 border = BorderStroke(
                     width = 1.dp,
@@ -771,7 +931,7 @@ fun AiVoiceCharactersTab(
                                 color = if (isSelected) StudioColors.Cyan else StudioColors.TextPrimary,
                             )
                             Text(
-                                text = "${if (isEnglish) character.category.titleEn else character.category.titleAr} • ${if (isEnglish) character.dialect.titleEn else character.dialect.titleAr} • ${character.preferredEngine.modelRepoId}",
+                                text = "${if (isEnglish) character.category.titleEn else character.category.titleAr} • SID ${character.fixedSid}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = StudioColors.TextSecondary,
                             )
@@ -787,7 +947,7 @@ fun AiVoiceCharactersTab(
                     }
 
                     Text(
-                        text = character.voiceDescriptionPrompt,
+                        text = character.displayDescription(isEnglish),
                         style = MaterialTheme.typography.bodySmall,
                         color = StudioColors.TextSecondary,
                     )
@@ -802,7 +962,7 @@ fun AiVoiceCharactersTab(
                                 containerColor = StudioColors.Cyan,
                                 contentColor = StudioColors.BgTop,
                             ),
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp),
@@ -811,7 +971,7 @@ fun AiVoiceCharactersTab(
                         }
                         OutlinedButton(
                             onClick = { onAddCharacterToDialogue(character) },
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .defaultMinSize(minHeight = 48.dp),
@@ -827,13 +987,13 @@ fun AiVoiceCharactersTab(
     if (saveDialogOpen) {
         AlertDialog(
             onDismissRequest = { saveDialogOpen = false },
-            title = { Text(if (isEnglish) "Save Custom Character" else "حفظ شخصية صوتية جديدة") },
+            title = { Text(if (isEnglish) "Save Custom Voice" else "حفظ إعدادات الصوت") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = newNameAr,
                         onValueChange = { newNameAr = it },
-                        label = { Text(if (isEnglish) "Character Name (Arabic/Display)" else "اسم الشخصية") },
+                        label = { Text(if (isEnglish) "Voice Name" else "الاسم") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -879,7 +1039,7 @@ fun AiVoiceServerSetupTab(
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Card(
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
             border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
             modifier = Modifier.fillMaxWidth(),
@@ -891,20 +1051,16 @@ fun AiVoiceServerSetupTab(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Rounded.Info, contentDescription = null, tint = StudioColors.Cyan)
                     Text(
-                        text = if (isEnglish) "Hugging Face & GPU Architecture Notice" else "حالة الاستضافة الرسمية وواجهات Inference Providers",
+                        text = if (isEnglish) "VoxCPM2 GPU Backend Status" else "حالة ربط خادم VoxCPM2",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = StudioColors.Cyan,
                     )
                 }
                 Text(
                     text = if (isEnglish) {
-                        "• openbmb/VoxCPM2 (2B diffusion-AR, 48kHz) and audarai/Audar-TTS-V1-Flash (AudarAI Open License v1.0, 24kHz Arabic-first) both have NO managed serverless Hugging Face Inference Provider.\n" +
-                            "• Never embed HF tokens inside the APK. Deploy the included `/backend` FastAPI GPU server (RunPod, Modal, or Docker CUDA 12+) with HF_TOKEN and optional SONIX_SERVER_BEARER set strictly in server env vars, then enter the HTTPS URL below.\n" +
-                            "• Without a custom URL, VoxCPM2 probes the official public demo Space (`openbmb-voxcpm-demo.hf.space`) for prompt design when awake."
+                        "Connect your dedicated GPU server running openbmb/VoxCPM2 for 48kHz generation and voice cloning, or use Local Studio Engine directly offline."
                     } else {
-                        "• بعد فحص صفحات النماذج الرسمية وخدمات Hugging Face Inference Providers: كلا النموذجين openbmb/VoxCPM2 (2B باراميتر) و audarai/Audar-TTS-V1-Flash (الترخيص المفتوح) لا يتوفر لهما مزود Inference Serverless عام مجاني، كما لا يمكن تشغيلهما محلياً داخل معالج الهاتف.\n" +
-                            "• لذلك يتضمن المشروع خادم GPU خلفي جاهز في مجلد `/backend` (FastAPI + Docker CUDA 12 + openbmb/VoxCPM2 + Audar-TTS-V1-Flash) يحتفظ بأي توكن HF_TOKEN على الخادم فقط دون وضع أي مفاتيح داخل التطبيق.\n" +
-                            "• بدون رابط خادم مخصص: يحاول VoxCPM2 الفضاء الرسمي العام مؤقتاً عند توفره، بينما يتوفر «محرك الاستوديو المحلي» فوراً كبديل مباشر على الهاتف."
+                        "اربط خادم GPU الخاص لتشغيل محرك VoxCPM2 بدقة 48kHz واستنساخ الصوت، أو استخدم «محرك الاستوديو المحلي» فوراً بدون سيرفر."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = StudioColors.TextSecondary,
@@ -913,7 +1069,7 @@ fun AiVoiceServerSetupTab(
         }
 
         Card(
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
             border = BorderStroke(1.dp, StudioColors.Border),
             modifier = Modifier.fillMaxWidth(),
@@ -936,8 +1092,8 @@ fun AiVoiceServerSetupTab(
                 OutlinedTextField(
                     value = tokenInput,
                     onValueChange = { tokenInput = it },
-                    label = { Text(if (isEnglish) "Server Access Token (Optional SONIX_SERVER_BEARER)" else "رمز الوصول للخادم (اختياري SONIX_SERVER_BEARER)") },
-                    placeholder = { Text(if (isEnglish) "Leave empty if using Firebase sign-in only" else "اتركه فارغاً عند الاعتماد على حساب Firebase فقط") },
+                    label = { Text(if (isEnglish) "Server Access Token (Optional SONIX_SERVER_BEARER)" else "رمز الوصول للخادم (اختياري)") },
+                    placeholder = { Text(if (isEnglish) "Leave empty if using Firebase sign-in only" else "اتركه فارغاً عند الاعتماد على Firebase") },
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                     modifier = Modifier
@@ -958,7 +1114,7 @@ fun AiVoiceServerSetupTab(
                             containerColor = StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
                         ),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
@@ -969,7 +1125,7 @@ fun AiVoiceServerSetupTab(
                     OutlinedButton(
                         onClick = { onCheckHealth(urlInput, tokenInput) },
                         enabled = !health.isChecking,
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .weight(1f)
                             .defaultMinSize(minHeight = 48.dp)
@@ -987,7 +1143,7 @@ fun AiVoiceServerSetupTab(
 
                 if (health.isChecked) {
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         color = StudioColors.ElevatedSurface,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -1012,26 +1168,10 @@ fun AiVoiceServerSetupTab(
                                 )
                             }
                             if (health.serverReachable) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Text(
-                                        text = "VoxCPM2: ${if (health.voxCpm2Ready) (if (health.voxcpm2Loaded) "محمّل بالذاكرة" else "جاهز") else "غير جاهز"}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (health.voxCpm2Ready) StudioColors.Emerald else StudioColors.Amber,
-                                    )
-                                    Text(
-                                        text = "Audar-Flash: ${if (health.audarTurboReady) "جاهز" else "غير مفعل"}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (health.audarTurboReady) StudioColors.Emerald else StudioColors.TextMuted,
-                                    )
-                                }
                                 Text(
-                                    text = buildString {
-                                        append("CUDA: ${if (health.cudaAvailable) "متاح" else "غير متاح"}")
-                                        append(" • حزمة voxcpm: ${if (health.voxcpm2PackageInstalled) "مثبتة" else "غير مثبتة"}")
-                                        append(" • الحماية: ${if (health.authRequired) "مفعلة" else "مفتوحة"}")
-                                    },
+                                    text = "VoxCPM2: ${if (health.voxCpm2Ready) (if (health.voxcpm2Loaded) "محمّل بالذاكرة" else "جاهز") else "غير جاهز"} • CUDA: ${if (health.cudaAvailable) "متاح" else "غير متاح"}",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = StudioColors.TextSecondary,
+                                    color = if (health.voxCpm2Ready) StudioColors.Emerald else StudioColors.Amber,
                                 )
                                 if (health.voxcpm2LoadError.isNotBlank()) {
                                     Text(

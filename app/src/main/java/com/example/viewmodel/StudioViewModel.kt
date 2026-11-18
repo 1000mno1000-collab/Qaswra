@@ -6539,11 +6539,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // =========================================================================
-    // AI VOICE STUDIO – استوديو الأصوات الذكي (VoxCPM2 + Audar-TTS-V1-Flash)
+    // AI VOICE STUDIO – استوديو الصوت الذكي (VoxCPM2 + محرك الاستوديو المحلي)
     // =========================================================================
 
     fun setAiVoiceTab(tab: Int) {
-        _aiVoiceUiState.update { it.copy(activeTab = tab.coerceIn(0, 3)) }
+        _aiVoiceUiState.update { it.copy(activeTab = tab.coerceIn(0, 2)) }
     }
 
     fun setAiVoiceEngine(engine: AiVoiceEngineKind) {
@@ -6601,7 +6601,31 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setAiVoicePace(pace: AiDeliveryPace) {
-        _aiVoiceUiState.update { it.copy(selectedPace = pace) }
+        _aiVoiceUiState.update { it.copy(selectedPace = pace, speechRate = pace.speedMultiplier) }
+    }
+
+    fun setAiVoiceSpeechRate(rate: Float) {
+        val clamped = rate.coerceIn(0.60f, 1.50f)
+        _aiVoiceUiState.update {
+            it.copy(
+                speechRate = clamped,
+                selectedPace = AiDeliveryPace.fromSpeechRate(clamped),
+            )
+        }
+    }
+
+    fun resetAiVoiceTuning() {
+        _aiVoiceUiState.update { cur ->
+            val activeChar = cur.allCharacters.firstOrNull { it.id == cur.selectedCharacterId }
+            val defaultRate = activeChar?.defaultSpeechRate ?: 1.0f
+            cur.copy(
+                selectedEmotion = activeChar?.defaultEmotion ?: AiVoiceEmotion.NEUTRAL,
+                emotionIntensity = activeChar?.defaultEmotionIntensity ?: 0.65f,
+                speechRate = defaultRate,
+                selectedPace = activeChar?.defaultPace ?: AiDeliveryPace.fromSpeechRate(defaultRate),
+                pitchOffsetSemitones = activeChar?.pitchOffsetSemitones ?: cur.pitchOffsetSemitones,
+            )
+        }
     }
 
     fun setAiVoicePitchOffset(semitones: Float) {
@@ -6665,7 +6689,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun selectAiVoiceCharacter(character: AiVoiceCharacter) {
         _aiVoiceUiState.update { cur ->
-            val targetEngine = character.preferredEngine
+            val targetEngine = cur.selectedEngine
             val safeEmotion = if (character.defaultEmotion in targetEngine.supportedEmotions()) {
                 character.defaultEmotion
             } else {
@@ -6685,7 +6709,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 selectedEmotion = safeEmotion,
                 emotionIntensity = character.defaultEmotionIntensity,
                 selectedPace = character.defaultPace,
+                speechRate = character.defaultSpeechRate,
                 pitchOffsetSemitones = character.pitchOffsetSemitones,
+                fixedSid = character.fixedSid,
+                fixedSeed = character.fixedSeed,
+                fixedFormantShift = character.fixedFormantShift,
+                fixedEqLowDb = character.fixedEqLowDb,
+                fixedEqPresenceDb = character.fixedEqPresenceDb,
                 voiceDescriptionPrompt = character.voiceDescriptionPrompt,
                 referenceAudioPath = character.referenceAudioPath ?: cur.referenceAudioPath,
                 referenceAudioName = character.referenceAudioName ?: cur.referenceAudioName,
@@ -6775,6 +6805,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             id = "custom_${UUID.randomUUID()}",
             nameAr = cleanName,
             nameEn = nameEn.trim().ifBlank { cleanName },
+            roleDescriptionAr = cur.voiceDescriptionPrompt.trim().take(80),
             category = cur.selectedCategory,
             language = cur.selectedLanguage,
             dialect = cur.selectedDialect,
@@ -6783,7 +6814,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             defaultEmotion = cur.selectedEmotion,
             defaultEmotionIntensity = cur.emotionIntensity,
             defaultPace = cur.selectedPace,
+            defaultSpeechRate = cur.speechRate,
             pitchOffsetSemitones = cur.pitchOffsetSemitones,
+            fixedSid = cur.fixedSid,
+            fixedSeed = cur.fixedSeed,
+            fixedFormantShift = cur.fixedFormantShift,
+            fixedEqLowDb = cur.fixedEqLowDb,
+            fixedEqPresenceDb = cur.fixedEqPresenceDb,
             referenceAudioPath = cur.referenceAudioPath,
             referenceAudioName = cur.referenceAudioName,
             referenceTranscript = cur.referenceTranscript.trim(),
@@ -6954,7 +6991,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 emotion = cur.selectedEmotion,
                 emotionIntensity = cur.emotionIntensity,
                 pace = cur.selectedPace,
+                speechRate = cur.speechRate,
                 pitchOffsetSemitones = cur.pitchOffsetSemitones,
+                fixedSid = cur.fixedSid,
+                fixedSeed = cur.fixedSeed,
+                fixedFormantShift = cur.fixedFormantShift,
+                fixedEqLowDb = cur.fixedEqLowDb,
+                fixedEqPresenceDb = cur.fixedEqPresenceDb,
                 referenceAudioPath = cur.referenceAudioPath,
                 referenceTranscript = cur.referenceTranscript.trim(),
             )
@@ -7004,11 +7047,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 context = app,
                 turns = cur.dialogueTurns,
                 characters = cur.allCharacters,
-                selectedEngineOverride = overrideEngine ?: when (cur.selectedEngine) {
-                    AiVoiceEngineKind.SONIX_LOCAL_STUDIO -> AiVoiceEngineKind.SONIX_LOCAL_STUDIO
-                    AiVoiceEngineKind.EDGE_NEURAL_FREE -> AiVoiceEngineKind.EDGE_NEURAL_FREE
-                    else -> null
-                },
+                selectedEngineOverride = overrideEngine ?: cur.selectedEngine,
                 backendUrl = cur.backendServerUrl,
                 outputDir = outDir,
                 bearerToken = cur.backendBearerToken,

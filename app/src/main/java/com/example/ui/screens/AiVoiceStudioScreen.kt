@@ -16,16 +16,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,8 +36,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.audio.aivoice.AiArabicDialect
-import com.example.audio.aivoice.AiDeliveryPace
 import com.example.audio.aivoice.AiDialogueTurn
 import com.example.audio.aivoice.AiVoiceCharacter
 import com.example.audio.aivoice.AiVoiceEmotion
@@ -74,9 +68,6 @@ fun AiVoiceStudioScreen(
         }
     }
 
-    var saveDialogOpen by rememberSaveable { mutableStateOf(false) }
-    var newNameAr by rememberSaveable { mutableStateOf("") }
-    var newNameEn by rememberSaveable { mutableStateOf("") }
     var synthesizedSignature by rememberSaveable { mutableStateOf<String?>(null) }
 
     val currentInputSignature = remember(state) {
@@ -84,13 +75,12 @@ fun AiVoiceStudioScreen(
             append(state.activeTab).append('|')
             append(state.selectedEngine.id).append('|')
             append(state.selectedLanguage.code).append('|')
-            append(state.selectedDialect.id).append('|')
             append(state.selectedCharacterId).append('|')
+            append(state.fixedSid).append('|')
+            append(state.fixedSeed).append('|')
             append(state.selectedEmotion.id).append('|')
-            append(state.selectedPace.id).append('|')
-            append(state.pitchOffsetSemitones).append('|')
+            append(state.speechRate).append('|')
             append(state.emotionIntensity).append('|')
-            append(state.voiceDescriptionPrompt).append('|')
             append(state.scriptText).append('|')
             append(state.referenceAudioPath.orEmpty()).append('|')
             append(state.referenceTranscript).append('|')
@@ -132,24 +122,17 @@ fun AiVoiceStudioScreen(
         },
         onSelectEngine = viewModel::setAiVoiceEngine,
         onSelectLanguage = viewModel::setAiVoiceLanguage,
-        onSelectDialect = viewModel::setAiVoiceDialect,
         onSelectCharacter = viewModel::selectAiVoiceCharacter,
         onToggleFavorite = viewModel::toggleAiVoiceCharacterFavorite,
         onSelectEmotion = viewModel::setAiVoiceEmotion,
-        onSelectPace = viewModel::setAiVoicePace,
-        onPitchOffsetChange = viewModel::setAiVoicePitchOffset,
+        onSpeechRateChange = viewModel::setAiVoiceSpeechRate,
         onIntensityChange = viewModel::setAiVoiceEmotionIntensity,
-        onDescriptionChange = viewModel::setAiVoiceDescriptionPrompt,
+        onResetTuning = viewModel::resetAiVoiceTuning,
         onPickReferenceFile = { pickReferenceAudioLauncher.launch(arrayOf("audio/*")) },
         onUseStudioBufferAsReference = viewModel::importAiVoiceReferenceFromCurrentBuffer,
         onClearReference = viewModel::clearAiVoiceReference,
         onReferenceTranscriptChange = viewModel::setAiVoiceReferenceTranscript,
         onRightsConfirmedChange = viewModel::setAiVoiceReferenceRightsConfirmed,
-        onOpenSaveCharacterDialog = {
-            newNameAr = ""
-            newNameEn = ""
-            saveDialogOpen = true
-        },
         onAddDialogueTurn = { viewModel.addDialogueTurn() },
         onRemoveDialogueTurn = viewModel::removeDialogueTurn,
         onMoveDialogueTurn = viewModel::moveDialogueTurn,
@@ -165,9 +148,6 @@ fun AiVoiceStudioScreen(
         },
         onSaveCustomCharacter = viewModel::saveCustomAiVoiceCharacter,
         onDeleteSavedCharacter = viewModel::deleteSavedAiVoiceCharacter,
-        onSaveBackendUrl = viewModel::saveAiVoiceBackendUrl,
-        onSaveBackendToken = viewModel::saveAiVoiceBackendBearer,
-        onCheckBackendHealth = { url, token -> viewModel.checkAiVoiceBackendHealth(url, token) },
         onPreviewClick = {
             val outputExists = !state.lastOutputWavPath.isNullOrBlank()
             if (outputExists && synthesizedSignature == currentInputSignature) {
@@ -221,46 +201,6 @@ fun AiVoiceStudioScreen(
             )
         },
     )
-
-    if (saveDialogOpen) {
-        AlertDialog(
-            onDismissRequest = { saveDialogOpen = false },
-            title = { Text(if (isEnglish) "Save Custom Character" else "إنشاء وحفظ شخصية صوتية") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = newNameAr,
-                        onValueChange = { newNameAr = it },
-                        label = { Text(if (isEnglish) "Character Name" else "اسم الشخصية") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = newNameEn,
-                        onValueChange = { newNameEn = it },
-                        label = { Text(if (isEnglish) "English Name (Optional)" else "الاسم الإنجليزي (اختياري)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.saveCustomAiVoiceCharacter(newNameAr, newNameEn)
-                        saveDialogOpen = false
-                    },
-                ) {
-                    Text(if (isEnglish) "Save" else "حفظ")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { saveDialogOpen = false }) {
-                    Text(if (isEnglish) "Cancel" else "إلغاء")
-                }
-            },
-        )
-    }
 }
 
 @Composable
@@ -282,20 +222,17 @@ fun AiVoiceStudioContentLayout(
     onScriptChange: (String) -> Unit,
     onSelectEngine: (AiVoiceEngineKind) -> Unit,
     onSelectLanguage: (AiVoiceLanguage) -> Unit,
-    onSelectDialect: (AiArabicDialect) -> Unit,
     onSelectCharacter: (AiVoiceCharacter) -> Unit,
     onToggleFavorite: (String) -> Unit,
     onSelectEmotion: (AiVoiceEmotion) -> Unit,
-    onSelectPace: (AiDeliveryPace) -> Unit,
-    onPitchOffsetChange: (Float) -> Unit,
+    onSpeechRateChange: (Float) -> Unit,
     onIntensityChange: (Float) -> Unit,
-    onDescriptionChange: (String) -> Unit,
+    onResetTuning: () -> Unit,
     onPickReferenceFile: () -> Unit,
     onUseStudioBufferAsReference: () -> Unit,
     onClearReference: () -> Unit,
     onReferenceTranscriptChange: (String) -> Unit,
     onRightsConfirmedChange: (Boolean) -> Unit,
-    onOpenSaveCharacterDialog: () -> Unit,
     onAddDialogueTurn: () -> Unit,
     onRemoveDialogueTurn: (String) -> Unit,
     onMoveDialogueTurn: (String, Int) -> Unit,
@@ -305,9 +242,6 @@ fun AiVoiceStudioContentLayout(
     onAddCharacterToDialogue: (AiVoiceCharacter) -> Unit,
     onSaveCustomCharacter: (String, String) -> Unit,
     onDeleteSavedCharacter: (String) -> Unit,
-    onSaveBackendUrl: (String) -> Unit,
-    onSaveBackendToken: (String) -> Unit,
-    onCheckBackendHealth: (String, String) -> Unit,
     onPreviewClick: () -> Unit,
     onCancelSynthesis: () -> Unit,
     onApproveClick: () -> Unit,
@@ -347,15 +281,15 @@ fun AiVoiceStudioContentLayout(
             ) {
                 StudioFocusTopBar(
                     title = if (isEnglish) "AI VOICE STUDIO" else "AI VOICE STUDIO – استوديو الصوت",
-                    subtitle = "VoxCPM2 • Local Offline Studio",
+                    subtitle = if (isEnglish) "VoxCPM2 • Local Studio Engine" else "VoxCPM2 • محرك الاستوديو المحلي",
                     language = language,
                     onBack = onBack,
                 )
 
                 val tabs = if (isEnglish) {
-                    listOf("Studio", "Dialogue", "Voices")
+                    listOf("Studio", "Dialogue", "Clone & Save")
                 } else {
-                    listOf("استوديو الصوت", "حوار متعدد", "الشخصيات")
+                    listOf("استوديو الصوت", "حوار متعدد", "الاستنساخ والحفظ")
                 }
                 val safeActiveTab = state.activeTab.coerceIn(0, tabs.lastIndex)
 
@@ -373,7 +307,7 @@ fun AiVoiceStudioContentLayout(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .testTag("ai_voice_studio_tabs"),
                 ) {
                     tabs.forEachIndexed { idx, label ->
@@ -407,7 +341,6 @@ fun AiVoiceStudioContentLayout(
                                 state = state,
                                 isEnglish = isEnglish,
                                 onDismiss = onDismissError,
-                                onOpenServerTab = { onSelectTab(3) },
                                 onUseLocalFallback = onUseLocalFallback,
                             )
                         }
@@ -431,58 +364,46 @@ fun AiVoiceStudioContentLayout(
 
                     when (safeActiveTab) {
                         0 -> {
-                            item(key = "group_1_text") {
+                            item(key = "studio_text") {
                                 AiVoiceGroup1TextCard(
                                     scriptText = state.scriptText,
                                     isEnglish = isEnglish,
                                     onScriptChange = onScriptChange,
                                 )
                             }
-                            item(key = "group_2_voice") {
+                            item(key = "card_1_engine") {
+                                AiVoiceEngineSelectionCard(
+                                    selectedEngine = state.selectedEngine,
+                                    isEnglish = isEnglish,
+                                    onSelectEngine = onSelectEngine,
+                                )
+                            }
+                            item(key = "card_2_voice") {
                                 AiVoiceGroup2VoiceSelectionCard(
                                     state = state,
                                     isEnglish = isEnglish,
-                                    onSelectEngine = onSelectEngine,
                                     onSelectLanguage = onSelectLanguage,
-                                    onSelectDialect = onSelectDialect,
                                     onSelectCharacter = onSelectCharacter,
                                     onToggleFavorite = onToggleFavorite,
                                 )
                             }
-                            item(key = "group_3_emotion") {
+                            item(key = "card_3_emotion") {
                                 AiVoiceGroup3EmotionCard(
                                     state = state,
                                     isEnglish = isEnglish,
                                     onSelectEmotion = onSelectEmotion,
                                 )
                             }
-                            item(key = "group_4_controls") {
+                            item(key = "card_4_controls") {
                                 AiVoiceGroup4ControlsCard(
                                     state = state,
                                     isEnglish = isEnglish,
-                                    onSelectPace = onSelectPace,
-                                    onPitchOffsetChange = onPitchOffsetChange,
+                                    onSpeechRateChange = onSpeechRateChange,
                                     onIntensityChange = onIntensityChange,
-                                    onDescriptionChange = onDescriptionChange,
+                                    onResetTuning = onResetTuning,
                                 )
                             }
-                            item(key = "group_5_advanced") {
-                                AiVoiceGroup5AdvancedCard(
-                                    state = state,
-                                    hasStudioAudio = hasStudioAudio,
-                                    isEnglish = isEnglish,
-                                    onPickReferenceFile = onPickReferenceFile,
-                                    onUseStudioBufferAsReference = onUseStudioBufferAsReference,
-                                    onClearReference = onClearReference,
-                                    onReferenceTranscriptChange = onReferenceTranscriptChange,
-                                    onRightsConfirmedChange = onRightsConfirmedChange,
-                                    onOpenSaveCharacterDialog = onOpenSaveCharacterDialog,
-                                    onOpenDialogueTab = { onSelectTab(1) },
-                                    onSaveOutputWav = onSaveWav,
-                                    onShareOutput = onShare,
-                                )
-                            }
-                            item(key = "group_6_more_and_help") {
+                            item(key = "group_more_and_help") {
                                 bottomHelpSlot()
                             }
                         }
@@ -498,14 +419,22 @@ fun AiVoiceStudioContentLayout(
                                 onCancelSynthesis = onCancelSynthesis,
                             )
                         }
-                        else -> item(key = "characters_library") {
+                        else -> item(key = "characters_and_cloning") {
                             AiVoiceCharactersTab(
                                 state = state,
+                                hasStudioAudio = hasStudioAudio,
                                 isEnglish = isEnglish,
                                 onApplyCharacterToStudio = onApplyCharacterToStudio,
                                 onAddCharacterToDialogue = onAddCharacterToDialogue,
                                 onSaveCurrentAsCharacter = onSaveCustomCharacter,
                                 onDeleteSavedCharacter = onDeleteSavedCharacter,
+                                onPickReferenceFile = onPickReferenceFile,
+                                onUseStudioBufferAsReference = onUseStudioBufferAsReference,
+                                onClearReference = onClearReference,
+                                onReferenceTranscriptChange = onReferenceTranscriptChange,
+                                onRightsConfirmedChange = onRightsConfirmedChange,
+                                onSaveOutputWav = onSaveWav,
+                                onShareOutput = onShare,
                             )
                         }
                     }

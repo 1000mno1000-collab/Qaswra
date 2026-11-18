@@ -353,8 +353,7 @@ class DeveloperPanelController(
 
         val engineId = _uiState.value.selectedTestEngineId
         val engineKind = when (engineId) {
-            "audar_tts_flash" -> AiVoiceEngineKind.AUDAR_TTS_V1_FLASH
-            "edge_neural_free" -> AiVoiceEngineKind.EDGE_NEURAL_FREE
+            "sonix_local_studio" -> AiVoiceEngineKind.SONIX_LOCAL_STUDIO
             else -> AiVoiceEngineKind.VOXCPM_2
         }
 
@@ -381,16 +380,16 @@ class DeveloperPanelController(
                     )
                     AdminTestType.DIALECTS -> executeSynthesisTest(
                         engineKind = engineKind,
-                        dialect = AiArabicDialect.IRAQI,
-                        emotion = AiVoiceEmotion.NEUTRAL,
-                        text = "هلا بيكم، هذا اختبار فعلي للهجة العراقية والعربية.",
+                        dialect = AiArabicDialect.MSA,
+                        emotion = AiVoiceEmotion.CALM,
+                        text = "أهلاً بكم، هذا اختبار فعلي للوضوح والثبات الصوتي.",
                         outDir = outDir,
-                        label = "اختبار اللهجة العراقية",
+                        label = "اختبار ثبات النطق",
                     )
                     AdminTestType.EMOTIONS -> executeSynthesisTest(
                         engineKind = engineKind,
                         dialect = AiArabicDialect.MSA,
-                        emotion = if (engineKind == AiVoiceEngineKind.AUDAR_TTS_V1_FLASH) AiVoiceEmotion.WHISPER else AiVoiceEmotion.SAD,
+                        emotion = AiVoiceEmotion.SAD,
                         text = "هذه اللحظة مؤثرة جداً، أرجو أن يصل الإحساس بوضوح.",
                         outDir = outDir,
                         label = "اختبار التعبير الصوتي",

@@ -45,6 +45,7 @@ class SmartVoiceRouter {
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
         autoDownloadIfOnline: Boolean = true,
+        fixedSid: Int? = null,
     ): VoiceRouteOutcome = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) {
@@ -67,6 +68,7 @@ class SmartVoiceRouter {
                 persona = persona,
                 acousticMode = acousticMode,
                 autoDownloadIfOnline = autoDownloadIfOnline,
+                fixedSid = fixedSid,
             )
         ) {
             is NabraSynthOutcome.Success -> VoiceRouteOutcome.Success(

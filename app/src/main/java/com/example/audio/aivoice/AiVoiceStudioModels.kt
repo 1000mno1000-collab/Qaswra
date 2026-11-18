@@ -3,12 +3,16 @@ package com.example.audio.aivoice
 import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 
+const val FIXED_DETERMINISTIC_SEED: Int = 100
+
 @Serializable
 enum class AiVoiceEngineKind(
     val id: String,
     val modelRepoId: String,
     val titleAr: String,
     val titleEn: String,
+    val shortTitleAr: String,
+    val shortTitleEn: String,
     val badgeAr: String,
     val badgeEn: String,
     val requiresRemoteGpu: Boolean,
@@ -17,98 +21,51 @@ enum class AiVoiceEngineKind(
         id = "voxcpm2",
         modelRepoId = "openbmb/VoxCPM2",
         titleAr = "VoxCPM2 (المحرك الأساسي العالمي)",
-        titleEn = "VoxCPM2 (Primary Multilingual)",
+        titleEn = "VoxCPM2 (Global Primary Engine)",
+        shortTitleAr = "المحرك الأساسي العالمي",
+        shortTitleEn = "VoxCPM2 Global",
         badgeAr = "48kHz • تصميم + استنساخ • 30 لغة",
         badgeEn = "48kHz • Design + Cloning • 30 Langs",
-        requiresRemoteGpu = true,
-    ),
-    AUDAR_TTS_V1_FLASH(
-        id = "audar_tts_flash",
-        modelRepoId = "audarai/Audar-TTS-V1-Flash",
-        titleAr = "Audar-TTS-V1-Flash (عربي مرخص تجارياً)",
-        titleEn = "Audar-TTS-V1-Flash (Commercial Arabic)",
-        badgeAr = "24kHz • لهجات عربية + مشاعر • Open License v1.0",
-        badgeEn = "24kHz • Arabic Dialects + Expressive • Open License",
-        requiresRemoteGpu = true,
-    ),
-    AUDAR_TTS_V1_TURBO(
-        id = "audar_tts_v1_turbo",
-        modelRepoId = "audarai/Audar-TTS-V1-Turbo",
-        titleAr = "Audar-TTS-V1-Turbo (يتطلب موافقة تجارية)",
-        titleEn = "Audar-TTS-V1-Turbo (Requires Commercial Approval)",
-        badgeAr = "24kHz • لهجات عربية + مشاعر [whispers/laughs]",
-        badgeEn = "24kHz • Arabic Dialects + Expressive Tags",
         requiresRemoteGpu = true,
     ),
     SONIX_LOCAL_STUDIO(
         id = "sonix_local_studio",
         modelRepoId = "local/sonix-studio",
-        titleAr = "محرك الاستوديو المحلي (بديل بدون سيرفر)",
-        titleEn = "Local Studio Engine (Offline Fallback)",
-        badgeAr = "محلي • بدون GPU خارجي",
-        badgeEn = "On-Device • No GPU Server Needed",
-        requiresRemoteGpu = false,
-    ),
-    EDGE_NEURAL_FREE(
-        id = "edge_neural_free",
-        modelRepoId = "edge/neural-readaloud",
-        titleAr = "Edge Neural Arabic TTS (سحابي مجاني)",
-        titleEn = "Edge Neural TTS (Free Cloud Arabic)",
-        badgeAr = "24kHz • 32 صوتاً عربياً + لهجات • بدون GPU أو بطاقة",
-        badgeEn = "24kHz • 32 Arabic Voices + Dialects • Free No Card",
+        titleAr = "محرك الاستوديو المحلي (بدون سيرفر)",
+        titleEn = "Local Studio Engine (No Server)",
+        shortTitleAr = "محرك الاستوديو المحلي",
+        shortTitleEn = "Local Studio",
+        badgeAr = "محلي • بدون سيرفر • بصمة ثابتة",
+        badgeEn = "On-Device • Offline • Deterministic",
         requiresRemoteGpu = false,
     ),
     ;
 
-    fun supportedEmotions(): List<AiVoiceEmotion> = when (this) {
-        VOXCPM_2, SONIX_LOCAL_STUDIO -> AiVoiceEmotion.entries
-        AUDAR_TTS_V1_FLASH, AUDAR_TTS_V1_TURBO -> listOf(
-            AiVoiceEmotion.NEUTRAL,
-            AiVoiceEmotion.SAD,
-            AiVoiceEmotion.CRYING,
-            AiVoiceEmotion.JOY,
-            AiVoiceEmotion.EXCITED,
-            AiVoiceEmotion.SURPRISED,
-            AiVoiceEmotion.WHISPER,
-            AiVoiceEmotion.LAUGH,
-        )
-        EDGE_NEURAL_FREE -> listOf(
-            AiVoiceEmotion.NEUTRAL,
-            AiVoiceEmotion.CALM,
-            AiVoiceEmotion.SAD,
-            AiVoiceEmotion.JOY,
-            AiVoiceEmotion.EXCITED,
-            AiVoiceEmotion.ANGER,
-        )
-    }
+    fun supportedEmotions(): List<AiVoiceEmotion> = AiVoiceEmotion.entries
 
     fun supportsVoiceDesignPrompt(): Boolean = this == VOXCPM_2
 
-    fun supportsEmotionIntensity(): Boolean =
-        this == VOXCPM_2 || this == AUDAR_TTS_V1_FLASH || this == AUDAR_TTS_V1_TURBO
+    fun supportsEmotionIntensity(): Boolean = true
 
-    fun supportsPitchShiftControl(): Boolean =
-        this == SONIX_LOCAL_STUDIO || this == EDGE_NEURAL_FREE
+    fun supportsPitchShiftControl(): Boolean = true
 
-    fun supportsVoiceCloning(): Boolean =
-        this == VOXCPM_2 || this == AUDAR_TTS_V1_FLASH || this == AUDAR_TTS_V1_TURBO
+    fun supportsVoiceCloning(): Boolean = this == VOXCPM_2
 
     fun supportsLanguage(language: AiVoiceLanguage): Boolean = when (this) {
-        AUDAR_TTS_V1_FLASH, AUDAR_TTS_V1_TURBO -> language.audarSupported
         SONIX_LOCAL_STUDIO -> language in setOf(
             AiVoiceLanguage.AR,
             AiVoiceLanguage.EN,
             AiVoiceLanguage.FA,
             AiVoiceLanguage.TR,
         )
-        VOXCPM_2, EDGE_NEURAL_FREE -> language.voxCpmSupported
+        VOXCPM_2 -> language.voxCpmSupported
     }
 
     fun supportedLanguages(): List<AiVoiceLanguage> =
         AiVoiceLanguage.entries.filter { supportsLanguage(it) }
 
     val isUserSelectable: Boolean
-        get() = this != AUDAR_TTS_V1_TURBO
+        get() = true
 }
 
 @Serializable
@@ -118,24 +75,23 @@ enum class AiVoiceLanguage(
     val titleEn: String,
     val nativeName: String,
     val voxCpmSupported: Boolean = true,
-    val audarSupported: Boolean = false,
 ) {
-    AR("ar", "العربية (أولوية قصوى)", "Arabic (Priority)", "العربية", voxCpmSupported = true, audarSupported = true),
-    EN("en", "الإنجليزية", "English", "English", voxCpmSupported = true, audarSupported = true),
-    FR("fr", "الفرنسية", "French", "Français", voxCpmSupported = true, audarSupported = false),
-    ES("es", "الإسبانية", "Spanish", "Español", voxCpmSupported = true, audarSupported = false),
-    DE("de", "الألمانية", "German", "Deutsch", voxCpmSupported = true, audarSupported = false),
-    TR("tr", "التركية", "Turkish", "Türkçe", voxCpmSupported = true, audarSupported = false),
-    FA("fa", "الفارسية", "Persian", "فارسی", voxCpmSupported = true, audarSupported = false),
-    ZH("zh", "الصينية", "Chinese", "中文", voxCpmSupported = true, audarSupported = false),
-    JA("ja", "اليابانية", "Japanese", "日本語", voxCpmSupported = true, audarSupported = false),
-    KO("ko", "الكورية", "Korean", "한국어", voxCpmSupported = true, audarSupported = false),
-    RU("ru", "الروسية", "Russian", "Русский", voxCpmSupported = true, audarSupported = false),
-    IT("it", "الإيطالية", "Italian", "Italiano", voxCpmSupported = true, audarSupported = false),
-    PT("pt", "البرتغالية", "Portuguese", "Português", voxCpmSupported = true, audarSupported = false),
-    HI("hi", "الهندية", "Hindi", "हिन्दी", voxCpmSupported = true, audarSupported = false),
-    UR("ur", "الأردية", "Urdu", "اردو", voxCpmSupported = true, audarSupported = false),
-    ID("id", "الإندونيسية", "Indonesian", "Bahasa Indonesia", voxCpmSupported = true, audarSupported = false),
+    AR("ar", "العربية", "Arabic", "العربية", voxCpmSupported = true),
+    EN("en", "الإنجليزية", "English", "English", voxCpmSupported = true),
+    FR("fr", "الفرنسية", "French", "Français", voxCpmSupported = true),
+    ES("es", "الإسبانية", "Spanish", "Español", voxCpmSupported = true),
+    DE("de", "الألمانية", "German", "Deutsch", voxCpmSupported = true),
+    TR("tr", "التركية", "Turkish", "Türkçe", voxCpmSupported = true),
+    FA("fa", "الفارسية", "Persian", "فارسی", voxCpmSupported = true),
+    ZH("zh", "الصينية", "Chinese", "中文", voxCpmSupported = true),
+    JA("ja", "اليابانية", "Japanese", "日本語", voxCpmSupported = true),
+    KO("ko", "الكورية", "Korean", "한국어", voxCpmSupported = true),
+    RU("ru", "الروسية", "Russian", "Русский", voxCpmSupported = true),
+    IT("it", "الإيطالية", "Italian", "Italiano", voxCpmSupported = true),
+    PT("pt", "البرتغالية", "Portuguese", "Português", voxCpmSupported = true),
+    HI("hi", "الهندية", "Hindi", "हिन्दी", voxCpmSupported = true),
+    UR("ur", "الأردية", "Urdu", "اردو", voxCpmSupported = true),
+    ID("id", "الإندونيسية", "Indonesian", "Bahasa Indonesia", voxCpmSupported = true),
 }
 
 @Serializable
@@ -147,14 +103,14 @@ enum class AiArabicDialect(
     val promptHintAr: String,
     val localeTag: String,
 ) {
-    MSA("msa", "العربية الفصحى", "Modern Standard Arabic", "Modern Standard Arabic (Fusha)", "بالعربية الفصحى السليمة الواضحة", "ar-SA"),
-    IRAQI("iraqi", "اللهجة العراقية", "Iraqi Dialect", "authentic Iraqi Arabic dialect", "باللهجة العراقية الأصيلة الطبيعية", "ar-IQ"),
-    GULF("gulf", "اللهجة الخليجية", "Gulf / Emirati Dialect", "natural Gulf Emirati Arabic dialect", "باللهجة الخليجية الإماراتية الطبيعية", "ar-AE"),
-    SAUDI("saudi", "اللهجة السعودية", "Saudi Dialect", "natural Saudi Najdi/Hijazi Arabic dialect", "باللهجة السعودية الطبيعية", "ar-SA"),
-    LEVANTINE("levantine", "اللهجة الشامية", "Levantine / Syrian Dialect", "natural Levantine Syrian-Lebanese Arabic dialect", "باللهجة الشامية الدافئة الطبيعية", "ar-SY"),
-    EGYPTIAN("egyptian", "اللهجة المصرية", "Egyptian Dialect", "natural Egyptian Cairo Arabic dialect", "باللهجة المصرية الطبيعية", "ar-EG"),
-    MOROCCAN("moroccan", "اللهجة المغربية", "Moroccan Dialect", "natural Moroccan Darija Arabic dialect", "باللهجة المغربية الطبيعية", "ar-MA"),
-    JORDANIAN("jordanian", "اللهجة الأردنية", "Jordanian Dialect", "natural Jordanian Arabic dialect", "باللهجة الأردنية الطبيعية", "ar-JO"),
+    MSA(
+        id = "msa",
+        titleAr = "العربية الواضحة",
+        titleEn = "Clear Arabic",
+        promptHintEn = "clear studio Arabic",
+        promptHintAr = "بالعربية الاستوديوية الواضحة",
+        localeTag = "ar-SA",
+    ),
 }
 
 @Serializable
@@ -162,22 +118,58 @@ enum class AiVoiceEmotion(
     val id: String,
     val titleAr: String,
     val titleEn: String,
-    val audarTag: String?,
     val voxDesignHintEn: String,
     val pitchBiasSemitones: Float,
     val speedBiasFactor: Float,
 ) {
-    NEUTRAL("neutral", "طبيعي متزن", "Natural / Neutral", null, "natural balanced warm tone", 0f, 1.0f),
-    SAD("sad", "الحزن والانكسار", "Sadness & Heartbreak", "[sighs]", "deeply sad, heartbroken, melancholic tone", -0.8f, 0.88f),
-    CRYING("crying", "البكاء والتأثر", "Crying & Emotional", "[sighs]", "trembling, tearful, choked-up crying emotion", -0.4f, 0.84f),
-    JOY("joy", "الفرح والسعادة", "Joy & Happiness", "[excited]", "bright, joyful, smiling, uplifting voice", 0.6f, 1.06f),
-    ANGER("anger", "الغضب والعصبية", "Anger & Fury", null, "fierce, tense, sharp angry tone", 0.4f, 1.12f),
-    FEAR("fear", "الخوف والتوتر", "Fear & Tension", null, "anxious, trembling, tense fearful breath", 0.5f, 1.08f),
-    CALM("calm", "الهدوء والطمأنينة", "Calm & Serenity", null, "soothing, peaceful, reassuring soft cadence", -0.3f, 0.92f),
-    EXCITED("excited", "الحماس والقوة", "Excitement & Power", "[excited]", "energetic, bold, powerful enthusiastic delivery", 0.7f, 1.10f),
-    SURPRISED("surprised", "الدهشة والاستغراب", "Surprise & Awe", "[curious]", "astonished, wide-eyed surprised expressive tone", 0.8f, 1.03f),
-    WHISPER("whisper", "الهمس", "Whisper", "[whispers]", "intimate soft airy whisper very close to mic", 0.2f, 0.90f),
-    LAUGH("laugh", "الضحك", "Laughter", "[laughs]", "lighthearted laughing chuckle while speaking warmly", 0.5f, 1.04f),
+    NEUTRAL(
+        id = "neutral",
+        titleAr = "طبيعي متزن",
+        titleEn = "Natural",
+        voxDesignHintEn = "natural balanced studio tone",
+        pitchBiasSemitones = 0f,
+        speedBiasFactor = 1.0f,
+    ),
+    EXCITED(
+        id = "excited",
+        titleAr = "حماسي وقوي",
+        titleEn = "Excited",
+        voxDesignHintEn = "energetic bold enthusiastic tone",
+        pitchBiasSemitones = 0.75f,
+        speedBiasFactor = 1.08f,
+    ),
+    CALM(
+        id = "calm",
+        titleAr = "هادئ ودافئ",
+        titleEn = "Calm & Warm",
+        voxDesignHintEn = "soothing warm peaceful cadence",
+        pitchBiasSemitones = -0.35f,
+        speedBiasFactor = 0.93f,
+    ),
+    SAD(
+        id = "sad",
+        titleAr = "حزين ومؤثر",
+        titleEn = "Sad",
+        voxDesignHintEn = "deeply emotional melancholic tone",
+        pitchBiasSemitones = -0.75f,
+        speedBiasFactor = 0.87f,
+    ),
+    SERIOUS(
+        id = "serious",
+        titleAr = "جاد ورسمي",
+        titleEn = "Serious",
+        voxDesignHintEn = "authoritative formal broadcast tone",
+        pitchBiasSemitones = -0.50f,
+        speedBiasFactor = 0.96f,
+    ),
+    WHISPER(
+        id = "whisper",
+        titleAr = "همس ناعم",
+        titleEn = "Whisper",
+        voxDesignHintEn = "intimate soft airy close-mic whisper",
+        pitchBiasSemitones = 0.20f,
+        speedBiasFactor = 0.90f,
+    ),
 }
 
 @Serializable
@@ -188,11 +180,20 @@ enum class AiDeliveryPace(
     val speedMultiplier: Float,
     val promptHintEn: String,
 ) {
-    VERY_SLOW("very_slow", "بطيء جداً وعميق", "Very Slow & Deep", 0.78f, "very slow deliberate contemplative pacing"),
-    SLOW("slow", "بطيء متأني", "Slow & Thoughtful", 0.89f, "measured unhurried thoughtful pacing"),
+    VERY_SLOW("very_slow", "بطيء جداً", "Very Slow", 0.75f, "very slow deliberate pacing"),
+    SLOW("slow", "بطيء متأني", "Slow", 0.88f, "measured unhurried pacing"),
     NORMAL("normal", "إيقاع طبيعي", "Normal Pace", 1.0f, "natural conversational cadence"),
-    FAST("fast", "سريع وحيوي", "Fast & Energetic", 1.14f, "brisk energetic rapid cadence"),
-    DRAMATIC_PAUSES("dramatic", "درامي بوقفات مؤثرة", "Dramatic Pauses", 0.91f, "dramatic cinema pacing with emotional pauses"),
+    FAST("fast", "سريع وحيوي", "Fast", 1.15f, "brisk energetic rapid cadence"),
+    DRAMATIC_PAUSES("dramatic", "متدرج درامي", "Dramatic", 0.92f, "dramatic cinema pacing with crisp pauses");
+
+    companion object {
+        fun fromSpeechRate(rate: Float): AiDeliveryPace = when {
+            rate <= 0.80f -> VERY_SLOW
+            rate <= 0.93f -> SLOW
+            rate <= 1.08f -> NORMAL
+            else -> FAST
+        }
+    }
 }
 
 @Serializable
@@ -201,18 +202,13 @@ enum class AiVoiceCategory(
     val titleAr: String,
     val titleEn: String,
 ) {
-    MALE("male", "رجل", "Male"),
-    FEMALE("female", "امرأة", "Female"),
-    CHILD("child", "طفل", "Child"),
-    ELDERLY("elderly", "مسن", "Elderly"),
-    NARRATOR("narrator", "راوي / وثائقي", "Narrator"),
-    CARTOON("cartoon", "شخصية كرتونية", "Cartoon"),
-    CUSTOM_DESIGN("custom", "تصميم مخصص", "Custom Design");
+    MALE("male", "رجالي", "Male"),
+    FEMALE("female", "نسائي", "Female"),
+    ;
 
     fun toGroupFilter(): AiVoiceGroupFilter = when (this) {
         MALE -> AiVoiceGroupFilter.MALE
         FEMALE -> AiVoiceGroupFilter.FEMALE
-        CHILD, ELDERLY, NARRATOR, CARTOON, CUSTOM_DESIGN -> AiVoiceGroupFilter.CHARACTERS
     }
 }
 
@@ -223,7 +219,6 @@ enum class AiVoiceGroupFilter(
 ) {
     MALE("male", "رجالي", "Male"),
     FEMALE("female", "نسائي", "Female"),
-    CHARACTERS("characters", "شخصيات", "Characters"),
     FAVORITES("favorites", "المفضلة", "Favorites"),
 }
 
@@ -236,6 +231,8 @@ data class AiVoiceCharacter(
     val id: String,
     val nameAr: String,
     val nameEn: String,
+    val roleDescriptionAr: String = "",
+    val roleDescriptionEn: String = "",
     val category: AiVoiceCategory,
     val language: AiVoiceLanguage = AiVoiceLanguage.AR,
     val dialect: AiArabicDialect = AiArabicDialect.MSA,
@@ -244,7 +241,13 @@ data class AiVoiceCharacter(
     val defaultEmotion: AiVoiceEmotion = AiVoiceEmotion.NEUTRAL,
     val defaultEmotionIntensity: Float = 0.65f,
     val defaultPace: AiDeliveryPace = AiDeliveryPace.NORMAL,
+    val defaultSpeechRate: Float = 1.0f,
     val pitchOffsetSemitones: Float = 0f,
+    val fixedSid: Int = 0,
+    val fixedSeed: Int = FIXED_DETERMINISTIC_SEED,
+    val fixedFormantShift: Float = 1.0f,
+    val fixedEqLowDb: Float = 0f,
+    val fixedEqPresenceDb: Float = 0f,
     val referenceAudioPath: String? = null,
     val referenceAudioName: String? = null,
     val referenceTranscript: String = "",
@@ -252,6 +255,11 @@ data class AiVoiceCharacter(
     val createdAtMs: Long = 0L,
 ) {
     fun displayName(isEnglish: Boolean): String = if (isEnglish && nameEn.isNotBlank()) nameEn else nameAr
+
+    fun displayDescription(isEnglish: Boolean): String {
+        val raw = if (isEnglish) roleDescriptionEn else roleDescriptionAr
+        return raw.ifBlank { voiceDescriptionPrompt }
+    }
 }
 
 @Immutable
@@ -272,13 +280,19 @@ data class AiVoiceSynthRequest(
     val engine: AiVoiceEngineKind,
     val text: String,
     val language: AiVoiceLanguage,
-    val dialect: AiArabicDialect,
+    val dialect: AiArabicDialect = AiArabicDialect.MSA,
     val category: AiVoiceCategory,
     val voiceDescriptionPrompt: String,
     val emotion: AiVoiceEmotion,
     val emotionIntensity: Float,
-    val pace: AiDeliveryPace,
+    val pace: AiDeliveryPace = AiDeliveryPace.NORMAL,
+    val speechRate: Float = pace.speedMultiplier,
     val pitchOffsetSemitones: Float = 0f,
+    val fixedSid: Int = 0,
+    val fixedSeed: Int = FIXED_DETERMINISTIC_SEED,
+    val fixedFormantShift: Float = 1.0f,
+    val fixedEqLowDb: Float = 0f,
+    val fixedEqPresenceDb: Float = 0f,
     val referenceAudioPath: String? = null,
     val referenceTranscript: String = "",
     val cfgValue: Float = 2.0f,
@@ -320,7 +334,6 @@ data class AiVoiceBackendHealth(
     val isChecking: Boolean = false,
     val serverReachable: Boolean = false,
     val voxCpm2Ready: Boolean = false,
-    val audarTurboReady: Boolean = false,
     val voxcpm2PackageInstalled: Boolean = false,
     val voxcpm2Loaded: Boolean = false,
     val cudaAvailable: Boolean = false,
@@ -328,25 +341,30 @@ data class AiVoiceBackendHealth(
     val voxcpm2LoadError: String = "",
     val voxCpmPublicSpaceChecked: Boolean = false,
     val voxCpmPublicSpaceAvailable: Boolean = false,
-    val edgeNeuralReady: Boolean = true,
     val statusDetail: String = "",
     val serverGpuInfo: String = "",
 )
 
 @Immutable
 data class AiVoiceStudioUiState(
-    val activeTab: Int = 0, // 0=Single, 1=Dialogue, 2=Characters, 3=Server
+    val activeTab: Int = 0, // 0=Single Studio, 1=Dialogue, 2=Voices & Cloning
     val selectedEngine: AiVoiceEngineKind = AiVoiceEngineKind.VOXCPM_2,
     val selectedLanguage: AiVoiceLanguage = AiVoiceLanguage.AR,
-    val selectedDialect: AiArabicDialect = AiArabicDialect.IRAQI,
+    val selectedDialect: AiArabicDialect = AiArabicDialect.MSA,
     val selectedCategory: AiVoiceCategory = AiVoiceCategory.MALE,
-    val selectedCharacterId: String = "iraqi_man_deep_40s",
+    val selectedCharacterId: String = "male_news_podcast",
     val selectedEmotion: AiVoiceEmotion = AiVoiceEmotion.NEUTRAL,
     val emotionIntensity: Float = 0.65f,
     val selectedPace: AiDeliveryPace = AiDeliveryPace.NORMAL,
-    val pitchOffsetSemitones: Float = 0f,
-    val voiceDescriptionPrompt: String = "رجل عراقي في الأربعين من عمره، صوته عميق وخشن قليلاً، يتحدث ببطء وبنبرة متزنة ومؤثرة.",
-    val scriptText: String = "أهلاً بكم في استوديو الأصوات الذكي، حيث تتحول الكلمات إلى أداء بشري نابض بالمشاعر.",
+    val speechRate: Float = 1.0f,
+    val pitchOffsetSemitones: Float = -0.8f,
+    val fixedSid: Int = 0,
+    val fixedSeed: Int = FIXED_DETERMINISTIC_SEED,
+    val fixedFormantShift: Float = 0.96f,
+    val fixedEqLowDb: Float = 2.0f,
+    val fixedEqPresenceDb: Float = 2.4f,
+    val voiceDescriptionPrompt: String = "Professional studio news & podcast anchor, clear poised resonant baritone delivery.",
+    val scriptText: String = "أهلاً بكم في استوديو الصوت الذكي، حيث تتحول الكلمات إلى أداء احترافي متزن وثابت.",
     val referenceAudioPath: String? = null,
     val referenceAudioName: String? = null,
     val referenceAudioDurationMs: Long = 0L,
@@ -380,169 +398,145 @@ data class AiVoiceStudioUiState(
 }
 
 val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
+    // --- Male (رجالي) - 3 fixed professional roles ---
     AiVoiceCharacter(
-        id = "iraqi_man_deep_40s",
-        nameAr = "رجل عراقي عميق (الأربعينات)",
-        nameEn = "Deep Iraqi Man (40s)",
+        id = "male_news_podcast",
+        nameAr = "مذيع إخباري وبودكاست",
+        nameEn = "News & Podcast Anchor",
+        roleDescriptionAr = "صوت واضح، متزن، وإلقاء احترافي",
+        roleDescriptionEn = "Clear, balanced, broadcast studio delivery",
         category = AiVoiceCategory.MALE,
         language = AiVoiceLanguage.AR,
-        dialect = AiArabicDialect.IRAQI,
-        preferredEngine = AiVoiceEngineKind.AUDAR_TTS_V1_FLASH,
-        voiceDescriptionPrompt = "رجل عراقي في الأربعين من عمره، صوته عميق وخشن قليلاً، يتحدث ببطء وبنبرة مؤثرة ووقورة.",
-        defaultEmotion = AiVoiceEmotion.SAD,
-        defaultEmotionIntensity = 0.70f,
-        defaultPace = AiDeliveryPace.SLOW,
-        pitchOffsetSemitones = -2.2f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "young_woman_warm_joy",
-        nameAr = "امرأة شابة دافئة ومبتسمة",
-        nameEn = "Warm Smiling Young Woman",
-        category = AiVoiceCategory.FEMALE,
-        language = AiVoiceLanguage.AR,
         dialect = AiArabicDialect.MSA,
         preferredEngine = AiVoiceEngineKind.VOXCPM_2,
-        voiceDescriptionPrompt = "امرأة شابة بصوت هادئ وناعم، تتحدث بفرح وابتسامة واضحة في نبرة صوتها وبأسلوب مريح قريب من الميكروفون.",
-        defaultEmotion = AiVoiceEmotion.JOY,
-        defaultEmotionIntensity = 0.65f,
-        defaultPace = AiDeliveryPace.NORMAL,
-        pitchOffsetSemitones = 2.0f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "elderly_tired_man",
-        nameAr = "رجل مسن بصوت متعب",
-        nameEn = "Weathered Elderly Man",
-        category = AiVoiceCategory.ELDERLY,
-        language = AiVoiceLanguage.AR,
-        dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
-        voiceDescriptionPrompt = "رجل مسن في السبعين من عمره بصوت متعب وأجش قليلاً، مع تنفّس بطيء وحنين صادق في كل عبارة.",
-        defaultEmotion = AiVoiceEmotion.SAD,
-        defaultEmotionIntensity = 0.75f,
-        defaultPace = AiDeliveryPace.VERY_SLOW,
-        pitchOffsetSemitones = -3.4f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "cinematic_narrator",
-        nameAr = "راوي وثائقي سينمائي",
-        nameEn = "Cinematic Documentary Narrator",
-        category = AiVoiceCategory.NARRATOR,
-        language = AiVoiceLanguage.AR,
-        dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
-        voiceDescriptionPrompt = "راوي أفلام وثائقية بصوت جهوري فخم وعميق، إلقاء درامي رصين مع وقفات تنفس متقنة بين الجمل.",
-        defaultEmotion = AiVoiceEmotion.CALM,
-        defaultEmotionIntensity = 0.60f,
-        defaultPace = AiDeliveryPace.DRAMATIC_PAUSES,
-        pitchOffsetSemitones = -2.8f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "cheerful_child",
-        nameAr = "طفل مرح وفضولي",
-        nameEn = "Cheerful Curious Child",
-        category = AiVoiceCategory.CHILD,
-        language = AiVoiceLanguage.AR,
-        dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
-        voiceDescriptionPrompt = "طفل صغير في السابعة من عمره بصوت طفولي نقي مشرق ومليء بالحماس والفضول البريء.",
-        defaultEmotion = AiVoiceEmotion.EXCITED,
-        defaultEmotionIntensity = 0.75f,
-        defaultPace = AiDeliveryPace.NORMAL,
-        pitchOffsetSemitones = 4.6f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "cartoon_adventurer",
-        nameAr = "شخصية كرتونية مرحة",
-        nameEn = "Expressive Cartoon Character",
-        category = AiVoiceCategory.CARTOON,
-        language = AiVoiceLanguage.AR,
-        dialect = AiArabicDialect.EGYPTIAN,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
-        voiceDescriptionPrompt = "شخصية كرتونية مرحة سريعة البديهة بصوت مطاطي مبالغ في التعبير والدهشة والضحك.",
-        defaultEmotion = AiVoiceEmotion.SURPRISED,
-        defaultEmotionIntensity = 0.85f,
-        defaultPace = AiDeliveryPace.FAST,
-        pitchOffsetSemitones = 3.2f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "gulf_host_female",
-        nameAr = "مقدمة بودكاست خليجية",
-        nameEn = "Gulf Podcast Host (Female)",
-        category = AiVoiceCategory.FEMALE,
-        language = AiVoiceLanguage.AR,
-        dialect = AiArabicDialect.GULF,
-        preferredEngine = AiVoiceEngineKind.AUDAR_TTS_V1_FLASH,
-        voiceDescriptionPrompt = "امرأة خليجية لبقة بصوت دافئ رصين وهادئ يناسب البودكاست والحوار الثقافي.",
-        defaultEmotion = AiVoiceEmotion.CALM,
-        defaultEmotionIntensity = 0.60f,
-        defaultPace = AiDeliveryPace.NORMAL,
-        pitchOffsetSemitones = 1.6f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "saudi_anchor_male",
-        nameAr = "إعلامي سعودي فصيح",
-        nameEn = "Saudi Broadcast Presenter (Male)",
-        category = AiVoiceCategory.MALE,
-        language = AiVoiceLanguage.AR,
-        dialect = AiArabicDialect.SAUDI,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
-        voiceDescriptionPrompt = "رجل سعودي بصوت إذاعي واضح ومتزن ومقنع، إلقاء إخباري وبودكاست احترافي.",
+        voiceDescriptionPrompt = "Professional studio news and podcast host, crisp articulation, poised resonant baritone tone.",
         defaultEmotion = AiVoiceEmotion.NEUTRAL,
-        defaultEmotionIntensity = 0.60f,
-        defaultPace = AiDeliveryPace.NORMAL,
-        pitchOffsetSemitones = -1.2f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "egyptian_actress_drama",
-        nameAr = "ممثلة مصرية درامية",
-        nameEn = "Egyptian Drama Actress",
-        category = AiVoiceCategory.FEMALE,
-        language = AiVoiceLanguage.AR,
-        dialect = AiArabicDialect.EGYPTIAN,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
-        voiceDescriptionPrompt = "امرأة مصرية بصوت معبر دافئ ومفعم بالعاطفة والانفعال الدرامي المتقن.",
-        defaultEmotion = AiVoiceEmotion.SAD,
-        defaultEmotionIntensity = 0.72f,
-        defaultPace = AiDeliveryPace.DRAMATIC_PAUSES,
-        pitchOffsetSemitones = 1.4f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "global_english_narrator",
-        nameAr = "راوي عالمي (English Male)",
-        nameEn = "Global English Storyteller",
-        category = AiVoiceCategory.NARRATOR,
-        language = AiVoiceLanguage.EN,
-        dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
-        voiceDescriptionPrompt = "Rich, cinematic English male baritone storyteller with crisp articulation and calm authority.",
-        defaultEmotion = AiVoiceEmotion.CALM,
-        defaultEmotionIntensity = 0.60f,
-        defaultPace = AiDeliveryPace.SLOW,
-        pitchOffsetSemitones = -2.0f,
-        isBuiltIn = true,
-    ),
-    AiVoiceCharacter(
-        id = "global_english_female",
-        nameAr = "مقدمة عالمية (English Female)",
-        nameEn = "Global English Studio Host",
-        category = AiVoiceCategory.FEMALE,
-        language = AiVoiceLanguage.EN,
-        dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
-        voiceDescriptionPrompt = "Warm, expressive English female host with bright smiling resonance and natural studio intimacy.",
-        defaultEmotion = AiVoiceEmotion.JOY,
         defaultEmotionIntensity = 0.65f,
         defaultPace = AiDeliveryPace.NORMAL,
-        pitchOffsetSemitones = 1.8f,
+        defaultSpeechRate = 1.0f,
+        pitchOffsetSemitones = -0.8f,
+        fixedSid = 0,
+        fixedSeed = FIXED_DETERMINISTIC_SEED,
+        fixedFormantShift = 0.96f,
+        fixedEqLowDb = 2.0f,
+        fixedEqPresenceDb = 2.4f,
+        isBuiltIn = true,
+    ),
+    AiVoiceCharacter(
+        id = "male_doc_narrator",
+        nameAr = "راوي وثائقي سينمائي",
+        nameEn = "Documentary Narrator",
+        roleDescriptionAr = "نبرة عميقة، هادئة، ومقنعة",
+        roleDescriptionEn = "Deep, steady, persuasive cinematic tone",
+        category = AiVoiceCategory.MALE,
+        language = AiVoiceLanguage.AR,
+        dialect = AiArabicDialect.MSA,
+        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        voiceDescriptionPrompt = "Cinematic documentary narrator with rich deep authoritative warmth and unhurried poised pacing.",
+        defaultEmotion = AiVoiceEmotion.CALM,
+        defaultEmotionIntensity = 0.65f,
+        defaultPace = AiDeliveryPace.SLOW,
+        defaultSpeechRate = 0.92f,
+        pitchOffsetSemitones = -2.4f,
+        fixedSid = 1,
+        fixedSeed = FIXED_DETERMINISTIC_SEED,
+        fixedFormantShift = 0.89f,
+        fixedEqLowDb = 4.2f,
+        fixedEqPresenceDb = 1.8f,
+        isBuiltIn = true,
+    ),
+    AiVoiceCharacter(
+        id = "male_drama_speaker",
+        nameAr = "متحدث درامي وتفاعلي",
+        nameEn = "Dramatic Speaker",
+        roleDescriptionAr = "أداء تعبيري حيوي ومؤثر",
+        roleDescriptionEn = "Vivid expressive theatrical performance",
+        category = AiVoiceCategory.MALE,
+        language = AiVoiceLanguage.AR,
+        dialect = AiArabicDialect.MSA,
+        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        voiceDescriptionPrompt = "Expressive dramatic male voice actor with dynamic projection and clear emotional presence.",
+        defaultEmotion = AiVoiceEmotion.EXCITED,
+        defaultEmotionIntensity = 0.70f,
+        defaultPace = AiDeliveryPace.NORMAL,
+        defaultSpeechRate = 1.02f,
+        pitchOffsetSemitones = 0.4f,
+        fixedSid = 2,
+        fixedSeed = FIXED_DETERMINISTIC_SEED,
+        fixedFormantShift = 1.02f,
+        fixedEqLowDb = 1.4f,
+        fixedEqPresenceDb = 3.0f,
+        isBuiltIn = true,
+    ),
+
+    // --- Female (نسائي) - 3 fixed professional roles ---
+    AiVoiceCharacter(
+        id = "female_podcast_host",
+        nameAr = "مذيعة بودكاست وإلقاء",
+        nameEn = "Podcast & Studio Host",
+        roleDescriptionAr = "صوت دافئ، واضح، ومريح",
+        roleDescriptionEn = "Warm, crisp, welcoming studio delivery",
+        category = AiVoiceCategory.FEMALE,
+        language = AiVoiceLanguage.AR,
+        dialect = AiArabicDialect.MSA,
+        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        voiceDescriptionPrompt = "Warm polished female podcast anchor with inviting studio closeness and crystal clarity.",
+        defaultEmotion = AiVoiceEmotion.NEUTRAL,
+        defaultEmotionIntensity = 0.65f,
+        defaultPace = AiDeliveryPace.NORMAL,
+        defaultSpeechRate = 1.0f,
+        pitchOffsetSemitones = 0.9f,
+        fixedSid = 3,
+        fixedSeed = FIXED_DETERMINISTIC_SEED,
+        fixedFormantShift = 1.06f,
+        fixedEqLowDb = 1.6f,
+        fixedEqPresenceDb = 2.6f,
+        isBuiltIn = true,
+    ),
+    AiVoiceCharacter(
+        id = "female_story_narrator",
+        nameAr = "راوية قصص ووثائقيات",
+        nameEn = "Story & Documentary Narrator",
+        roleDescriptionAr = "نبرة هادئة، رصينة، وجذابة",
+        roleDescriptionEn = "Calm, poised, captivating storytelling tone",
+        category = AiVoiceCategory.FEMALE,
+        language = AiVoiceLanguage.AR,
+        dialect = AiArabicDialect.MSA,
+        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        voiceDescriptionPrompt = "Poised captivating female storyteller with silky calm resonance and thoughtful phrasing.",
+        defaultEmotion = AiVoiceEmotion.CALM,
+        defaultEmotionIntensity = 0.65f,
+        defaultPace = AiDeliveryPace.SLOW,
+        defaultSpeechRate = 0.93f,
+        pitchOffsetSemitones = -0.3f,
+        fixedSid = 4,
+        fixedSeed = FIXED_DETERMINISTIC_SEED,
+        fixedFormantShift = 0.99f,
+        fixedEqLowDb = 2.4f,
+        fixedEqPresenceDb = 1.6f,
+        isBuiltIn = true,
+    ),
+    AiVoiceCharacter(
+        id = "female_promo_speaker",
+        nameAr = "متحدثة إعلانية وتفاعلية",
+        nameEn = "Commercial & Dynamic Host",
+        roleDescriptionAr = "أداء نشط، مشرق، وواضح",
+        roleDescriptionEn = "Bright, energetic, crisp commercial delivery",
+        category = AiVoiceCategory.FEMALE,
+        language = AiVoiceLanguage.AR,
+        dialect = AiArabicDialect.MSA,
+        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        voiceDescriptionPrompt = "Bright lively commercial female presenter with uplifting clarity and crisp articulation.",
+        defaultEmotion = AiVoiceEmotion.EXCITED,
+        defaultEmotionIntensity = 0.72f,
+        defaultPace = AiDeliveryPace.FAST,
+        defaultSpeechRate = 1.08f,
+        pitchOffsetSemitones = 1.9f,
+        fixedSid = 5,
+        fixedSeed = FIXED_DETERMINISTIC_SEED,
+        fixedFormantShift = 1.11f,
+        fixedEqLowDb = 0.6f,
+        fixedEqPresenceDb = 3.4f,
         isBuiltIn = true,
     ),
 )
@@ -550,29 +544,20 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
 val DEFAULT_DIALOGUE_TURNS: List<AiDialogueTurn> = listOf(
     AiDialogueTurn(
         id = "turn_1",
-        characterId = "iraqi_man_deep_40s",
-        text = "لقد انتظرت هذه اللحظة طويلاً، والآن حان وقت الحقيقة.",
-        emotion = AiVoiceEmotion.SAD,
-        emotionIntensity = 0.70f,
-        pace = AiDeliveryPace.SLOW,
-        pauseAfterMs = 500,
-    ),
-    AiDialogueTurn(
-        id = "turn_2",
-        characterId = "young_woman_warm_joy",
-        text = "لا تقلق أبداً، كل شيء سيتغير للأفضل من هذه اللحظة.",
-        emotion = AiVoiceEmotion.CALM,
+        characterId = "male_news_podcast",
+        text = "أهلاً بكم في هذا الحوار المباشر حول جودة الهندسة الصوتية.",
+        emotion = AiVoiceEmotion.NEUTRAL,
         emotionIntensity = 0.65f,
         pace = AiDeliveryPace.NORMAL,
         pauseAfterMs = 450,
     ),
     AiDialogueTurn(
-        id = "turn_3",
-        characterId = "elderly_tired_man",
-        text = "أتمنى أن تصدق كلماتكما يا أبنائي... فقد تعبت من الانتظار.",
-        emotion = AiVoiceEmotion.CRYING,
-        emotionIntensity = 0.75f,
-        pace = AiDeliveryPace.VERY_SLOW,
-        pauseAfterMs = 400,
+        id = "turn_2",
+        characterId = "female_podcast_host",
+        text = "سعيدة جداً بوجودي معكم اليوم لنستعرض معاً أدق تفاصيل الصوت.",
+        emotion = AiVoiceEmotion.CALM,
+        emotionIntensity = 0.65f,
+        pace = AiDeliveryPace.NORMAL,
+        pauseAfterMs = 450,
     ),
 )
