@@ -1,9 +1,9 @@
 package com.example.audio.tts
 
 import android.content.Context
-import com.aistudio.voicepro.sonixk.LocalArabicTtsEngine
-import com.aistudio.voicepro.sonixk.LocalTtsOutcome
 import com.aistudio.voicepro.sonixk.LocalTtsSynthResult
+import com.aistudio.voicepro.sonixk.NabraOnnxDirectEngine
+import com.aistudio.voicepro.sonixk.NabraSynthOutcome
 import com.example.model.AppLanguage
 import com.example.model.TTS_DIALECTS
 import com.example.model.TtsDeliveryStyle
@@ -17,15 +17,20 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 sealed interface VoiceRouteOutcome {
-    data class Success(val result: LocalTtsSynthResult, val engineUsed: TtsEngineMode) : VoiceRouteOutcome
+    data class Success(
+        val result: LocalTtsSynthResult,
+        val engineUsed: TtsEngineMode,
+        val usedFallback: Boolean = false,
+    ) : VoiceRouteOutcome
+
     data class ProviderError(val message: String) : VoiceRouteOutcome
 }
 
 class SmartVoiceRouter {
 
     /**
-     * يوجّه النص مباشرة إلى المحرك المحلي [LocalArabicTtsEngine] (Android TextToSpeech + FFmpegKit)
-     * للعمل الفوري 100% بدون إنترنت.
+     * يوجّه طلبات التحويل الصوتي مباشرة إلى محرك [NabraOnnxDirectEngine] (Nabra-82M Sherpa-ONNX + FFmpegKit)،
+     * مع مسار احتياطي فوري عبر المحرك المحلي عندما تكون ملفات أو بيئة Sherpa-ONNX قيد التنزيل أو غير متاحة.
      */
     suspend fun synthesizeStudioVoiceWithStatus(
         context: Context,
@@ -48,7 +53,7 @@ class SmartVoiceRouter {
         }
 
         when (
-            val outcome = LocalArabicTtsEngine.synthesize(
+            val outcome = NabraOnnxDirectEngine.synthesize(
                 context = context,
                 text = cleanText,
                 dialect = dialect,
@@ -60,13 +65,19 @@ class SmartVoiceRouter {
                 studioLuxuryEnhancement = studioLuxuryEnhancement,
                 persona = persona,
                 acousticMode = acousticMode,
+                autoDownloadIfOnline = true,
             )
         ) {
-            is LocalTtsOutcome.Success -> VoiceRouteOutcome.Success(
+            is NabraSynthOutcome.Success -> VoiceRouteOutcome.Success(
                 result = outcome.result,
-                engineUsed = TtsEngineMode.LOCAL_ARABIC_STUDIO,
+                engineUsed = if (outcome.usedNabraNeural) {
+                    TtsEngineMode.NABRA_ONNX_DIRECT
+                } else {
+                    TtsEngineMode.LOCAL_ARABIC_STUDIO
+                },
+                usedFallback = !outcome.usedNabraNeural,
             )
-            is LocalTtsOutcome.Error -> VoiceRouteOutcome.ProviderError(outcome.message)
+            is NabraSynthOutcome.Error -> VoiceRouteOutcome.ProviderError(outcome.message)
         }
     }
 
@@ -77,7 +88,7 @@ class SmartVoiceRouter {
         outputFile: File,
         context: Context,
     ): Boolean = withContext(Dispatchers.IO) {
-        val outcome = LocalArabicTtsEngine.synthesize(
+        val outcome = NabraOnnxDirectEngine.synthesize(
             context = context,
             text = text,
             dialect = dialect,
@@ -86,7 +97,7 @@ class SmartVoiceRouter {
             speed = 1.0f,
             pitch = 1.0f,
         )
-        if (outcome is LocalTtsOutcome.Success) {
+        if (outcome is NabraSynthOutcome.Success) {
             outputFile.parentFile?.mkdirs()
             val copied = runCatching {
                 outcome.result.audioFile.copyTo(outputFile, overwrite = true)

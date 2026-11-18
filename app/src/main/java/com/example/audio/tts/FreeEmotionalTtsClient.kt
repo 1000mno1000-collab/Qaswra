@@ -1,9 +1,9 @@
 package com.example.audio.tts
 
 import android.content.Context
-import com.aistudio.voicepro.sonixk.LocalArabicTtsEngine
-import com.aistudio.voicepro.sonixk.LocalTtsOutcome
 import com.aistudio.voicepro.sonixk.LocalTtsSynthResult
+import com.aistudio.voicepro.sonixk.NabraOnnxDirectEngine
+import com.aistudio.voicepro.sonixk.NabraSynthOutcome
 import com.example.model.AppLanguage
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
@@ -17,8 +17,8 @@ sealed interface FreeEmotionalTtsOutcome {
 }
 
 /**
- * واجهة توافقية لتوجيه طلبات التحويل الصوتي محلياً بالكامل بدون إنترنت عبر [LocalArabicTtsEngine]
- * (Android TextToSpeech + FFmpegKit).
+ * واجهة توافقية لتوجيه طلبات التحويل الصوتي عبر محرك [NabraOnnxDirectEngine]
+ * (Nabra-82M Sherpa-ONNX + FFmpegKit).
  */
 object FreeEmotionalTtsClient {
     private const val PREFS_NAME = "sonix_free_tts_prefs"
@@ -50,7 +50,7 @@ object FreeEmotionalTtsClient {
         acousticMode: TtsPersonaAcousticMode? = null,
     ): FreeEmotionalTtsOutcome {
         return when (
-            val outcome = LocalArabicTtsEngine.synthesize(
+            val outcome = NabraOnnxDirectEngine.synthesize(
                 context = context,
                 text = text,
                 dialect = dialect,
@@ -64,8 +64,8 @@ object FreeEmotionalTtsClient {
                 acousticMode = acousticMode,
             )
         ) {
-            is LocalTtsOutcome.Success -> FreeEmotionalTtsOutcome.Success(outcome.result)
-            is LocalTtsOutcome.Error -> FreeEmotionalTtsOutcome.Error(outcome.message)
+            is NabraSynthOutcome.Success -> FreeEmotionalTtsOutcome.Success(outcome.result)
+            is NabraSynthOutcome.Error -> FreeEmotionalTtsOutcome.Error(outcome.message)
         }
     }
 }

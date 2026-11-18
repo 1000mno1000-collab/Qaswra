@@ -465,7 +465,7 @@ object LocalArabicTtsEngine {
         }
     }
 
-    private suspend fun applyStudioProfileWithFfmpegOrDsp(
+    internal suspend fun applyStudioProfileWithFfmpegOrDsp(
         rawWavFile: File,
         outWavFile: File,
         profile: LocalTtsVoiceProfile,
@@ -765,7 +765,7 @@ object LocalArabicTtsEngine {
         }.getOrDefault(TARGET_SAMPLE_RATE)
     }
 
-    private fun trimSilenceEdgesAndFade(
+    internal fun trimSilenceEdgesAndFade(
         buffer: StereoAudioBuffer,
         keepPadMs: Int,
     ): StereoAudioBuffer {
@@ -804,7 +804,7 @@ object LocalArabicTtsEngine {
         return StereoAudioBuffer(outL, outR, sr)
     }
 
-    private fun stitchSentenceBuffersSmoothly(
+    internal fun stitchSentenceBuffersSmoothly(
         chunks: List<StereoAudioBuffer>,
         pauseMs: Int,
     ): StereoAudioBuffer? {
@@ -829,7 +829,7 @@ object LocalArabicTtsEngine {
         return StereoAudioBuffer(outL, outR, sr)
     }
 
-    private fun splitSentencesSmoothly(rawText: String, maxChars: Int): List<String> {
+    internal fun splitSentencesSmoothly(rawText: String, maxChars: Int): List<String> {
         val normalized = rawText.replace(Regex("[\\t\\r ]+"), " ").trim()
         if (normalized.isEmpty()) return emptyList()
 

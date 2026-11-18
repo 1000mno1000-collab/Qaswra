@@ -57,6 +57,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -880,13 +881,14 @@ fun TextToSpeechStudioScreen(
             },
         )
 
-        // Local Offline Arabic TTS Studio Card (Android TextToSpeech + FFmpegKit)
+        // Nabra-82M Sherpa-ONNX + FFmpegKit Studio Engine Card
+        val nabraState = uiState.ttsUiState.nabraDownloadState
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
             border = BorderStroke(
                 1.dp,
-                StudioColors.Emerald.copy(alpha = 0.55f),
+                if (nabraState.isReady) StudioColors.Emerald.copy(alpha = 0.65f) else StudioColors.Cyan.copy(alpha = 0.55f),
             ),
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -915,12 +917,16 @@ fun TextToSpeechStudioScreen(
                     )
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = StudioColors.Emerald.copy(alpha = 0.16f),
+                        color = (if (nabraState.isReady) StudioColors.Emerald else StudioColors.Cyan).copy(alpha = 0.16f),
                     ) {
                         Text(
-                            text = t(lang, "tts_engine_free_badge"),
+                            text = if (nabraState.isReady) {
+                                t(lang, "tts_engine_free_badge")
+                            } else {
+                                "${nabraState.completedFiles}/${nabraState.totalFiles}"
+                            },
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = StudioColors.Emerald,
+                            color = if (nabraState.isReady) StudioColors.Emerald else StudioColors.Cyan,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         )
                     }
@@ -929,46 +935,122 @@ fun TextToSpeechStudioScreen(
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = StudioColors.ElevatedSurface,
-                    border = BorderStroke(1.dp, StudioColors.Emerald),
+                    border = BorderStroke(1.dp, if (nabraState.isReady) StudioColors.Emerald else StudioColors.Border),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("tts_engine_free_card"),
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            Text(
-                                text = t(lang, "tts_engine_free_label"),
-                                style = MaterialTheme.typography.titleSmall,
-                                color = StudioColors.Emerald,
-                            )
-                            Text(
-                                text = t(lang, "tts_engine_free_desc"),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = StudioColors.TextSecondary,
-                            )
-                            Text(
-                                text = if (lang == AppLanguage.EN) {
-                                    "Offline Studio Engine: Android TextToSpeech + FFmpegKit"
-                                } else {
-                                    "محرك محلي فوري بدون إنترنت: Android TextToSpeech + FFmpegKit"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = StudioColors.Cyan,
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = t(lang, "tts_engine_free_label"),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = if (nabraState.isReady) StudioColors.Emerald else StudioColors.Cyan,
+                                )
+                                Text(
+                                    text = t(lang, "tts_engine_free_desc"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioColors.TextSecondary,
+                                )
+                                Text(
+                                    text = when {
+                                        nabraState.isReady -> if (lang == AppLanguage.EN) {
+                                            "Nabra-82M files ready in nabra_onnx • Offline Kokoro + FFmpegKit"
+                                        } else {
+                                            "ملفات Nabra-82M جاهزة داخل nabra_onnx • معالجة FFmpegKit أوفلاين"
+                                        }
+                                        nabraState.isDownloading -> if (lang == AppLanguage.EN) {
+                                            "Downloading ${nabraState.currentFileName} (${nabraState.progressPercent}%)"
+                                        } else {
+                                            "جاري تحميل ${nabraState.currentFileName} (${nabraState.progressPercent}%)"
+                                        }
+                                        else -> if (lang == AppLanguage.EN) {
+                                            "Missing Nabra-82M files (${nabraState.completedFiles}/3) — instant local fallback active"
+                                        } else {
+                                            "ملفات Nabra-82M غير مكتملة (${nabraState.completedFiles}/3) — يعمل التوليد المحلي الفوري أو يمكنك تنزيلها"
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioColors.Cyan,
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                tint = if (nabraState.isReady) StudioColors.Emerald else StudioColors.TextSecondary,
+                                modifier = Modifier.size(20.dp),
                             )
                         }
-                        Icon(
-                            imageVector = Icons.Rounded.CheckCircle,
-                            contentDescription = null,
-                            tint = StudioColors.Emerald,
-                            modifier = Modifier.size(20.dp),
-                        )
+
+                        if (nabraState.isDownloading) {
+                            LinearProgressIndicator(
+                                progress = { nabraState.progress.coerceIn(0f, 1f) },
+                                color = StudioColors.Cyan,
+                                trackColor = StudioColors.BgTop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(CircleShape)
+                                    .testTag("tts_nabra_download_progress"),
+                            )
+                            val dlMb = String.format(java.util.Locale.US, "%.1f", nabraState.downloadedBytes / (1024.0 * 1024.0))
+                            val totMb = String.format(java.util.Locale.US, "%.1f", nabraState.totalBytes.coerceAtLeast(1L) / (1024.0 * 1024.0))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "$dlMb / $totMb MB (${nabraState.progressPercent}%)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioColors.TextSecondary,
+                                )
+                                TextButton(
+                                    onClick = { viewModel.cancelActiveOnlineRequest() },
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .testTag("tts_cancel_nabra_download"),
+                                ) {
+                                    Text(t(lang, "cancel_request"), color = StudioColors.RoseBright)
+                                }
+                            }
+                        } else if (!nabraState.isReady) {
+                            val dlBtnInteraction = remember { MutableInteractionSource() }
+                            OutlinedButton(
+                                onClick = { viewModel.downloadNabraOnnxModels() },
+                                interactionSource = dlBtnInteraction,
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.7f)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .lit(dlBtnInteraction, StudioColors.Cyan, cornerRadius = 12.dp)
+                                    .testTag("tts_download_nabra_button"),
+                            ) {
+                                Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = if (lang == AppLanguage.EN) {
+                                        "Download Nabra-82M Model (${nabraState.completedFiles}/3)"
+                                    } else {
+                                        "تحميل نموذج Nabra-82M الآن (${nabraState.completedFiles}/3)"
+                                    },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
                     }
                 }
 

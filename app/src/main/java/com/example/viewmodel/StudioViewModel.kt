@@ -13,6 +13,7 @@ import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.aistudio.voicepro.sonixk.NabraOnnxDirectEngine
 import com.example.audio.AudioDecodeOutcome
 import com.example.audio.AudioDecoder
 import com.example.audio.AudioFileUploader
@@ -249,7 +250,7 @@ data class StudioUiState(
     val importBytesLabel: String? = null,
     val exportProgress: Float? = null,
     val purifyProgress: Float? = null,
-    val ttsEngineMode: TtsEngineMode = TtsEngineMode.LOCAL_ARABIC_STUDIO,
+    val ttsEngineMode: TtsEngineMode = TtsEngineMode.NABRA_ONNX_DIRECT,
     val studioLuxuryEnhancement: Boolean = true,
     val homeScrollIndex: Int = 0,
     val homeScrollOffset: Int = 0,
@@ -547,9 +548,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val appCtx = getApplication<Application>()
+        viewModelScope.launch {
+            NabraOnnxDirectEngine.progressFlow.collect { dlState ->
+                _uiState.update { cur ->
+                    cur.copy(ttsUiState = cur.ttsUiState.copy(nabraDownloadState = dlState))
+                }
+            }
+        }
         viewModelScope.launch(Dispatchers.IO + safeCoroutineHandler) {
             AppDiagnosticLog.init(appCtx)
             RecentEditsCacheManager.init(appCtx)
+            NabraOnnxDirectEngine.refreshStatus(appCtx)
             val luxury = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(appCtx)
             val modelStatus = LocalNeuralVoiceEngine.detectLocalModels(appCtx)
             _uiState.update {
@@ -4465,10 +4474,47 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // TTS Studio (100% Offline: LocalArabicTtsEngine via Android TextToSpeech + FFmpegKit)
+    // TTS Studio (Nabra-82M Sherpa-ONNX Direct + FFmpegKit Studio Mastering + Offline Local Fallback)
     fun setStudioLuxuryEnhancement(enabled: Boolean) {
         FreeEmotionalTtsClient.saveStudioLuxuryEnhancement(getApplication(), enabled)
         _uiState.update { it.copy(studioLuxuryEnhancement = enabled) }
+    }
+
+    fun downloadNabraOnnxModels() {
+        val lang = _uiState.value.language
+        activeOnlineJob?.cancel()
+        activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
+            _uiState.update {
+                it.copy(
+                    isOnlineTaskRunning = true,
+                    onlineTaskLabel = "Nabra-82M Download",
+                    ttsUiState = it.ttsUiState.copy(errorMessage = null),
+                )
+            }
+            try {
+                val res = NabraOnnxDirectEngine.ensureModelsDownloaded(getApplication(), lang)
+                if (res.isReady) {
+                    postBanner(
+                        if (lang == AppLanguage.EN) {
+                            "Nabra-82M ONNX models downloaded and ready offline."
+                        } else {
+                            "تم تحميل ملفات نموذج Nabra-82M الثلاثة بنجاح داخل nabra_onnx"
+                        },
+                    )
+                } else if (!res.errorMessage.isNullOrBlank()) {
+                    _uiState.update {
+                        it.copy(ttsUiState = it.ttsUiState.copy(errorMessage = res.errorMessage))
+                    }
+                }
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isOnlineTaskRunning = false,
+                        onlineTaskLabel = "",
+                    )
+                }
+            }
+        }
     }
 
     private fun releaseTtsPreviewPlayer() {
@@ -4498,7 +4544,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
             return
         }
-        val engineMode = TtsEngineMode.LOCAL_ARABIC_STUDIO
+        val engineMode = TtsEngineMode.NABRA_ONNX_DIRECT
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             stopTtsPreview()
@@ -4506,7 +4552,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     isOnlineTaskRunning = true,
                     onlineTaskLabel = "TTS Preview",
-                    ttsUiState = TtsStudioUiState(
+                    ttsUiState = it.ttsUiState.copy(
                         selectedEngine = engineMode,
                         isSynthesizingPreview = true,
                         isPreviewing = false,
@@ -4547,12 +4593,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                                 releaseTtsPreviewPlayer()
                                 _uiState.update {
                                     it.copy(
-                                        ttsUiState = TtsStudioUiState(
+                                        ttsUiState = it.ttsUiState.copy(
                                             selectedEngine = engineMode,
+                                            isSynthesizingPreview = false,
+                                            isPreviewing = false,
                                             errorMessage = if (lang == AppLanguage.EN) {
-                                                "Unable to play local TTS preview ($errDetail)."
+                                                "Unable to play TTS preview ($errDetail)."
                                             } else {
-                                                "تعذر تشغيل معاينة الصوت المحلي ($errDetail)."
+                                                "تعذر تشغيل معاينة الصوت ($errDetail)."
                                             },
                                         ),
                                     )
@@ -4562,9 +4610,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         if (initiated) {
                             _uiState.update {
                                 it.copy(
-                                    ttsUiState = TtsStudioUiState(
+                                    ttsUiState = it.ttsUiState.copy(
                                         selectedEngine = engineMode,
                                         activeEngineUsed = outcome.engineUsed,
+                                        usedFallbackEngine = outcome.usedFallback,
                                         isSynthesizingPreview = false,
                                         isPreviewing = true,
                                         errorMessage = null,
@@ -4575,10 +4624,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             releaseTtsPreviewPlayer()
                             _uiState.update {
                                 it.copy(
-                                    ttsUiState = TtsStudioUiState(
+                                    ttsUiState = it.ttsUiState.copy(
                                         selectedEngine = engineMode,
+                                        isSynthesizingPreview = false,
+                                        isPreviewing = false,
                                         errorMessage = if (lang == AppLanguage.EN) {
-                                            "Unable to start local audio preview playback."
+                                            "Unable to start audio preview playback."
                                         } else {
                                             "تعذر بدء تشغيل المعاينة الصوتية."
                                         },
@@ -4590,8 +4641,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     is VoiceRouteOutcome.ProviderError -> {
                         _uiState.update {
                             it.copy(
-                                ttsUiState = TtsStudioUiState(
+                                ttsUiState = it.ttsUiState.copy(
                                     selectedEngine = engineMode,
+                                    isSynthesizingPreview = false,
+                                    isPreviewing = false,
                                     errorMessage = outcome.message,
                                 ),
                             )
@@ -4635,7 +4688,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         if (text.isBlank()) return
         val lang = _uiState.value.language
-        val engineMode = TtsEngineMode.LOCAL_ARABIC_STUDIO
+        val engineMode = TtsEngineMode.NABRA_ONNX_DIRECT
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             _uiState.update {
@@ -4643,9 +4696,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     isBusy = true,
                     isOnlineTaskRunning = true,
                     onlineTaskLabel = "TTS Generate",
-                    ttsUiState = TtsStudioUiState(
+                    ttsUiState = it.ttsUiState.copy(
                         selectedEngine = engineMode,
                         isGenerating = true,
+                        usedFallbackEngine = false,
                         errorMessage = null,
                     ),
                 )
@@ -4674,8 +4728,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         if (rawBuf.frameCount == 0) {
                             _uiState.update {
                                 it.copy(
-                                    ttsUiState = TtsStudioUiState(
+                                    ttsUiState = it.ttsUiState.copy(
                                         selectedEngine = engineMode,
+                                        isGenerating = false,
                                         errorMessage = if (lang == AppLanguage.EN) {
                                             "Synthesized audio buffer is empty."
                                         } else {
@@ -4702,26 +4757,36 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         val personaTag = persona?.let {
                             if (lang == AppLanguage.EN) it.titleEn else it.titleAr
                         }
-                        val engineTag = if (cur.studioLuxuryEnhancement) "Sonix Local • Studio" else "Sonix Local"
+                        val engineTag = if (outcome.engineUsed == TtsEngineMode.NABRA_ONNX_DIRECT) {
+                            "Nabra-82M • Studio"
+                        } else if (cur.studioLuxuryEnhancement) {
+                            "Sonix Local • Studio"
+                        } else {
+                            "Sonix Local"
+                        }
                         val titleLabel = listOfNotNull(engineTag, personaTag, dialectLabel).joinToString(" • ")
                         repository.indexAudioRecording(titleLabel, rawBuf, RecordingSourceType.TTS)
                         _uiState.update {
                             it.copy(
-                                ttsUiState = TtsStudioUiState(
+                                ttsUiState = it.ttsUiState.copy(
                                     selectedEngine = engineMode,
                                     activeEngineUsed = outcome.engineUsed,
+                                    usedFallbackEngine = outcome.usedFallback,
+                                    isGenerating = false,
                                     errorMessage = null,
                                 ),
                             )
                         }
                         val bannerPersona = personaTag?.let { " — $it" }.orEmpty()
-                        postBanner("تم توليد وإدراج الصوت الاستوديو ($dialectLabel$bannerPersona) بنجاح بدون إنترنت")
+                        val modeNote = if (outcome.engineUsed == TtsEngineMode.NABRA_ONNX_DIRECT) "Nabra-82M" else "الاستوديو المحلي"
+                        postBanner("تم توليد وإدراج الصوت ($modeNote • $dialectLabel$bannerPersona) بنجاح")
                     }
                     is VoiceRouteOutcome.ProviderError -> {
                         _uiState.update {
                             it.copy(
-                                ttsUiState = TtsStudioUiState(
+                                ttsUiState = it.ttsUiState.copy(
                                     selectedEngine = engineMode,
+                                    isGenerating = false,
                                     errorMessage = outcome.message,
                                 ),
                             )

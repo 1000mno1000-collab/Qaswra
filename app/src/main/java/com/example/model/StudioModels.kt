@@ -1,6 +1,7 @@
 package com.example.model
 
 import androidx.compose.runtime.Immutable
+import com.aistudio.voicepro.sonixk.NabraDownloadState
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -625,6 +626,7 @@ enum class TtsGender {
 }
 
 enum class TtsEngineMode {
+    NABRA_ONNX_DIRECT,
     LOCAL_ARABIC_STUDIO,
 }
 
@@ -1030,7 +1032,7 @@ data class AiStreamState(
 
 @Immutable
 data class TtsStudioUiState(
-    val selectedEngine: TtsEngineMode = TtsEngineMode.LOCAL_ARABIC_STUDIO,
+    val selectedEngine: TtsEngineMode = TtsEngineMode.NABRA_ONNX_DIRECT,
     val activeEngineUsed: TtsEngineMode? = null,
     val isSynthesizingPreview: Boolean = false,
     val isPreviewing: Boolean = false,
@@ -1038,6 +1040,7 @@ data class TtsStudioUiState(
     val usedFallbackEngine: Boolean = false,
     val isOffline: Boolean = false,
     val errorMessage: String? = null,
+    val nabraDownloadState: NabraDownloadState = NabraDownloadState(),
 )
 
 @Immutable
