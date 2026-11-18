@@ -357,7 +357,22 @@ fun AuthScreen(
                         val request = GetCredentialRequest.Builder()
                             .addCredentialOption(googleIdOption)
                             .build()
-                        cm.getCredential(activity, request)
+                        kotlinx.coroutines.withTimeoutOrNull(15_000L) {
+                            cm.getCredential(activity, request)
+                        } ?: run {
+                            Log.w(
+                                "Auth",
+                                "GetGoogleIdOption timed out; retrying with GetSignInWithGoogleOption",
+                            )
+                            val signInWithGoogleOption =
+                                GetSignInWithGoogleOption.Builder(GOOGLE_WEB_CLIENT_ID).build()
+                            val fallbackRequest = GetCredentialRequest.Builder()
+                                .addCredentialOption(signInWithGoogleOption)
+                                .build()
+                            kotlinx.coroutines.withTimeoutOrNull(25_000L) {
+                                cm.getCredential(activity, fallbackRequest)
+                            }
+                        }
                     } catch (firstErr: GetCredentialException) {
                         val firstDetail =
                             firstErr.errorMessage?.toString() ?: firstErr.localizedMessage ?: firstErr.message
@@ -376,22 +391,66 @@ fun AuthScreen(
                         val fallbackRequest = GetCredentialRequest.Builder()
                             .addCredentialOption(signInWithGoogleOption)
                             .build()
-                        cm.getCredential(activity, fallbackRequest)
+                        kotlinx.coroutines.withTimeoutOrNull(25_000L) {
+                            cm.getCredential(activity, fallbackRequest)
+                        }
                     }
+
+                    if (result == null) {
+                        val sha1 = getAppSigningSha1(activity)
+                        val causeText = buildString {
+                            append("Google Credential Manager timed out without a response from Google Play Services.")
+                            if (!sha1.isNullOrBlank()) {
+                                append(" | App SHA-1: ")
+                                append(sha1)
+                            }
+                        }
+                        AppDiagnosticLog.logRecoverable(
+                            toolName = "GoogleSignIn",
+                            titleAr = "انتهت مهلة استجابة تسجيل الدخول بجوجل",
+                            titleEn = "Google Sign-In Timed Out",
+                            causeAr = causeText,
+                            causeEn = causeText,
+                            errorCode = "CREDENTIAL_MANAGER_TIMEOUT",
+                        )
+                        errorMsg = if (isEn) {
+                            "Google Sign-In did not receive a response from Google Play Services. Check your connection, ensure Google Play Services is updated, or try Email / Guest login."
+                        } else {
+                            "لم تستجب خدمات Google Play لطلب تسجيل الدخول خلال المهلة المحددة. تأكد من الاتصال بالإنترنت وتحديث خدمات Google Play، أو استخدم البريد الإلكتروني أو الدخول كضيف."
+                        }
+                        return@launch
+                    }
+
                     val credential = result.credential
                     if (credential is CustomCredential &&
                         credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
                     ) {
                         val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
                         val idToken = googleIdTokenCredential.idToken
-                        val authResult = FirebaseAuth.getInstance()
-                            .signInWithCredential(GoogleAuthProvider.getCredential(idToken, null))
-                            .await()
+                        val authResult = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
+                            auth.signInWithCredential(GoogleAuthProvider.getCredential(idToken, null))
+                                .await()
+                        }
+                        if (authResult == null) {
+                            AppDiagnosticLog.logRecoverable(
+                                toolName = "GoogleSignIn",
+                                titleAr = "انتهت مهلة المصادقة مع Firebase",
+                                titleEn = "Firebase Auth Timed Out",
+                                causeAr = "FirebaseAuth.signInWithCredential timed out after 20s",
+                                causeEn = "FirebaseAuth.signInWithCredential timed out after 20s",
+                                errorCode = "FIREBASE_AUTH_TIMEOUT",
+                            )
+                            errorMsg = if (isEn) {
+                                "Firebase authentication timed out. Please check your internet connection and try again."
+                            } else {
+                                "انتهت مهلة التحقق مع خادم Firebase. تأكد من جودة الإنترنت وحاول مرة أخرى."
+                            }
+                            return@launch
+                        }
                         finishFirebaseGoogleUser(
-                            authResult.user ?: FirebaseAuth.getInstance().currentUser,
+                            authResult.user ?: auth.currentUser,
                         )
                     } else {
-                        isGoogleLoading = false
                         val credType = credential.type
                         AppDiagnosticLog.logRecoverable(
                             toolName = "GoogleSignIn",
@@ -437,7 +496,6 @@ fun AuthScreen(
                         errorCode = e.type,
                         throwable = e,
                     )
-                    isGoogleLoading = false
                     errorMsg = if (technicalRejection) {
                         if (isEn) {
                             "Google Play failed account verification ($cancelDetail)." +
@@ -473,7 +531,6 @@ fun AuthScreen(
                         errorCode = e.type,
                         throwable = e,
                     )
-                    isGoogleLoading = false
                     errorMsg = if (isEn) {
                         "No Google credential available ($detail). Add a Google account in Settings or use Email / Guest mode."
                     } else {
@@ -482,7 +539,6 @@ fun AuthScreen(
                 } catch (e: GetCredentialException) {
                     val detail = e.errorMessage?.toString() ?: e.localizedMessage ?: e.message ?: e.javaClass.simpleName
                     Log.e("Auth", "Google Credential Manager error: $detail", e)
-                    isGoogleLoading = false
                     AppDiagnosticLog.logRecoverable(
                         toolName = "GoogleSignIn",
                         titleAr = "تعذر إتمام تسجيل الدخول بحساب جوجل",
@@ -494,12 +550,10 @@ fun AuthScreen(
                     )
                     errorMsg = formatGoogleAuthFailure(e)
                 } catch (e: CancellationException) {
-                    isGoogleLoading = false
                     throw e
                 } catch (e: Exception) {
                     val detail = e.localizedMessage ?: e.message ?: e.javaClass.simpleName
                     Log.e("Auth", "Google Sign-In failed: $detail", e)
-                    isGoogleLoading = false
                     AppDiagnosticLog.logRecoverable(
                         toolName = "GoogleSignIn",
                         titleAr = "تعذر إتمام تسجيل الدخول بحساب جوجل",
@@ -510,6 +564,8 @@ fun AuthScreen(
                         throwable = e,
                     )
                     errorMsg = formatGoogleAuthFailure(e)
+                } finally {
+                    isGoogleLoading = false
                 }
             }
         },
