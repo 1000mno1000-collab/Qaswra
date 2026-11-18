@@ -17,6 +17,7 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URLEncoder
+import java.util.Locale
 
 sealed interface VoiceRouteOutcome {
     data class Success(val result: EdgeTtsSynthResult, val engineUsed: TtsEngineMode) : VoiceRouteOutcome
@@ -27,8 +28,9 @@ sealed interface VoiceRouteOutcome {
 class SmartVoiceRouter {
 
     /**
-     * يوجّه النص مباشرة إلى محرك الصوت البشري السحابي المجاني المفتوح (100% أونلاين، بدون مفتاح API):
-     * [TtsEngineMode.FREE_EMOTIONAL_NEURAL]: Pollinations OpenAI Audio مع لهجات ومشاعر وتنفس طبيعي.
+     * يوجّه النص إلى محركات النطق العصبي السحابي المجانية 100% (أونلاين فقط، بدون أي مفتاح API):
+     * 1. Microsoft Edge Neural TTS (الأصوات العصبية باللهجات العربية والعالمية)
+     * 2. Google Translate Neural TTS HD + معالجة دفء ونقاء مخارج الحروف عبر FFmpegKit
      */
     suspend fun synthesizeStudioVoiceWithStatus(
         context: Context,
@@ -68,8 +70,8 @@ class SmartVoiceRouter {
     }
 
     /**
-     * يوجّه النص لمحركات الصوت البشري السحابية المتاحة (Pollinations OpenAI Audio ثم EdgeTTS / StreamElements)
-     * دون أي استخدام لمحرك أوفلاين أو روابط translate_tts.
+     * يوجّه النص مباشرة لمحرك Edge Neural TTS ثم Google Translate TTS HD المجاني السحابي
+     * دون أي خوادم معطلة أو مدفوعة (404 / 402).
      */
     suspend fun generateNaturalVoice(
         text: String,
@@ -77,15 +79,11 @@ class SmartVoiceRouter {
         outputFile: File,
         context: Context? = null,
     ): Boolean = withContext(Dispatchers.IO) {
-        val cleanText = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim())
+        val cleanText = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim(), applyLightDiacritics = true)
         if (cleanText.isEmpty()) return@withContext false
         if (!NetworkImmunityManager.pingReachable(context)) return@withContext false
 
         outputFile.parentFile?.mkdirs()
-
-        if (tryPollinationsOpenAiAudio(cleanText, voiceCode, outputFile, context) && outputFile.length() > 512L) {
-            return@withContext true
-        }
 
         val localeTag = voiceCode.split("-").take(2).joinToString("-").ifBlank { "ar-IQ" }
         val edgeBytes = EdgeTtsClient.synthesizeRawMp3(
@@ -101,8 +99,8 @@ class SmartVoiceRouter {
             if (wrote) return@withContext true
         }
 
-        val streamOk = tryStreamElementsNeural(cleanText, voiceCode, outputFile, context)
-        streamOk && outputFile.length() > 512L
+        val googleOk = tryGoogleTranslateTtsHd(cleanText, localeTag, outputFile, context)
+        googleOk && outputFile.length() > 512L
     }
 
     suspend fun synthesizeStudioVoice(
@@ -130,104 +128,37 @@ class SmartVoiceRouter {
         }
     }
 
-    private suspend fun tryPollinationsOpenAiAudio(
+    private suspend fun tryGoogleTranslateTtsHd(
         text: String,
-        voiceCode: String,
+        localeTag: String,
         out: File,
         context: Context? = null,
     ): Boolean {
-        val lower = voiceCode.lowercase()
-        val isFemale = lower.contains("rana") || lower.contains("zariyah") ||
-            lower.contains("salma") || lower.contains("amany") ||
-            lower.contains("sana") || lower.contains("mouna") ||
-            lower.contains("fatima") || lower.contains("reem") ||
-            lower.contains("ava") || lower.contains("emel") ||
-            lower.contains("dilara") || lower.contains("female")
-        val voice = if (isFemale) "nova" else "onyx"
-        val prompt = "Read ONLY this text naturally with clear human articulation and zero commentary: $text"
-        val encoded = URLEncoder.encode(prompt, "UTF-8").replace("+", "%20")
-        val primaryUrl = "https://text.pollinations.ai/$encoded?model=openai-audio&voice=$voice"
-        val fallbackUrl = "https://text.pollinations.ai/$encoded?model=openai-audio&voice=alloy"
-        val outcome = NetworkImmunityManager.fetchAudioWithFallback(
-            urls = listOf(primaryUrl, fallbackUrl),
-            context = context,
-            headers = mapOf("Referer" to "https://pollinations.ai/"),
-            providerLabel = "SmartVoiceRouter.Pollinations",
-        )
-        val bytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes ?: return false
+        val tl = localeTag.substringBefore('-').lowercase(Locale.US).ifBlank { "ar" }
+        val chunks = splitTextIntoChunks(text, maxChars = 180)
+        val combined = ByteArrayOutputStream()
+        for (chunk in chunks) {
+            val encoded = URLEncoder.encode(chunk, "UTF-8")
+            val urls = listOf(
+                "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$encoded",
+                "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$encoded",
+                "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=$tl&q=$encoded",
+            )
+            val outcome = NetworkImmunityManager.fetchAudioWithFallback(
+                urls = urls,
+                context = context,
+                headers = mapOf("Referer" to "https://translate.google.com/"),
+                providerLabel = "GoogleCloudTTS($tl)",
+            )
+            val chunkBytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes ?: return false
+            combined.write(chunkBytes)
+        }
+        val payload = combined.toByteArray()
+        if (payload.size <= 512) return false
         return runCatching {
-            out.writeBytes(bytes)
+            out.writeBytes(payload)
             true
         }.getOrDefault(false)
-    }
-
-    private suspend fun tryStreamElementsNeural(
-        text: String,
-        voiceCode: String,
-        out: File,
-        context: Context? = null,
-    ): Boolean {
-        val seVoices = resolveStreamElementsVoices(voiceCode)
-        if (seVoices.isEmpty()) return false
-
-        val chunks = splitTextIntoChunks(text, maxChars = 420)
-        for (seVoice in seVoices) {
-            val combined = ByteArrayOutputStream()
-            var allChunksOk = true
-            for (chunk in chunks) {
-                val encoded = URLEncoder.encode(chunk, "UTF-8")
-                val apiUrl = "https://api.streamelements.com/kappa/v2/speech?voice=$seVoice&text=$encoded"
-                val outcome = NetworkImmunityManager.fetchAudioWithFallback(
-                    urls = listOf(apiUrl),
-                    context = context,
-                    providerLabel = "StreamElements($seVoice)",
-                )
-                val chunkBytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes
-                if (chunkBytes == null) {
-                    allChunksOk = false
-                    break
-                }
-                combined.write(chunkBytes)
-            }
-            val payload = combined.toByteArray()
-            if (allChunksOk && payload.size > 1024) {
-                return runCatching {
-                    out.writeBytes(payload)
-                    true
-                }.getOrDefault(false)
-            }
-        }
-        return false
-    }
-
-    private fun resolveStreamElementsVoices(voiceCode: String): List<String> {
-        val lower = voiceCode.lowercase()
-        val isFemale = lower.contains("rana") || lower.contains("zariyah") ||
-            lower.contains("salma") || lower.contains("amany") ||
-            lower.contains("sana") || lower.contains("mouna") ||
-            lower.contains("fatima") || lower.contains("reem") ||
-            lower.contains("ava") || lower.contains("emel") ||
-            lower.contains("dilara") || lower.contains("female")
-        return when {
-            lower.startsWith("ar") -> if (isFemale) listOf("Zeina", "Hala") else listOf("Zayd", "Zeina")
-            lower.startsWith("en") -> if (isFemale) listOf("Joanna", "Amy") else listOf("Matthew", "Brian")
-            lower.startsWith("tr") -> listOf("Filiz")
-            lower.startsWith("fa") -> emptyList()
-            else -> listOf("Brian")
-        }
-    }
-
-    private fun isLikelyAudioPayload(bytes: ByteArray): Boolean {
-        if (bytes.size < 256) return false
-        val head = bytes.copyOfRange(0, minOf(32, bytes.size)).toString(Charsets.US_ASCII).trimStart()
-        if (head.startsWith("<") || head.startsWith("{")) return false
-        val b0 = bytes[0].toInt() and 0xFF
-        val b1 = bytes[1].toInt() and 0xFF
-        val isId3 = head.startsWith("ID3")
-        val isMp3FrameSync = b0 == 0xFF && (b1 and 0xE0) == 0xE0
-        val isWav = head.startsWith("RIFF")
-        val isOgg = head.startsWith("OggS")
-        return isId3 || isMp3FrameSync || isWav || isOgg || bytes.size > 2048
     }
 
     private fun splitTextIntoChunks(text: String, maxChars: Int): List<String> {

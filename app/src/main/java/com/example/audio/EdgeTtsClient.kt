@@ -31,16 +31,21 @@ data class EdgeTtsSynthResult(
     val mp3File: File,
 )
 
+data class EdgeTtsRawOutcome(
+    val bytes: ByteArray?,
+    val failureReason: String? = null,
+)
+
 /**
- * Pure-Kotlin TLS RFC-6455 WebSocket client for Microsoft Edge Read Aloud Neural TTS.
- * Requires no API key and gracefully returns null if the WebSocket endpoint cannot be reached
- * so [com.example.audio.tts.SmartVoiceRouter] can try alternative cloud HD voice providers.
+ * Pure-Kotlin TLS RFC-6455 WebSocket client for Microsoft Edge Neural TTS (`speech.platform.bing.com`).
+ * Supports all Arabic & international neural voices, rate (%), pitch (Hz), full diacritics (UTF-8),
+ * and automatic RFC-1123 server clock-skew correction on HTTP 403. Zero API key required.
  */
 object EdgeTtsClient {
     private const val HOST = "speech.platform.bing.com"
     private const val PORT = 443
     private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
-    private const val CHROMIUM_FULL_VERSION = "130.0.2849.68"
+    private const val CHROMIUM_FULL_VERSION = "143.0.3650.75"
     private const val SEC_MS_GEC_VERSION = "1-$CHROMIUM_FULL_VERSION"
     private const val ORIGIN_HEADER = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
     private const val USER_AGENT =
@@ -48,8 +53,11 @@ object EdgeTtsClient {
 
     private const val WIN_EPOCH_SEC = 11644473600L
 
+    @Volatile
+    private var clockSkewSeconds: Long = 0L
+
     private fun generateSecMsGec(): String {
-        val unixSeconds = System.currentTimeMillis() / 1000L
+        val unixSeconds = (System.currentTimeMillis() / 1000L) + clockSkewSeconds
         var ticksSeconds = unixSeconds + WIN_EPOCH_SEC
         ticksSeconds -= (ticksSeconds % 300L)
         val ticks100Ns = ticksSeconds * 10_000_000L
@@ -61,7 +69,7 @@ object EdgeTtsClient {
     private fun jsUtcString(): String {
         val sdf = SimpleDateFormat("EEE MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'", Locale.US)
         sdf.timeZone = TimeZone.getTimeZone("UTC")
-        return sdf.format(Date())
+        return sdf.format(Date(System.currentTimeMillis() + clockSkewSeconds * 1000L))
     }
 
     private fun escapeXml(input: String): String = input
@@ -72,10 +80,11 @@ object EdgeTtsClient {
         .replace("'", "&apos;")
 
     private fun formatNaturalSsmlText(rawText: String): String {
-        val escaped = escapeXml(rawText)
-        return escaped
-            .replace(Regex("([،,])\\s*"), "$1 <break time='140ms'/> ")
-            .replace(Regex("([.!؟?])\\s+"), "$1 <break time='220ms'/> ")
+        return escapeXml(rawText)
+            .replace(Regex("\\s*([،,;؛])\\s*"), "$1 ")
+            .replace(Regex("\\s*([.!؟?])\\s*"), "$1 ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     suspend fun synthesizeRawMp3(
@@ -85,12 +94,30 @@ object EdgeTtsClient {
         speechRate: Float = 1.0f,
         pitch: Float = 1.0f,
         pitchOffsetHz: Int = 0,
-    ): ByteArray? {
-        val cleanInput = com.example.audio.tts.ArabicTextDiacritizer.normalizeAndHintForTts(text.trim())
-        if (cleanInput.isEmpty()) return null
+    ): ByteArray? = synthesizeRawMp3WithReason(
+        text = text,
+        voiceName = voiceName,
+        localeTag = localeTag,
+        speechRate = speechRate,
+        pitch = pitch,
+        pitchOffsetHz = pitchOffsetHz,
+    ).bytes
 
-        val combinedRate = clamp(speechRate, 0.5f, 1.8f)
-        val ratePercent = ((combinedRate - 1.0f) * 100f).roundToInt()
+    suspend fun synthesizeRawMp3WithReason(
+        text: String,
+        voiceName: String,
+        localeTag: String = voiceName.split("-").take(2).joinToString("-").ifBlank { "ar-IQ" },
+        speechRate: Float = 1.0f,
+        pitch: Float = 1.0f,
+        pitchOffsetHz: Int = 0,
+    ): EdgeTtsRawOutcome {
+        val cleanInput = com.example.audio.tts.ArabicTextDiacritizer.normalizeAndHintForTts(text.trim())
+        if (cleanInput.isEmpty()) {
+            return EdgeTtsRawOutcome(null, "Empty TTS text")
+        }
+
+        val combinedRate = clamp(speechRate, 0.50f, 1.85f)
+        val ratePercent = ((combinedRate - 1.0f) * 100f).roundToInt().coerceIn(-50, 85)
         val rateStr = if (ratePercent >= 0) "+$ratePercent%" else "$ratePercent%"
 
         val pitchFromSliderHz = ((pitch - 1.0f) * 36f).roundToInt()
@@ -104,122 +131,157 @@ object EdgeTtsClient {
                 "<prosody pitch='$pitchStr' rate='$rateStr' volume='+0%'>$cleanText</prosody>" +
                 "</voice></speak>"
 
-        return synthesizeRawSsmlMp3(ssml)
+        return synthesizeRawSsmlMp3WithReason(ssml)
     }
 
     suspend fun synthesizeRawSsmlMp3(
         ssml: String,
-    ): ByteArray? = withTimeoutOrNull(16_000L) {
+    ): ByteArray? = synthesizeRawSsmlMp3WithReason(ssml).bytes
+
+    suspend fun synthesizeRawSsmlMp3WithReason(
+        ssml: String,
+    ): EdgeTtsRawOutcome = withTimeoutOrNull(18_000L) {
         withContext(Dispatchers.IO) {
             val cleanSsml = ssml.trim()
-            if (cleanSsml.isEmpty()) return@withContext null
+            if (cleanSsml.isEmpty()) {
+                return@withContext EdgeTtsRawOutcome(null, "Empty SSML")
+            }
 
-            val connectionId = UUID.randomUUID().toString().replace("-", "")
-            val requestId = UUID.randomUUID().toString().replace("-", "")
-            val secMsGec = generateSecMsGec()
-            val path =
-                "/consumer/speech/synthesize/readaloud/edge/v1" +
-                    "?TrustedClientToken=$TRUSTED_CLIENT_TOKEN" +
-                    "&Sec-MS-GEC=$secMsGec" +
-                    "&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION" +
-                    "&ConnectionId=$connectionId"
-
-            var socket: SSLSocket? = null
-            val mp3Out = ByteArrayOutputStream()
-            try {
-                val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
-                socket = (factory.createSocket(HOST, PORT) as SSLSocket).apply {
-                    soTimeout = 12_000
-                    val supported = supportedProtocols?.filter { it == "TLSv1.3" || it == "TLSv1.2" }
-                    if (!supported.isNullOrEmpty()) {
-                        enabledProtocols = supported.toTypedArray()
-                    }
-                    startHandshake()
+            var lastError: String? = null
+            for (attempt in 0..1) {
+                val attemptOutcome = executeSingleWebSocketAttempt(cleanSsml)
+                if (attemptOutcome.bytes != null) {
+                    return@withContext attemptOutcome
                 }
-                val input = BufferedInputStream(socket.inputStream, 16384)
-                val output = socket.outputStream
-
-                val keyBytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
-                val wsKey = Base64.getEncoder().encodeToString(keyBytes)
-
-                val handshake = buildString {
-                    append("GET $path HTTP/1.1\r\n")
-                    append("Host: $HOST\r\n")
-                    append("Upgrade: websocket\r\n")
-                    append("Connection: Upgrade\r\n")
-                    append("Sec-WebSocket-Key: $wsKey\r\n")
-                    append("Sec-WebSocket-Version: 13\r\n")
-                    append("Origin: $ORIGIN_HEADER\r\n")
-                    append("User-Agent: $USER_AGENT\r\n")
-                    append("Pragma: no-cache\r\n")
-                    append("Cache-Control: no-cache\r\n")
-                    append("\r\n")
+                lastError = attemptOutcome.failureReason
+                val shouldRetryClockSkew = attempt == 0 && (lastError?.contains("403") == true)
+                if (!shouldRetryClockSkew) {
+                    break
                 }
-                output.write(handshake.toByteArray(Charsets.UTF_8))
-                output.flush()
+            }
+            EdgeTtsRawOutcome(null, lastError ?: "Edge Neural TTS connection failed")
+        }
+    } ?: EdgeTtsRawOutcome(null, "Edge Neural TTS timed out")
 
-                val statusLine = readHttpHandshake(input)
-                if (!statusLine.contains("101")) {
-                    return@withContext null
+    private fun executeSingleWebSocketAttempt(cleanSsml: String): EdgeTtsRawOutcome {
+        val connectionId = UUID.randomUUID().toString().replace("-", "")
+        val requestId = UUID.randomUUID().toString().replace("-", "")
+        val secMsGec = generateSecMsGec()
+        val path =
+            "/consumer/speech/synthesize/readaloud/edge/v1" +
+                "?TrustedClientToken=$TRUSTED_CLIENT_TOKEN" +
+                "&Sec-MS-GEC=$secMsGec" +
+                "&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION" +
+                "&ConnectionId=$connectionId"
+
+        var socket: SSLSocket? = null
+        val mp3Out = ByteArrayOutputStream()
+        return try {
+            val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+            socket = (factory.createSocket(HOST, PORT) as SSLSocket).apply {
+                soTimeout = 13_000
+                val supported = supportedProtocols?.filter { it == "TLSv1.3" || it == "TLSv1.2" }
+                if (!supported.isNullOrEmpty()) {
+                    enabledProtocols = supported.toTypedArray()
                 }
+                startHandshake()
+            }
+            val input = BufferedInputStream(socket.inputStream, 16384)
+            val output = socket.outputStream
 
-                val timestamp = jsUtcString()
-                val configMsg =
-                    "X-Timestamp:$timestamp\r\n" +
-                        "Content-Type:application/json; charset=utf-8\r\n" +
-                        "Path:speech.config\r\n\r\n" +
-                        """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
-                sendTextFrame(output, configMsg)
+            val keyBytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            val wsKey = Base64.getEncoder().encodeToString(keyBytes)
 
-                val ssmlMsg =
-                    "X-RequestId:$requestId\r\n" +
-                        "Content-Type:application/ssml+xml\r\n" +
-                        "X-Timestamp:${jsUtcString()}\r\n" +
-                        "Path:ssml\r\n\r\n" +
-                        cleanSsml
-                sendTextFrame(output, ssmlMsg)
+            val handshake = buildString {
+                append("GET $path HTTP/1.1\r\n")
+                append("Host: $HOST\r\n")
+                append("Upgrade: websocket\r\n")
+                append("Connection: Upgrade\r\n")
+                append("Sec-WebSocket-Key: $wsKey\r\n")
+                append("Sec-WebSocket-Version: 13\r\n")
+                append("Origin: $ORIGIN_HEADER\r\n")
+                append("User-Agent: $USER_AGENT\r\n")
+                append("Pragma: no-cache\r\n")
+                append("Cache-Control: no-cache\r\n")
+                append("\r\n")
+            }
+            output.write(handshake.toByteArray(Charsets.UTF_8))
+            output.flush()
 
-                var done = false
-                while (!done) {
-                    val frame = readWebSocketFrame(input) ?: break
-                    when (frame.opcode) {
-                        0x1 -> { // text
-                            val msgText = frame.payload.toString(Charsets.UTF_8)
-                            if (msgText.contains("Path:turn.end")) {
-                                done = true
-                            }
+            val handshakeResp = readHttpHandshake(input)
+            if (!handshakeResp.statusLine.contains("101")) {
+                handshakeResp.dateHeader?.let { adjustClockSkewFromDateHeader(it) }
+                return EdgeTtsRawOutcome(null, "EdgeWS ${handshakeResp.statusLine}")
+            }
+
+            val timestamp = jsUtcString()
+            val configMsg =
+                "X-Timestamp:$timestamp\r\n" +
+                    "Content-Type:application/json; charset=utf-8\r\n" +
+                    "Path:speech.config\r\n\r\n" +
+                    """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
+            sendTextFrame(output, configMsg)
+
+            val ssmlMsg =
+                "X-RequestId:$requestId\r\n" +
+                    "Content-Type:application/ssml+xml\r\n" +
+                    "X-Timestamp:${jsUtcString()}\r\n" +
+                    "Path:ssml\r\n\r\n" +
+                    cleanSsml
+            sendTextFrame(output, ssmlMsg)
+
+            var done = false
+            while (!done) {
+                val frame = readWebSocketFrame(input) ?: break
+                when (frame.opcode) {
+                    0x1 -> {
+                        val msgText = frame.payload.toString(Charsets.UTF_8)
+                        if (msgText.contains("Path:turn.end")) {
+                            done = true
                         }
-                        0x2 -> { // binary audio chunk
-                            val data = frame.payload
-                            if (data.size >= 2) {
-                                val headerLen = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
-                                val audioOffset = 2 + headerLen
-                                if (audioOffset <= data.size) {
-                                    val headerStr = data.copyOfRange(2, audioOffset).toString(Charsets.US_ASCII)
-                                    if (headerStr.contains("Path:audio") && audioOffset < data.size) {
-                                        mp3Out.write(data, audioOffset, data.size - audioOffset)
-                                    }
+                    }
+                    0x2 -> {
+                        val data = frame.payload
+                        if (data.size >= 2) {
+                            val headerLen = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
+                            val audioOffset = 2 + headerLen
+                            if (audioOffset <= data.size) {
+                                val headerStr = data.copyOfRange(2, audioOffset).toString(Charsets.US_ASCII)
+                                if (headerStr.contains("Path:audio") && audioOffset < data.size) {
+                                    mp3Out.write(data, audioOffset, data.size - audioOffset)
                                 }
                             }
                         }
-                        0x8 -> { // close
-                            done = true
-                        }
-                        0x9 -> { // ping -> pong
-                            sendControlFrame(output, 0xA, frame.payload)
-                        }
                     }
+                    0x8 -> done = true
+                    0x9 -> sendControlFrame(output, 0xA, frame.payload)
                 }
-
-                val mp3Bytes = mp3Out.toByteArray()
-                if (mp3Bytes.size < 256) null else mp3Bytes
-            } catch (ce: kotlinx.coroutines.CancellationException) {
-                throw ce
-            } catch (_: Throwable) {
-                null
-            } finally {
-                runCatching { socket?.close() }
             }
+
+            val mp3Bytes = mp3Out.toByteArray()
+            if (mp3Bytes.size < 512) {
+                EdgeTtsRawOutcome(null, "EdgeWS returned empty audio (${mp3Bytes.size}B)")
+            } else {
+                EdgeTtsRawOutcome(mp3Bytes, null)
+            }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            EdgeTtsRawOutcome(null, "${t.javaClass.simpleName}: ${t.message ?: "EdgeWS error"}")
+        } finally {
+            runCatching { socket?.close() }
+        }
+    }
+
+    private fun adjustClockSkewFromDateHeader(dateHeader: String) {
+        runCatching {
+            val sdf = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("GMT")
+            }
+            val parsed = sdf.parse(dateHeader.trim()) ?: return
+            val serverEpochSec = parsed.time / 1000L
+            val localEpochSec = System.currentTimeMillis() / 1000L
+            clockSkewSeconds = serverEpochSec - localEpochSec
         }
     }
 
@@ -257,9 +319,15 @@ object EdgeTtsClient {
         EdgeTtsSynthResult(buffer = mastered, mp3File = mp3File)
     }
 
-    private fun readHttpHandshake(input: InputStream): String {
+    private data class HandshakeResponse(
+        val statusLine: String,
+        val dateHeader: String?,
+    )
+
+    private fun readHttpHandshake(input: InputStream): HandshakeResponse {
         val lineBuf = ByteArrayOutputStream()
         var statusLine = ""
+        var dateHeader: String? = null
         var first = true
         while (true) {
             lineBuf.reset()
@@ -279,10 +347,12 @@ object EdgeTtsClient {
             if (first) {
                 statusLine = line
                 first = false
+            } else if (line.startsWith("Date:", ignoreCase = true)) {
+                dateHeader = line.substringAfter(':', "").trim()
             }
             if (line.isEmpty()) break
         }
-        return statusLine
+        return HandshakeResponse(statusLine, dateHeader)
     }
 
     private class WsFrame(val opcode: Int, val payload: ByteArray)

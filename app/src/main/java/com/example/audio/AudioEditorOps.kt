@@ -225,6 +225,7 @@ fun mergeClips(
     first: StereoAudioBuffer,
     second: StereoAudioBuffer,
     crossfadeMs: Int = 15,
+    maxCrossfadeFraction: Float = 0.85f,
 ): StereoAudioBuffer {
     val alignedSecond = if (second.sampleRate == first.sampleRate) {
         second
@@ -236,10 +237,11 @@ fun mergeClips(
     if (n1 == 0) return alignedSecond
     if (n2 == 0) return first
 
+    val safeFrac = maxCrossfadeFraction.coerceIn(0.05f, 0.95f)
     val xfade = minOf(
         floor((crossfadeMs / 1000.0) * first.sampleRate).toInt(),
-        n1 / 4,
-        n2 / 4,
+        max(0, (n1 * safeFrac).toInt()),
+        max(0, (n2 * safeFrac).toInt()),
     ).coerceAtLeast(0)
     val totalOut = n1 + n2 - xfade
     val outL = FloatArray(totalOut)
@@ -282,6 +284,7 @@ suspend fun mergeClipsStreamingOnDisk(
     first: StereoAudioBuffer,
     second: StereoAudioBuffer,
     crossfadeMs: Int = 15,
+    maxCrossfadeFraction: Float = 0.85f,
 ): StereoAudioBuffer = withContext(Dispatchers.IO) {
     val normFirst = normalizeToStudioStereo44100(first)
     val normSecond = normalizeToStudioStereo44100(second)
@@ -296,8 +299,10 @@ suspend fun mergeClipsStreamingOnDisk(
         writeStereoWavFile(wav1, normFirst)
         writeStereoWavFile(wav2, normSecond)
 
-        val xfadeSec = (crossfadeMs / 1000f).coerceAtLeast(0.01f)
-        val ffmpegOk = if (crossfadeMs >= 50) {
+        val safeFrac = maxCrossfadeFraction.coerceIn(0.05f, 0.95f)
+        val maxAllowedSec = min(normFirst.durationMs, normSecond.durationMs) / 1000f * safeFrac
+        val xfadeSec = min(crossfadeMs / 1000f, maxAllowedSec).coerceAtLeast(0.01f)
+        val ffmpegOk = if (crossfadeMs >= 50 && xfadeSec >= 0.04f) {
             val cmd = "-y -i \"${wav1.absolutePath}\" -i \"${wav2.absolutePath}\" " +
                 "-filter_complex \"[0:a]aresample=44100,aformat=channel_layouts=stereo[a0];" +
                 "[1:a]aresample=44100,aformat=channel_layouts=stereo[a1];" +
@@ -311,13 +316,20 @@ suspend fun mergeClipsStreamingOnDisk(
         val mergedReady = if (ffmpegOk && outWav.exists() && outWav.length() > 44L) {
             true
         } else {
-            mergeWavFilesStreaming(wav1, wav2, outWav, crossfadeMs = crossfadeMs, sampleRate = sr)
+            mergeWavFilesStreaming(
+                wav1,
+                wav2,
+                outWav,
+                crossfadeMs = crossfadeMs,
+                sampleRate = sr,
+                maxCrossfadeFraction = safeFrac,
+            )
         }
 
         if (mergedReady && outWav.exists() && outWav.length() > 44L) {
-            AudioDecoder.decodeFile(outWav) ?: mergeClips(normFirst, normSecond, crossfadeMs)
+            AudioDecoder.decodeFile(outWav) ?: mergeClips(normFirst, normSecond, crossfadeMs, safeFrac)
         } else {
-            mergeClips(normFirst, normSecond, crossfadeMs)
+            mergeClips(normFirst, normSecond, crossfadeMs, safeFrac)
         }
     } catch (oom: OutOfMemoryError) {
         AppDiagnosticLog.logRecoverable(

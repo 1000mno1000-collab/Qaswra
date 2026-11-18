@@ -55,9 +55,11 @@ import com.example.audio.applyFadeOut
 import com.example.audio.applyGainDb
 import com.example.audio.applyOneTapSocialPreset
 import com.example.audio.applyOptionalSmartAutoFadeOut
+import com.example.audio.applyPitchAndSpeedFileWithFfmpeg
 import com.example.audio.applyPitchAndSpeedOffline
 import com.example.audio.cache.SmartCacheManager
 import com.example.audio.clamp
+import com.example.audio.computeMergeTimelineLayout
 import com.example.audio.computeWaveformPeaks
 import com.example.audio.computeWaveformPeaksAsync
 import com.example.audio.convertToSurroundStereoFromOffsets
@@ -220,6 +222,7 @@ data class StudioUiState(
     val activeProjectName: String = "مشروع صوتي جديد",
     val mixBgName: String? = null,
     val mixBgDurationMs: Long = 0L,
+    val mixBgPeaks: List<Float> = emptyList(),
     val transcriptionState: AiStreamState = AiStreamState(),
     val smartMasterState: SmartMasterAnalysis? = null,
     val searchAssistantState: AiStreamState = AiStreamState(),
@@ -364,6 +367,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private var activeSourceSampleRate: Int = 44100
     private var mixBgBuffer: StereoAudioBuffer? = null
     private var mixBgSourceFile: File? = null
+    @Volatile
+    private var pitchSpeedLiveModeActive: Boolean = false
     private val processingMutex = Mutex()
     private val undoStack = ArrayDeque<EditorSnapshot>()
     private val redoStack = ArrayDeque<EditorSnapshot>()
@@ -994,6 +999,70 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private fun syncPlayerConfig(cfg: DspConfig, holdBypass: Boolean = _uiState.value.isHoldBypassing) {
         val effective = if (holdBypass) cfg.copy(bypassAll = true) else cfg
         player.updateConfig(effective)
+        if (pitchSpeedLiveModeActive) {
+            player.setPitchSpeedPreview(
+                active = true,
+                semitones = cfg.pitchShift.semitones,
+                tempoRatio = cfg.timeStretch.tempoRatio,
+            )
+        }
+    }
+
+    fun setPitchSpeedLivePreviewActive(active: Boolean) {
+        pitchSpeedLiveModeActive = active
+        val cfg = _uiState.value.dspConfig
+        player.setPitchSpeedPreview(
+            active = active,
+            semitones = cfg.pitchShift.semitones,
+            tempoRatio = cfg.timeStretch.tempoRatio,
+        )
+    }
+
+    fun updatePitchSpeedParamsLive(semitones: Float, tempoRatio: Float) {
+        val currentCfg = _uiState.value.dspConfig
+        val next = currentCfg.copy(
+            bypassAll = false,
+            pitchShift = currentCfg.pitchShift.copy(semitones = clamp(semitones, -12f, 12f), wetMix = 1f),
+            timeStretch = currentCfg.timeStretch.copy(tempoRatio = clamp(tempoRatio, 0.5f, 2.0f)),
+        )
+            .withSlotEnabled(EffectType.PITCH_SHIFT, kotlin.math.abs(semitones) >= 0.05f)
+            .withSlotEnabled(EffectType.TIME_STRETCH, kotlin.math.abs(tempoRatio - 1f) >= 0.02f)
+            .normalized()
+        pushUndoSnapshot(debounced = true)
+        _uiState.update {
+            it.copy(
+                dspConfig = next,
+                activePresetId = null,
+                selectedPresetLabel = "",
+                canUndoEdit = undoStack.isNotEmpty(),
+                canRedoEdit = redoStack.isNotEmpty(),
+                hasUnsavedChanges = true,
+            )
+        }
+        player.updateConfig(if (_uiState.value.isHoldBypassing) next.copy(bypassAll = true) else next)
+        player.setPitchSpeedPreview(true, next.pitchShift.semitones, next.timeStretch.tempoRatio)
+    }
+
+    fun syncMergeStudioPreview(params: MergeStudioParams) {
+        val pDur = _uiState.value.durationMs
+        val sDur = _uiState.value.mixBgDurationMs
+        val hasBoth = hasLoadedAudio() && !_uiState.value.mixBgName.isNullOrBlank()
+        if (!hasBoth) {
+            player.setMergePreviewBuffers(false, null, null, params, null)
+            return
+        }
+        val layout = computeMergeTimelineLayout(pDur, sDur, params)
+        player.setMergePreviewBuffers(
+            active = true,
+            primary = activeBuffer,
+            secondary = mixBgBuffer,
+            params = params,
+            totalDurationOverrideMs = layout.totalDurationMs,
+        )
+    }
+
+    fun clearMergeStudioPreview() {
+        player.setMergePreviewBuffers(false, null, null, MergeStudioParams(), null)
     }
 
     fun ensureLivePreviewPlaying() {
@@ -1931,6 +2000,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         it.copy(
                             mixBgName = uploaded.displayName,
                             mixBgDurationMs = meta.durationMs,
+                            mixBgPeaks = meta.waveformPeaks,
                             importProgress = 1.0f,
                         )
                     }
@@ -1955,10 +2025,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     replaceMixBgSourceFile(null)
                     mixBgBuffer = bg
+                    val bgPeaks = computeWaveformPeaksAsync(bg, 96)
                     _uiState.update {
                         it.copy(
                             mixBgName = uploaded.displayName,
                             mixBgDurationMs = bg.durationMs,
+                            mixBgPeaks = bgPeaks,
                         )
                     }
                     scheduleSmartDuckingPreviewRender()
@@ -1998,7 +2070,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         mixBgBuffer = null
         replaceMixBgSourceFile(null)
         stopMixPreviewPlayer()
-        _uiState.update { it.copy(mixBgName = null, mixBgDurationMs = 0L, isSmartMixPreviewActive = false) }
+        player.setMergePreviewBuffers(false, null, null, MergeStudioParams(), null)
+        _uiState.update {
+            it.copy(
+                mixBgName = null,
+                mixBgDurationMs = 0L,
+                mixBgPeaks = emptyList(),
+                isSmartMixPreviewActive = false,
+            )
+        }
     }
 
     fun setSmartMixBgVolume(volume: Float) {
@@ -2624,6 +2704,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 lastAppliedToolLabel = null,
                 mixBgName = null,
                 mixBgDurationMs = 0L,
+                mixBgPeaks = emptyList(),
             )
         }
         postBanner("تم إنشاء مشروع صوتي جديد")
@@ -3470,7 +3551,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             postBanner("يرجى اختيار ملف صوتي أولاً لتعديل الطبقة والسرعة")
             return
         }
-        launchSingleFlightProcessing(purifyInitProgress = 0.2f) {
+        launchSingleFlightProcessing(purifyInitProgress = 0.10f) {
             val snap = activeLiveToolSession?.takeIf { it.toolKey == "pitch_speed" }
             if (snap != null) {
                 while (undoStack.size > snap.undoSize) {
@@ -3480,28 +3561,40 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
             sliderDebounceJob?.cancel()
             val bakedCfg = _uiState.value.dspConfig
+                .copy(
+                    pitchShift = _uiState.value.dspConfig.pitchShift.copy(semitones = 0f),
+                    timeStretch = _uiState.value.dspConfig.timeStretch.copy(tempoRatio = 1f),
+                )
                 .withSlotEnabled(EffectType.PITCH_SHIFT, false)
                 .withSlotEnabled(EffectType.TIME_STRETCH, false)
             syncPlayerConfig(bakedCfg)
             _uiState.update { it.copy(dspConfig = bakedCfg, lastAppliedToolLabel = "PitchAndSpeed") }
+
             if (src != null) {
-                val processed = applyPitchAndSpeedOffline(src, semitones, tempoRatio)
+                val processed = applyPitchAndSpeedOffline(
+                    buffer = src,
+                    semitones = semitones,
+                    tempoRatio = tempoRatio,
+                    context = getApplication(),
+                ) { p ->
+                    _uiState.update { it.copy(purifyProgress = (0.10f + p * 0.85f).coerceIn(0.10f, 0.98f)) }
+                }
                 setActiveBuffer(processed, recordUndo = true)
             } else if (srcFile != null) {
-                val pitchFactor = Math.pow(2.0, semitones / 12.0).coerceIn(0.5, 2.0)
-                val netTempo = (tempoRatio / pitchFactor).coerceIn(0.5, 2.0)
-                val srScaled = (44100.0 * pitchFactor).toInt().coerceIn(22050, 88200)
-                val outFile = processAudioFileWithFfmpeg(
+                val outFile = applyPitchAndSpeedFileWithFfmpeg(
                     context = getApplication(),
                     inputFile = srcFile,
-                    audioFilter = "asetrate=$srScaled,aresample=44100,atempo=${String.format(Locale.US, "%.3f", netTempo)}",
-                    toolName = "PitchAndSpeedLarge",
-                ) ?: run {
+                    semitones = semitones,
+                    tempoRatio = tempoRatio,
+                ) { p ->
+                    _uiState.update { it.copy(purifyProgress = (0.10f + p * 0.85f).coerceIn(0.10f, 0.98f)) }
+                } ?: run {
                     postBanner("تعذر تعديل الطبقة والسرعة للملف الكبير")
                     return@launchSingleFlightProcessing
                 }
                 applyProcessedDiskSourceFile(outFile, appliedToolLabel = "PitchAndSpeed")
             }
+            _uiState.update { it.copy(purifyProgress = 1.0f) }
             postBanner("تم تعديل الطبقة والسرعة وحفظ النسخة في التراجع")
         }
     }
@@ -3577,16 +3670,87 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun previewUnifiedMergeOverlay(params: MergeStudioParams) {
-        val primary = activeBuffer ?: run {
+        val primary = activeBuffer
+        val primaryFile = activeSourceFile
+        if (primary == null && (primaryFile == null || !primaryFile.exists())) {
             postBanner(t(_uiState.value.language, "no_audio_loaded"))
             return
         }
-        val secondary = mixBgBuffer ?: run {
+        val secondary = mixBgBuffer
+        val secondaryFile = mixBgSourceFile
+        if (secondary == null && (secondaryFile == null || !secondaryFile.exists())) {
             postBanner("يرجى اختيار المقطع الثاني أولاً للمعاينة")
             return
         }
-        toggleToolBufferPreview("UnifiedMergePreview") {
-            executeUnifiedMergeOverlay(getApplication(), primary, secondary, params)
+
+        // Real-time dual-track playback synced directly with PersistentTransportBar & Bypass when both buffers fit in memory
+        if (primary != null && secondary != null) {
+            stopToolPreview()
+            stopMixPreviewPlayer()
+            syncMergeStudioPreview(params)
+            if (_uiState.value.playback.isPlaying) {
+                player.pause()
+            } else {
+                player.play()
+            }
+            return
+        }
+
+        // Large disk file (>10MB) FFmpegKit preview stream
+        if (_uiState.value.isToolPreviewPlaying && toolPreviewPlayer?.isPlaying == true) {
+            stopToolPreview()
+            return
+        }
+        launchSingleFlightProcessing(exportInitProgress = 0.15f) {
+            stopToolPreview()
+            player.pause()
+            val (f1, del1) = resolveAsDiskSourceFile(primary, primaryFile, "ump_1")
+            val (f2, del2) = resolveAsDiskSourceFile(secondary, secondaryFile, "ump_2")
+            try {
+                if (f1 == null || f2 == null) {
+                    postBanner("تعذر تجهيز ملفات المعاينة")
+                    return@launchSingleFlightProcessing
+                }
+                val gain1 = (1f + params.primaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
+                val gain2 = (1f + params.secondaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
+                val outPreview = File(getApplication<Application>().cacheDir, "merge_preview_large.m4a")
+                _uiState.update { it.copy(exportProgress = 0.45f) }
+                val rendered = mixAudioFilesWithFfmpeg(
+                    context = getApplication(),
+                    primaryFile = f1,
+                    secondaryFile = f2,
+                    primaryGain = gain1,
+                    secondaryGain = gain2,
+                    autoDucking = params.autoDuckingEnabled,
+                    mode = params.mode,
+                    crossfadeSec = params.crossfadeSec,
+                    offsetSec = params.overlayStartOffsetSec,
+                    outFile = outPreview,
+                    primaryStartOffsetSec = params.primaryStartOffsetSec,
+                    overlayFadeInSec = params.overlayFadeInSec,
+                    overlayFadeOutSec = params.overlayFadeOutSec,
+                    secondaryDurationSec = _uiState.value.mixBgDurationMs / 1000f,
+                    transitionGapSec = params.transitionGapSec,
+                    autoLeveling = params.autoLevelingEnabled,
+                    duckingStrengthPct = params.duckingStrengthPct,
+                )
+                if (rendered == null || !rendered.exists()) {
+                    postBanner("تعذر توليد معاينة الدمج للملفات الكبيرة")
+                    return@launchSingleFlightProcessing
+                }
+                toolPreviewTempFile = rendered
+                val mp = MediaPlayer().apply {
+                    setDataSource(rendered.absolutePath)
+                    setOnCompletionListener { stopToolPreview() }
+                    prepare()
+                    start()
+                }
+                toolPreviewPlayer = mp
+                _uiState.update { it.copy(isToolPreviewPlaying = true, exportProgress = 1.0f) }
+            } finally {
+                if (del1) runCatching { f1?.delete() }
+                if (del2) runCatching { f2?.delete() }
+            }
         }
     }
 
@@ -3604,6 +3768,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         stopToolPreview()
+        clearMergeStudioPreview()
         launchSingleFlightProcessing(exportInitProgress = 0.25f) {
             if (primary != null && secondary != null) {
                 val res = executeUnifiedMergeOverlay(getApplication(), primary, secondary, params)
@@ -3628,6 +3793,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         mode = params.mode,
                         crossfadeSec = params.crossfadeSec,
                         offsetSec = params.overlayStartOffsetSec,
+                        primaryStartOffsetSec = params.primaryStartOffsetSec,
+                        overlayFadeInSec = params.overlayFadeInSec,
+                        overlayFadeOutSec = params.overlayFadeOutSec,
+                        secondaryDurationSec = _uiState.value.mixBgDurationMs / 1000f,
+                        transitionGapSec = params.transitionGapSec,
+                        autoLeveling = params.autoLevelingEnabled,
+                        duckingStrengthPct = params.duckingStrengthPct,
                     ) ?: run {
                         postBanner("تعذر دمج الملفات الكبيرة عبر FFmpeg")
                         return@launchSingleFlightProcessing
@@ -3698,6 +3870,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         mode = params.mode,
                         crossfadeSec = params.crossfadeSec,
                         offsetSec = params.overlayStartOffsetSec,
+                        primaryStartOffsetSec = params.primaryStartOffsetSec,
+                        overlayFadeInSec = params.overlayFadeInSec,
+                        overlayFadeOutSec = params.overlayFadeOutSec,
+                        secondaryDurationSec = _uiState.value.mixBgDurationMs / 1000f,
+                        transitionGapSec = params.transitionGapSec,
+                        autoLeveling = params.autoLevelingEnabled,
+                        duckingStrengthPct = params.duckingStrengthPct,
                     ) ?: run {
                         postBanner("تعذر دمج الملفات قبل التصدير")
                         return@launchSingleFlightProcessing

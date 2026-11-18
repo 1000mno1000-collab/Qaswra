@@ -130,6 +130,7 @@ suspend fun mergeWavFilesStreaming(
     outWav: File,
     crossfadeMs: Int = 15,
     sampleRate: Int = TARGET_SAMPLE_RATE,
+    maxCrossfadeFraction: Float = 0.85f,
 ): Boolean = withContext(Dispatchers.IO) {
     if (!firstWav.exists() || !secondWav.exists()) return@withContext false
     val firstDataBytes = (firstWav.length() - 44L).coerceAtLeast(0L)
@@ -138,10 +139,11 @@ suspend fun mergeWavFilesStreaming(
     val n2 = (secondDataBytes / 4L).toInt()
     if (n1 <= 0 && n2 <= 0) return@withContext false
 
+    val safeFrac = maxCrossfadeFraction.coerceIn(0.05f, 0.95f)
     val xfadeFrames = minOf(
         ((crossfadeMs / 1000.0) * sampleRate).toInt().coerceAtLeast(0),
-        n1 / 4,
-        n2 / 4,
+        max(0, (n1 * safeFrac).toInt()),
+        max(0, (n2 * safeFrac).toInt()),
     )
     val xfadeBytes = xfadeFrames * 4
     val firstCopyBytes = max(0L, firstDataBytes - xfadeBytes)

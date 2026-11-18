@@ -226,12 +226,12 @@ class DspPipeline(
     }
 }
 
-private fun timeStretchWsolaStereo(
+internal fun timeStretchWsolaStereo(
     source: StereoAudioBuffer,
     tempoRatio: Float,
 ): StereoAudioBuffer {
     val n = source.frameCount
-    if (n < 2048 || abs(tempoRatio - 1f) < 0.02f) return source
+    if (n < 2048 || abs(tempoRatio - 1f) < 0.015f) return source
     val clampedTempo = clamp(tempoRatio, 0.5f, 2.0f)
     val windowSize = 1024
     val halfWin = windowSize / 2
@@ -240,6 +240,7 @@ private fun timeStretchWsolaStereo(
 
     val outL = FloatArray(expectedOutFrames)
     val outR = FloatArray(expectedOutFrames)
+    val normW = FloatArray(expectedOutFrames)
     val hann = FloatArray(windowSize) { i ->
         (0.5 * (1.0 - cos((2.0 * PI * i) / (windowSize - 1)))).toFloat()
     }
@@ -247,12 +248,14 @@ private fun timeStretchWsolaStereo(
     var outPos = 0
     var inPos = 0
     for (i in 0 until min(windowSize, n)) {
-        outL[i] = source.left[i] * hann[i]
-        outR[i] = source.right[i] * hann[i]
+        val w = hann[i]
+        outL[i] = source.left[i] * w
+        outR[i] = source.right[i] * w
+        normW[i] += w
     }
 
     val synHop = halfWin
-    val anaHop = (synHop * clampedTempo).roundToInt()
+    val anaHop = (synHop * clampedTempo).roundToInt().coerceAtLeast(1)
 
     while (outPos + synHop + windowSize < expectedOutFrames) {
         val nominalIn = inPos + anaHop
@@ -285,6 +288,7 @@ private fun timeStretchWsolaStereo(
             val w = hann[i]
             outL[tailStartOut + i] += source.left[bestIn + i] * w
             outR[tailStartOut + i] += source.right[bestIn + i] * w
+            normW[tailStartOut + i] += w
         }
 
         outPos += synHop
@@ -292,11 +296,82 @@ private fun timeStretchWsolaStereo(
     }
 
     val finalLen = min(outPos + windowSize, expectedOutFrames)
+    val finalL = FloatArray(finalLen)
+    val finalR = FloatArray(finalLen)
+    for (i in 0 until finalLen) {
+        val nw = normW[i]
+        if (nw > 1e-4f) {
+            finalL[i] = clamp(outL[i] / nw, -1f, 1f)
+            finalR[i] = clamp(outR[i] / nw, -1f, 1f)
+        }
+    }
     return StereoAudioBuffer(
-        left = outL.copyOf(finalLen),
-        right = outR.copyOf(finalLen),
+        left = finalL,
+        right = finalR,
         sampleRate = source.sampleRate,
     )
+}
+
+internal fun timeStretchChainedStereo(
+    source: StereoAudioBuffer,
+    tempoRatio: Double,
+): StereoAudioBuffer {
+    var rem = tempoRatio.coerceIn(0.125, 8.0)
+    var cur = source
+    while (rem > 2.0 + 1e-3) {
+        cur = timeStretchWsolaStereo(cur, 2.0f)
+        rem /= 2.0
+    }
+    while (rem < 0.5 - 1e-3) {
+        cur = timeStretchWsolaStereo(cur, 0.5f)
+        rem /= 0.5
+    }
+    if (abs(rem - 1.0) >= 0.015) {
+        cur = timeStretchWsolaStereo(cur, rem.toFloat())
+    }
+    return cur
+}
+
+internal fun pitchAndSpeedKotlinHq(
+    source: StereoAudioBuffer,
+    semitones: Float,
+    tempoRatio: Float,
+): StereoAudioBuffer {
+    if (source.frameCount < 16) return source
+    val clampedSemi = clamp(semitones, -12f, 12f)
+    val clampedTempo = clamp(tempoRatio, 0.5f, 2.0f)
+    val pitchFactor = 2.0.pow(clampedSemi / 12.0).coerceIn(0.5, 2.0)
+
+    // First adjust duration cleanly by netTempo = tempoRatio / pitchFactor,
+    // then linearly resample by 1 / pitchFactor at original sampleRate for click-free pitch shifting.
+    val netTempo = (clampedTempo / pitchFactor).coerceIn(0.125, 8.0)
+    val stretched = timeStretchChainedStereo(source, netTempo)
+
+    val pitched = if (abs(clampedSemi) >= 0.05f) {
+        val sr = stretched.sampleRate.coerceAtLeast(8000)
+        val targetVirtualRate = (sr / pitchFactor).roundToInt().coerceIn(4000, 192000)
+        val resampled = resampleStereo(stretched, targetVirtualRate)
+        StereoAudioBuffer(
+            left = resampled.left,
+            right = resampled.right,
+            sampleRate = sr,
+        )
+    } else {
+        stretched
+    }
+
+    // Gentle HPF (40Hz) + soft limiter (0.95) matching our FFmpeg chain
+    val hp = StereoBiquadFilter().apply {
+        configureHighPass(pitched.sampleRate, 40.0, 0.707)
+    }
+    val outL = pitched.left.copyOf()
+    val outR = pitched.right.copyOf()
+    hp.processStereo(outL, outR, pitched.frameCount)
+    for (i in 0 until pitched.frameCount) {
+        outL[i] = (0.95 * tanh((outL[i] / 0.95).toDouble())).toFloat()
+        outR[i] = (0.95 * tanh((outR[i] / 0.95).toDouble())).toFloat()
+    }
+    return StereoAudioBuffer(outL, outR, pitched.sampleRate)
 }
 
 fun renderOfflineDsp(

@@ -14,6 +14,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.media.PlaybackParams
 import android.os.Build
 import androidx.core.content.ContextCompat
 import com.example.model.DspConfig
@@ -41,8 +42,11 @@ import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.tanh
 
 class StudioAudioPlayer(
     initialConfig: DspConfig,
@@ -68,6 +72,21 @@ class StudioAudioPlayer(
     private var playbackJob: Job? = null
     private var audioTrack: AudioTrack? = null
     private var streamMediaPlayer: MediaPlayer? = null
+
+    // Pitch & Speed decoupled native MediaPlayer.PlaybackParams live preview
+    @Volatile private var pitchSpeedPreviewActive = false
+    @Volatile private var previewPitchSemitones = 0f
+    @Volatile private var previewTempoRatio = 1.0f
+    private var cachedPitchLiveWavFile: File? = null
+    private var cachedPitchLiveBufIdentity: Int = 0
+    private var cachedPitchLiveBufFrames: Int = 0
+
+    // Real-Time Dual-Track Merge / Crossfade / Overlay live preview
+    @Volatile private var mergePreviewActive = false
+    @Volatile private var mergePrimaryBuf: StereoAudioBuffer? = null
+    @Volatile private var mergeSecondaryBuf: StereoAudioBuffer? = null
+    @Volatile private var mergeParams: MergeStudioParams = MergeStudioParams()
+    @Volatile private var mergeDurationOverrideMs: Long? = null
 
     private val audioManager: AudioManager? =
         context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -126,6 +145,9 @@ class StudioAudioPlayer(
         val norm = config.normalized()
         this.config = norm
         pipeline?.updateConfig(norm)
+        if (pitchSpeedPreviewActive && isPlaying.get()) {
+            applyLivePlaybackParams(streamMediaPlayer)
+        }
     }
 
     fun setClipGainDb(db: Float) {
@@ -134,7 +156,78 @@ class StudioAudioPlayer(
 
     fun setMonitoringSpeed(speed: Float) {
         monitoringSpeed = speed.coerceIn(0.5f, 2.0f)
+        if (pitchSpeedPreviewActive && isPlaying.get()) {
+            applyLivePlaybackParams(streamMediaPlayer)
+        }
         emitTelemetry()
+    }
+
+    fun setPitchSpeedPreview(active: Boolean, semitones: Float, tempoRatio: Float) {
+        val wasActive = pitchSpeedPreviewActive
+        pitchSpeedPreviewActive = active
+        previewPitchSemitones = clamp(semitones, -12f, 12f)
+        previewTempoRatio = clamp(tempoRatio, 0.5f, 2.0f)
+        if (active && isPlaying.get()) {
+            val mp = streamMediaPlayer
+            if (mp != null) {
+                applyLivePlaybackParams(mp)
+            } else if (!wasActive) {
+                // Switch seamlessly from AudioTrack to native MediaPlayer PlaybackParams
+                play()
+            }
+        } else if (!active && wasActive && streamMediaPlayer != null && buffer != null) {
+            // Restore AudioTrack DSP path when leaving Pitch & Speed tool
+            if (isPlaying.get()) {
+                play()
+            } else {
+                stopAudioThreadOnly()
+            }
+        }
+    }
+
+    fun setMergePreviewBuffers(
+        active: Boolean,
+        primary: StereoAudioBuffer?,
+        secondary: StereoAudioBuffer?,
+        params: MergeStudioParams,
+        totalDurationOverrideMs: Long? = null,
+    ) {
+        mergePreviewActive = active
+        mergePrimaryBuf = primary
+        mergeSecondaryBuf = if (secondary != null && primary != null && secondary.sampleRate != primary.sampleRate) {
+            resampleStereo(secondary, primary.sampleRate)
+        } else {
+            secondary
+        }
+        mergeParams = params
+        mergeDurationOverrideMs = if (active) totalDurationOverrideMs else null
+
+        val maxFrames = totalFrameCount()
+        if (maxFrames > 0L && playhead >= maxFrames) {
+            playhead = max(0L, maxFrames - 1L).toDouble()
+        }
+        emitTelemetry()
+    }
+
+    private fun applyLivePlaybackParams(mp: MediaPlayer?) {
+        if (mp == null) return
+        val applyEffects = pitchSpeedPreviewActive && !config.bypassAll
+        val targetSpeed = if (applyEffects) {
+            (previewTempoRatio * monitoringSpeed).coerceIn(0.5f, 2.0f)
+        } else {
+            monitoringSpeed.coerceIn(0.5f, 2.0f)
+        }
+        val targetPitch = if (applyEffects) {
+            2.0.pow(previewPitchSemitones / 12.0).toFloat().coerceIn(0.5f, 2.0f)
+        } else {
+            1.0f
+        }
+        runCatching {
+            val p = mp.playbackParams
+            p.setSpeed(targetSpeed)
+            p.setPitch(targetPitch)
+            mp.playbackParams = p
+        }
     }
 
     fun setLoop(enabled: Boolean, startFrac: Float = 0f, endFrac: Float = 1f) {
@@ -152,7 +245,8 @@ class StudioAudioPlayer(
         val mp = streamMediaPlayer
         if (mp != null) {
             runCatching {
-                val targetMs = (clampedFrac * sourceDurationMs).toInt().coerceIn(0, sourceDurationMs.toInt())
+                val durMs = max(1L, currentDurationMs())
+                val targetMs = (clampedFrac * durMs).toInt().coerceIn(0, durMs.toInt())
                 mp.seekTo(targetMs)
             }
         } else if (isPlaying.get() && buffer == null && sourceFile != null) {
@@ -163,7 +257,39 @@ class StudioAudioPlayer(
         emitTelemetry()
     }
 
+    private fun currentDurationMs(): Long {
+        if (mergePreviewActive) {
+            val p1 = mergePrimaryBuf
+            val p2 = mergeSecondaryBuf
+            if (p1 != null && p2 != null) {
+                return computeMergeTimelineLayout(p1.durationMs, p2.durationMs, mergeParams).totalDurationMs
+            }
+            mergeDurationOverrideMs?.let { if (it > 0L) return it }
+        }
+        val buf = buffer
+        if (buf != null) {
+            val sr = buf.sampleRate.coerceAtLeast(8000)
+            return (buf.frameCount.toLong() * 1000L) / sr
+        }
+        return sourceDurationMs
+    }
+
     private fun totalFrameCount(): Long {
+        if (mergePreviewActive) {
+            val p1 = mergePrimaryBuf
+            val p2 = mergeSecondaryBuf
+            if (p1 != null && p2 != null) {
+                val sr = p1.sampleRate.coerceAtLeast(8000)
+                val durMs = computeMergeTimelineLayout(p1.durationMs, p2.durationMs, mergeParams).totalDurationMs
+                return ((durMs * sr) / 1000L).coerceAtLeast(1L)
+            }
+            mergeDurationOverrideMs?.let { durMs ->
+                if (durMs > 0L) {
+                    val sr = sourceSampleRate.coerceAtLeast(8000)
+                    return ((durMs * sr) / 1000L).coerceAtLeast(1L)
+                }
+            }
+        }
         buffer?.let { return it.frameCount.toLong() }
         val file = sourceFile ?: return 0L
         if (!file.exists()) return 0L
@@ -180,6 +306,12 @@ class StudioAudioPlayer(
         }
         if (buf.frameCount == 0) return
 
+        // Use native MediaPlayer + PlaybackParams for crack-free decoupled Pitch & Speed live preview
+        if (pitchSpeedPreviewActive && context != null && !mergePreviewActive) {
+            playBufferWithNativePlaybackParams(buf)
+            return
+        }
+
         stopAudioThreadOnly()
         requestAudioFocusSafely()
 
@@ -190,7 +322,7 @@ class StudioAudioPlayer(
             pipeline?.updateConfig(config)
         }
 
-        val total = buf.frameCount
+        val total = totalFrameCount().toInt().coerceAtLeast(buf.frameCount)
         if (loopEnabled) {
             val s = (loopStartFrac * total).toInt()
             val e = (loopEndFrac * total).toInt()
@@ -234,12 +366,28 @@ class StudioAudioPlayer(
             val tmpR = FloatArray(blockFrames)
             val interleaved = FloatArray(blockFrames * 2)
             var tailFlushRemaining = 0
+            var mergeDuckEnv = 0f
+            var mergeDuckGain = 1.0f
+            val mergeAttackCoeff = kotlin.math.exp(-1.0 / (0.180 * sr)).toFloat()
+            val mergeReleaseCoeff = kotlin.math.exp(-1.0 / (0.900 * sr)).toFloat()
+            val mergeGainAttack = kotlin.math.exp(-1.0 / (0.045 * sr)).toFloat()
+            val mergeGainRelease = kotlin.math.exp(-1.0 / (0.350 * sr)).toFloat()
 
             try {
                 while (isActive && isPlaying.get()) {
                     val activeBuf = buffer ?: break
                     val activePipeline = pipeline ?: break
-                    val framesTotal = activeBuf.frameCount
+                    val isMergeLive = mergePreviewActive && mergePrimaryBuf != null && mergeSecondaryBuf != null
+                    val mPrimary = mergePrimaryBuf
+                    val mSecondary = mergeSecondaryBuf
+                    val mParams = mergeParams
+
+                    val framesTotal = if (isMergeLive && mPrimary != null && mSecondary != null) {
+                        val layout = computeMergeTimelineLayout(mPrimary.durationMs, mSecondary.durationMs, mParams)
+                        ((layout.totalDurationMs * sr) / 1000L).toInt().coerceAtLeast(1)
+                    } else {
+                        activeBuf.frameCount
+                    }
                     if (framesTotal == 0) break
 
                     val rangeStart = if (loopEnabled) (loopStartFrac * framesTotal).toInt() else 0
@@ -251,7 +399,7 @@ class StudioAudioPlayer(
 
                     val cfg = config
                     val tsSlot = cfg.chain.firstOrNull { it.type == EffectType.TIME_STRETCH }
-                    val dspTempo = if (!cfg.bypassAll && tsSlot?.enabled == true) {
+                    val dspTempo = if (!isMergeLive && !cfg.bypassAll && tsSlot?.enabled == true) {
                         clamp(cfg.timeStretch.tempoRatio, 0.5f, 2.0f).toDouble()
                     } else {
                         1.0
@@ -259,26 +407,202 @@ class StudioAudioPlayer(
                     val rateRatio = (dspTempo * monitoringSpeed.toDouble()).coerceIn(0.4, 3.0)
 
                     var reachedEnd = false
-                    for (i in 0 until blockFrames) {
-                        if (playhead >= rangeEnd) {
-                            if (loopEnabled) {
-                                playhead = rangeStart.toDouble()
-                            } else {
-                                tmpL[i] = 0f
-                                tmpR[i] = 0f
-                                reachedEnd = true
-                                continue
+                    if (isMergeLive && mPrimary != null && mSecondary != null) {
+                        val p1Len = mPrimary.frameCount
+                        val p2Len = mSecondary.frameCount
+                        val p1Gain = (1f + mParams.primaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
+                        val p2Gain = (1f + mParams.secondaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
+                        val p1StartFrame = (mParams.primaryStartOffsetSec.coerceIn(0f, 60f) * sr).roundToInt()
+
+                        when (mParams.mode) {
+                            MergeStudioMode.SEQUENTIAL -> {
+                                val gapFrames = (mParams.transitionGapSec.coerceIn(0f, 10f) * sr).roundToInt()
+                                val p2StartFrame = p1StartFrame + p1Len + gapFrames
+                                val joinXfFrames = minOf((0.020f * sr).toInt(), p1Len / 4, p2Len / 4)
+                                for (i in 0 until blockFrames) {
+                                    if (playhead >= rangeEnd) {
+                                        if (loopEnabled) playhead = rangeStart.toDouble()
+                                        else {
+                                            tmpL[i] = 0f; tmpR[i] = 0f; reachedEnd = true; continue
+                                        }
+                                    }
+                                    val pos = floor(playhead).toInt()
+                                    if (cfg.bypassAll) {
+                                        val pIdx = pos
+                                        if (pIdx in 0 until p1Len) {
+                                            tmpL[i] = mPrimary.left[pIdx]; tmpR[i] = mPrimary.right[pIdx]
+                                        } else {
+                                            tmpL[i] = 0f; tmpR[i] = 0f
+                                        }
+                                    } else {
+                                        val i1 = pos - p1StartFrame
+                                        val i2 = pos - p2StartFrame
+                                        var sL = 0f
+                                        var sR = 0f
+                                        if (i1 in 0 until p1Len) {
+                                            sL += mPrimary.left[i1] * p1Gain
+                                            sR += mPrimary.right[i1] * p1Gain
+                                        }
+                                        if (i2 in 0 until p2Len) {
+                                            sL += mSecondary.left[i2] * p2Gain
+                                            sR += mSecondary.right[i2] * p2Gain
+                                        }
+                                        if (mParams.gapWhooshEnabled && mParams.whooshIntensityPct > 1f && gapFrames > 0) {
+                                            val gapStart = p1StartFrame + p1Len
+                                            val gIdx = pos - gapStart
+                                            if (gIdx in 0 until gapFrames) {
+                                                val gp = gIdx.toFloat() / max(1, gapFrames - 1)
+                                                val env = sin(gp * PI).toFloat().pow(1.4f)
+                                                val wAmt = (mParams.whooshIntensityPct / 100f) * env * 0.14f
+                                                val tone = sin(gp * 42.0 * PI).toFloat()
+                                                sL += wAmt * tone
+                                                sR -= wAmt * tone
+                                            }
+                                        }
+                                        tmpL[i] = tanh(sL.toDouble()).toFloat()
+                                        tmpR[i] = tanh(sR.toDouble()).toFloat()
+                                    }
+                                    playhead += rateRatio
+                                }
+                            }
+
+                            MergeStudioMode.CROSSFADE -> {
+                                val reqXf = (mParams.crossfadeSec.coerceIn(0.1f, 15f) * sr).roundToInt()
+                                val maxXf = minOf((p1Len * 0.85f).toInt(), (p2Len * 0.85f).toInt()).coerceAtLeast(0)
+                                val xfade = min(reqXf, maxXf)
+                                val p2StartFrame = (p1StartFrame + p1Len - xfade).coerceAtLeast(p1StartFrame)
+                                for (i in 0 until blockFrames) {
+                                    if (playhead >= rangeEnd) {
+                                        if (loopEnabled) playhead = rangeStart.toDouble()
+                                        else {
+                                            tmpL[i] = 0f; tmpR[i] = 0f; reachedEnd = true; continue
+                                        }
+                                    }
+                                    val pos = floor(playhead).toInt()
+                                    if (cfg.bypassAll) {
+                                        if (pos in 0 until p1Len) {
+                                            tmpL[i] = mPrimary.left[pos]; tmpR[i] = mPrimary.right[pos]
+                                        } else {
+                                            tmpL[i] = 0f; tmpR[i] = 0f
+                                        }
+                                    } else {
+                                        val i1 = pos - p1StartFrame
+                                        val i2 = pos - p2StartFrame
+                                        var g1Eff = p1Gain
+                                        var g2Eff = p2Gain
+                                        if (xfade > 0 && i2 in 0 until xfade && i1 in (p1Len - xfade) until p1Len) {
+                                            val t = i2.toFloat() / max(1, xfade)
+                                            g1Eff *= (1f - t)
+                                            g2Eff *= t
+                                        }
+                                        var sL = 0f
+                                        var sR = 0f
+                                        if (i1 in 0 until p1Len) {
+                                            sL += mPrimary.left[i1] * g1Eff
+                                            sR += mPrimary.right[i1] * g1Eff
+                                        }
+                                        if (i2 in 0 until p2Len) {
+                                            sL += mSecondary.left[i2] * g2Eff
+                                            sR += mSecondary.right[i2] * g2Eff
+                                        }
+                                        tmpL[i] = tanh(sL.toDouble()).toFloat()
+                                        tmpR[i] = tanh(sR.toDouble()).toFloat()
+                                    }
+                                    playhead += rateRatio
+                                }
+                            }
+
+                            MergeStudioMode.OVERLAY -> {
+                                val p2StartFrame = (mParams.overlayStartOffsetSec.coerceIn(0f, 60f) * sr).roundToInt()
+                                val fadeInFrames = min(p2Len, (mParams.overlayFadeInSec.coerceIn(0f, 15f) * sr).roundToInt())
+                                val fadeOutFrames = min(p2Len, (mParams.overlayFadeOutSec.coerceIn(0f, 15f) * sr).roundToInt())
+                                val duckOn = mParams.autoDuckingEnabled
+                                val duckStrength = clamp(mParams.duckingStrengthPct / 100f, 0f, 1f).let { if (it < 0.01f) 0.7f else it }
+                                val duckMinGain = (1f - duckStrength * 0.85f).coerceIn(0.12f, 1.0f)
+                                val secBaseGain = if (duckOn) (0.45f * p2Gain).coerceIn(0.1f, 1.3f) else p2Gain
+
+                                for (i in 0 until blockFrames) {
+                                    if (playhead >= rangeEnd) {
+                                        if (loopEnabled) playhead = rangeStart.toDouble()
+                                        else {
+                                            tmpL[i] = 0f; tmpR[i] = 0f; reachedEnd = true; continue
+                                        }
+                                    }
+                                    val pos = floor(playhead).toInt()
+                                    if (cfg.bypassAll) {
+                                        if (pos in 0 until p1Len) {
+                                            tmpL[i] = mPrimary.left[pos]; tmpR[i] = mPrimary.right[pos]
+                                        } else {
+                                            tmpL[i] = 0f; tmpR[i] = 0f
+                                        }
+                                    } else {
+                                        val i1 = pos - p1StartFrame
+                                        val i2 = pos - p2StartFrame
+                                        val vL = if (i1 in 0 until p1Len) mPrimary.left[i1] * p1Gain else 0f
+                                        val vR = if (i1 in 0 until p1Len) mPrimary.right[i1] * p1Gain else 0f
+                                        var secScale = secBaseGain
+                                        if (duckOn) {
+                                            val det = max(abs(vL), abs(vR))
+                                            mergeDuckEnv = if (det > mergeDuckEnv) {
+                                                mergeAttackCoeff * mergeDuckEnv + (1f - mergeAttackCoeff) * det
+                                            } else {
+                                                mergeReleaseCoeff * mergeDuckEnv + (1f - mergeReleaseCoeff) * det
+                                            }
+                                            val targetDuck = if (mergeDuckEnv > 0.02f) {
+                                                val comp = (mergeDuckEnv / 0.02f).toDouble().pow(1.0 / (2.0 + 6.0 * duckStrength) - 1.0).toFloat()
+                                                clamp(comp, duckMinGain, 1.0f)
+                                            } else {
+                                                1.0f
+                                            }
+                                            mergeDuckGain = if (targetDuck < mergeDuckGain) {
+                                                mergeGainAttack * mergeDuckGain + (1f - mergeGainAttack) * targetDuck
+                                            } else {
+                                                mergeGainRelease * mergeDuckGain + (1f - mergeGainRelease) * targetDuck
+                                            }
+                                            secScale *= mergeDuckGain
+                                        }
+                                        if (i2 in 0 until p2Len) {
+                                            if (fadeInFrames > 0 && i2 < fadeInFrames) {
+                                                val t = i2.toDouble() / max(1, fadeInFrames - 1)
+                                                secScale *= sin(t * PI * 0.5).toFloat()
+                                            }
+                                            if (fadeOutFrames > 0 && i2 >= p2Len - fadeOutFrames) {
+                                                val idxOut = i2 - (p2Len - fadeOutFrames)
+                                                val t = idxOut.toDouble() / max(1, fadeOutFrames - 1)
+                                                secScale *= cos(t * PI * 0.5).toFloat()
+                                            }
+                                            tmpL[i] = tanh((vL + mSecondary.left[i2] * secScale).toDouble()).toFloat()
+                                            tmpR[i] = tanh((vR + mSecondary.right[i2] * secScale).toDouble()).toFloat()
+                                        } else {
+                                            tmpL[i] = tanh(vL.toDouble()).toFloat()
+                                            tmpR[i] = tanh(vR.toDouble()).toFloat()
+                                        }
+                                    }
+                                    playhead += rateRatio
+                                }
                             }
                         }
-                        val i0 = clamp(floor(playhead).toInt(), 0, framesTotal - 1)
-                        val i1 = clamp(i0 + 1, 0, framesTotal - 1)
-                        val f = (playhead - i0).toFloat()
-                        tmpL[i] = activeBuf.left[i0] + (activeBuf.left[i1] - activeBuf.left[i0]) * f
-                        tmpR[i] = activeBuf.right[i0] + (activeBuf.right[i1] - activeBuf.right[i0]) * f
-                        playhead += rateRatio
+                    } else {
+                        for (i in 0 until blockFrames) {
+                            if (playhead >= rangeEnd) {
+                                if (loopEnabled) {
+                                    playhead = rangeStart.toDouble()
+                                } else {
+                                    tmpL[i] = 0f
+                                    tmpR[i] = 0f
+                                    reachedEnd = true
+                                    continue
+                                }
+                            }
+                            val i0 = clamp(floor(playhead).toInt(), 0, framesTotal - 1)
+                            val i1 = clamp(i0 + 1, 0, framesTotal - 1)
+                            val f = (playhead - i0).toFloat()
+                            tmpL[i] = activeBuf.left[i0] + (activeBuf.left[i1] - activeBuf.left[i0]) * f
+                            tmpR[i] = activeBuf.right[i0] + (activeBuf.right[i1] - activeBuf.right[i0]) * f
+                            playhead += rateRatio
+                        }
+                        activePipeline.processStereoBlock(tmpL, tmpR, blockFrames)
                     }
-
-                    activePipeline.processStereoBlock(tmpL, tmpR, blockFrames)
 
                     val clipGain = liveClipGainDb
                     if (!cfg.bypassAll && abs(clipGain) > 0.05f) {
@@ -417,6 +741,48 @@ class StudioAudioPlayer(
         }
     }
 
+    private fun playBufferWithNativePlaybackParams(buf: StereoAudioBuffer) {
+        val ctx = context ?: return
+        stopAudioThreadOnly()
+        requestAudioFocusSafely()
+
+        val sr = buf.sampleRate.coerceAtLeast(8000)
+        val total = buf.frameCount.toLong().coerceAtLeast(1L)
+        if (loopEnabled) {
+            val s = (loopStartFrac * total).toLong()
+            val e = (loopEndFrac * total).toLong()
+            if (playhead < s || playhead >= e) playhead = s.toDouble()
+        } else if (playhead >= total - 1L) {
+            playhead = 0.0
+        }
+
+        isPlaying.set(true)
+        emitTelemetry()
+
+        playbackJob = scope.launch(Dispatchers.IO) {
+            val idHash = System.identityHashCode(buf)
+            val existing = cachedPitchLiveWavFile
+            val wavFile = if (existing != null &&
+                existing.exists() &&
+                existing.length() > 44L &&
+                cachedPitchLiveBufIdentity == idHash &&
+                cachedPitchLiveBufFrames == buf.frameCount
+            ) {
+                existing
+            } else {
+                val target = File(ctx.cacheDir, "pitch_live_src.wav")
+                writeStereoWavFile(target, buf)
+                cachedPitchLiveWavFile = target
+                cachedPitchLiveBufIdentity = idHash
+                cachedPitchLiveBufFrames = buf.frameCount
+                target
+            }
+            if (!isActive || !isPlaying.get()) return@launch
+            val startMs = ((playhead * 1000.0) / sr).roundToInt().coerceAtLeast(0)
+            streamDiskFileWithMediaPlayer(wavFile, startMs)
+        }
+    }
+
     private fun playDiskSourceFile(file: File) {
         stopAudioThreadOnly()
         requestAudioFocusSafely()
@@ -436,9 +802,13 @@ class StudioAudioPlayer(
 
         playbackJob = scope.launch(Dispatchers.IO) {
             val startUs = ((playhead * 1_000_000.0) / sr).toLong().coerceAtLeast(0L)
-            val streamedViaCodec = streamDiskFileWithMediaCodec(file, startUs)
+            val streamedViaCodec = if (pitchSpeedPreviewActive) {
+                false
+            } else {
+                streamDiskFileWithMediaCodec(file, startUs)
+            }
             if (!streamedViaCodec && isActive && isPlaying.get()) {
-                // Reliable OS fallback via MediaPlayer direct file path in cacheDir
+                // Reliable OS path via MediaPlayer direct file path in cacheDir (also supports native PlaybackParams!)
                 streamDiskFileWithMediaPlayer(file, (startUs / 1000L).toInt())
             }
         }
@@ -668,6 +1038,7 @@ class StudioAudioPlayer(
     private suspend fun streamDiskFileWithMediaPlayer(file: File, startMs: Int) {
         val mp = MediaPlayer()
         streamMediaPlayer = mp
+        var completed = false
         try {
             mp.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -677,8 +1048,10 @@ class StudioAudioPlayer(
             )
             mp.setDataSource(file.absolutePath)
             mp.prepare()
-            val dur = mp.duration.toLong().coerceAtLeast(sourceDurationMs)
-            sourceDurationMs = dur
+            val dur = mp.duration.toLong().coerceAtLeast(currentDurationMs().coerceAtLeast(1L))
+            if (buffer == null && !mergePreviewActive) {
+                sourceDurationMs = dur
+            }
             if (startMs in 1 until dur.toInt()) {
                 mp.seekTo(startMs)
             }
@@ -687,17 +1060,22 @@ class StudioAudioPlayer(
                     val sMs = (loopStartFrac * dur).toInt()
                     runCatching { mp.seekTo(sMs); mp.start() }
                 } else {
+                    completed = true
                     isPlaying.set(false)
                     playhead = 0.0
                     emitTelemetry()
                 }
             }
             mp.start()
-            val sr = sourceSampleRate.coerceAtLeast(8000)
-            while (playbackJob?.isActive == true && isPlaying.get() && mp.isPlaying) {
-                playhead = (mp.currentPosition.toDouble() * sr) / 1000.0
+            if (pitchSpeedPreviewActive || abs(monitoringSpeed - 1f) > 0.01f) {
+                applyLivePlaybackParams(mp)
+            }
+            val sr = (buffer?.sampleRate ?: sourceSampleRate).coerceAtLeast(8000)
+            while (playbackJob?.isActive == true && isPlaying.get() && !completed) {
+                val curMs = runCatching { mp.currentPosition }.getOrDefault(0).coerceAtLeast(0)
+                playhead = (curMs.toDouble() * sr) / 1000.0
                 latestBars = List(48) { idx ->
-                    val phase = ((mp.currentPosition / 80.0) + idx * 0.4)
+                    val phase = ((curMs / 80.0) + idx * 0.4)
                     clamp(0.25f + 0.35f * abs(sin(phase)).toFloat(), 0.06f, 0.85f)
                 }
                 latestLevel = 0.45f
@@ -735,14 +1113,8 @@ class StudioAudioPlayer(
     }
 
     private fun emitTelemetry() {
-        val buf = buffer
-        val sr = buf?.sampleRate ?: sourceSampleRate.coerceAtLeast(TARGET_SAMPLE_RATE)
-        val frames = buf?.frameCount?.toLong() ?: totalFrameCount()
-        val durationMs = if (buf != null) {
-            if (sr > 0) (frames * 1000L) / sr else 0L
-        } else {
-            sourceDurationMs
-        }
+        val sr = (mergePrimaryBuf?.sampleRate ?: buffer?.sampleRate ?: sourceSampleRate).coerceAtLeast(TARGET_SAMPLE_RATE)
+        val durationMs = currentDurationMs()
         val posMs = if (sr > 0) ((playhead * 1000.0) / sr).toLong().coerceIn(0L, durationMs) else 0L
         onTelemetry(
             PlaybackTelemetry(

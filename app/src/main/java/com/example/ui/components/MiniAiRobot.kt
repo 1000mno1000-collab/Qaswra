@@ -339,149 +339,240 @@ fun MiniAiRobotCompanion(
             val h = size.height
             val cx = w * 0.5f
 
-            val bodyBrush = Brush.verticalGradient(
-                listOf(Color(0xFF283755), Color(0xFF151E33)),
+            val squircleBrush = Brush.verticalGradient(
+                listOf(Color(0xFF233454), Color(0xFF10192D)),
             )
-            val visorColor = Color(0xFF0A0F1D)
             val glowCyan = StudioColors.Cyan.copy(alpha = antennaGlow)
 
-            // Antenna
+            // Cute Rounded Square (Squircle) Body-Head
+            val sqSize = minOf(w * 0.72f, h * 0.72f)
+            val sqLeft = cx - sqSize / 2f
+            val sqTop = h * 0.12f
+            val sqRadius = sqSize * 0.34f
+
+            // Subtle outer ambient cyan halo
+            drawRoundRect(
+                color = glowCyan.copy(alpha = 0.16f),
+                topLeft = Offset(sqLeft - 2.dp.toPx(), sqTop - 2.dp.toPx()),
+                size = Size(sqSize + 4.dp.toPx(), sqSize + 4.dp.toPx()),
+                cornerRadius = CornerRadius(sqRadius + 2.dp.toPx(), sqRadius + 2.dp.toPx()),
+            )
+
+            // Main squircle shell
+            drawRoundRect(
+                brush = squircleBrush,
+                topLeft = Offset(sqLeft, sqTop),
+                size = Size(sqSize, sqSize),
+                cornerRadius = CornerRadius(sqRadius, sqRadius),
+            )
+            drawRoundRect(
+                color = glowCyan.copy(alpha = 0.85f),
+                topLeft = Offset(sqLeft, sqTop),
+                size = Size(sqSize, sqSize),
+                cornerRadius = CornerRadius(sqRadius, sqRadius),
+                style = Stroke(width = 1.6.dp.toPx()),
+            )
+
+            // Soft inner face screen
+            val pad = 3.5.dp.toPx()
+            val innerSize = sqSize - pad * 2f
+            val innerRadius = (sqRadius - pad * 0.7f).coerceAtLeast(6.dp.toPx())
+            drawRoundRect(
+                color = Color(0xFF0A1120),
+                topLeft = Offset(sqLeft + pad, sqTop + pad),
+                size = Size(innerSize, innerSize),
+                cornerRadius = CornerRadius(innerRadius, innerRadius),
+            )
+
+            // Subtle top cyan glass highlight
             drawLine(
-                color = Color(0xFF7B93BC),
-                start = Offset(cx, h * 0.20f),
-                end = Offset(cx, h * 0.06f),
-                strokeWidth = 2.4.dp.toPx(),
+                color = Color.White.copy(alpha = 0.16f),
+                start = Offset(sqLeft + sqSize * 0.26f, sqTop + 2.6.dp.toPx()),
+                end = Offset(sqLeft + sqSize * 0.74f, sqTop + 2.6.dp.toPx()),
+                strokeWidth = 1.4.dp.toPx(),
                 cap = StrokeCap.Round,
             )
-            drawCircle(
-                color = if (mood == RobotMood.STARTLED_CLIMB) StudioColors.Amber else glowCyan,
-                radius = 4.dp.toPx(),
-                center = Offset(cx, h * 0.06f),
+
+            // Warm Human-Like Facial Features
+            val faceCenterY = sqTop + sqSize * 0.50f
+            val browY = sqTop + sqSize * 0.30f
+            val eyeY = sqTop + sqSize * 0.45f
+            val eyeOffset = sqSize * 0.19f
+            val eyeLX = cx - eyeOffset
+            val eyeRX = cx + eyeOffset
+            val mouthY = sqTop + sqSize * 0.67f
+
+            // Soft warm cheeks
+            val cheekColor = Color(0xFFFB7185).copy(alpha = if (mood == RobotMood.HAPPY_JUMP || mood == RobotMood.WAVING) 0.34f else 0.20f)
+            drawCircle(cheekColor, radius = 3.2.dp.toPx(), center = Offset(eyeLX - 2.dp.toPx(), mouthY - 2.dp.toPx()))
+            drawCircle(cheekColor, radius = 3.2.dp.toPx(), center = Offset(eyeRX + 2.dp.toPx(), mouthY - 2.dp.toPx()))
+
+            // Gentle arched human eyebrows
+            val browStroke = 1.4.dp.toPx()
+            val browColor = Color(0xFFA5F3FC).copy(alpha = 0.9f)
+            val browLift = if (mood == RobotMood.STARTLED_CLIMB || mood == RobotMood.SLIPPING_HANG) -1.8.dp.toPx() else 0f
+            drawArc(
+                color = browColor,
+                startAngle = 205f,
+                sweepAngle = 130f,
+                useCenter = false,
+                topLeft = Offset(eyeLX - 3.6.dp.toPx(), browY + browLift - 2.dp.toPx()),
+                size = Size(7.2.dp.toPx(), 4.5.dp.toPx()),
+                style = Stroke(width = browStroke, cap = StrokeCap.Round),
+            )
+            drawArc(
+                color = browColor,
+                startAngle = 205f,
+                sweepAngle = 130f,
+                useCenter = false,
+                topLeft = Offset(eyeRX - 3.6.dp.toPx(), browY + browLift - 2.dp.toPx()),
+                size = Size(7.2.dp.toPx(), 4.5.dp.toPx()),
+                style = Stroke(width = browStroke, cap = StrokeCap.Round),
             )
 
-            // Little Head
-            val headW = w * 0.56f
-            val headH = h * 0.34f
-            val headLeft = cx - headW / 2f
-            val headTop = h * 0.18f
-            drawRoundRect(
-                brush = bodyBrush,
-                topLeft = Offset(headLeft, headTop),
-                size = Size(headW, headH),
-                cornerRadius = CornerRadius(9.dp.toPx(), 9.dp.toPx()),
-            )
-            drawRoundRect(
-                color = StudioColors.Cyan.copy(alpha = 0.65f),
-                topLeft = Offset(headLeft, headTop),
-                size = Size(headW, headH),
-                cornerRadius = CornerRadius(9.dp.toPx(), 9.dp.toPx()),
-                style = Stroke(width = 1.4.dp.toPx()),
-            )
-
-            // Face Visor
-            drawRoundRect(
-                color = visorColor,
-                topLeft = Offset(headLeft + 4.dp.toPx(), headTop + 4.dp.toPx()),
-                size = Size(headW - 8.dp.toPx(), headH - 7.dp.toPx()),
-                cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
-            )
-
-            // Eyes & expression
-            val eyeY = headTop + headH * 0.45f
-            val eyeLX = cx - headW * 0.18f
-            val eyeRX = cx + headW * 0.18f
+            // Expressive warm eyes & friendly smile
             when (mood) {
                 RobotMood.SLEEP_FALLING -> {
-                    // Closed sleepy arcs
-                    drawLine(StudioColors.Violet, Offset(eyeLX - 3.dp.toPx(), eyeY), Offset(eyeLX + 3.dp.toPx(), eyeY), 2.dp.toPx(), StrokeCap.Round)
-                    drawLine(StudioColors.Violet, Offset(eyeRX - 3.dp.toPx(), eyeY), Offset(eyeRX + 3.dp.toPx(), eyeY), 2.dp.toPx(), StrokeCap.Round)
+                    // Cozy closed sleepy eyelashes
+                    drawArc(
+                        color = StudioColors.Violet,
+                        startAngle = 15f,
+                        sweepAngle = 150f,
+                        useCenter = false,
+                        topLeft = Offset(eyeLX - 3.4.dp.toPx(), eyeY - 1.8.dp.toPx()),
+                        size = Size(6.8.dp.toPx(), 4.dp.toPx()),
+                        style = Stroke(width = 1.7.dp.toPx(), cap = StrokeCap.Round),
+                    )
+                    drawArc(
+                        color = StudioColors.Violet,
+                        startAngle = 15f,
+                        sweepAngle = 150f,
+                        useCenter = false,
+                        topLeft = Offset(eyeRX - 3.4.dp.toPx(), eyeY - 1.8.dp.toPx()),
+                        size = Size(6.8.dp.toPx(), 4.dp.toPx()),
+                        style = Stroke(width = 1.7.dp.toPx(), cap = StrokeCap.Round),
+                    )
+                    // Peaceful tiny mouth
+                    drawCircle(color = Color(0xFF94A3B8), radius = 1.4.dp.toPx(), center = Offset(cx, mouthY))
                 }
                 RobotMood.YAWNING -> {
-                    drawLine(StudioColors.Cyan, Offset(eyeLX - 2.5.dp.toPx(), eyeY), Offset(eyeLX + 2.5.dp.toPx(), eyeY), 2.dp.toPx(), StrokeCap.Round)
-                    drawLine(StudioColors.Cyan, Offset(eyeRX - 2.5.dp.toPx(), eyeY), Offset(eyeRX + 2.5.dp.toPx(), eyeY), 2.dp.toPx(), StrokeCap.Round)
-                    // Open yawning O mouth
-                    drawCircle(
-                        color = StudioColors.Amber,
-                        radius = 2.6.dp.toPx(),
-                        center = Offset(cx, headTop + headH * 0.72f),
+                    drawLine(StudioColors.Cyan, Offset(eyeLX - 3.dp.toPx(), eyeY), Offset(eyeLX + 3.dp.toPx(), eyeY), 1.8.dp.toPx(), StrokeCap.Round)
+                    drawLine(StudioColors.Cyan, Offset(eyeRX - 3.dp.toPx(), eyeY), Offset(eyeRX + 3.dp.toPx(), eyeY), 1.8.dp.toPx(), StrokeCap.Round)
+                    drawCircle(color = StudioColors.Amber, radius = 2.6.dp.toPx(), center = Offset(cx, mouthY + 0.5.dp.toPx()))
+                }
+                RobotMood.HAPPY_JUMP, RobotMood.WAVING -> {
+                    // Warm smiling eyes (^ ^) + bright sparkle catchlight on waving
+                    if (mood == RobotMood.HAPPY_JUMP) {
+                        drawArc(
+                            color = StudioColors.Emerald,
+                            startAngle = 195f,
+                            sweepAngle = 150f,
+                            useCenter = false,
+                            topLeft = Offset(eyeLX - 3.6.dp.toPx(), eyeY - 2.dp.toPx()),
+                            size = Size(7.2.dp.toPx(), 5.dp.toPx()),
+                            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+                        )
+                        drawArc(
+                            color = StudioColors.Emerald,
+                            startAngle = 195f,
+                            sweepAngle = 150f,
+                            useCenter = false,
+                            topLeft = Offset(eyeRX - 3.6.dp.toPx(), eyeY - 2.dp.toPx()),
+                            size = Size(7.2.dp.toPx(), 5.dp.toPx()),
+                            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+                        )
+                    } else {
+                        listOf(eyeLX, eyeRX).forEach { ex ->
+                            drawCircle(Color(0xFFE0F2FE), 3.3.dp.toPx(), Offset(ex, eyeY))
+                            drawCircle(StudioColors.Cyan, 2.2.dp.toPx(), Offset(ex, eyeY))
+                            drawCircle(Color(0xFF082F49), 1.2.dp.toPx(), Offset(ex, eyeY))
+                            drawCircle(Color.White, 0.9.dp.toPx(), Offset(ex - 0.9.dp.toPx(), eyeY - 0.9.dp.toPx()))
+                        }
+                    }
+                    // Big friendly smile
+                    drawArc(
+                        color = StudioColors.Cyan,
+                        startAngle = 15f,
+                        sweepAngle = 150f,
+                        useCenter = false,
+                        topLeft = Offset(cx - 5.2.dp.toPx(), mouthY - 3.2.dp.toPx()),
+                        size = Size(10.4.dp.toPx(), 6.dp.toPx()),
+                        style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round),
                     )
                 }
                 RobotMood.STARTLED_CLIMB, RobotMood.SLIPPING_HANG -> {
-                    drawCircle(StudioColors.Amber, 3.3.dp.toPx(), Offset(eyeLX, eyeY))
-                    drawCircle(StudioColors.Amber, 3.3.dp.toPx(), Offset(eyeRX, eyeY))
+                    listOf(eyeLX, eyeRX).forEach { ex ->
+                        drawCircle(Color.White, 3.8.dp.toPx(), Offset(ex, eyeY))
+                        drawCircle(StudioColors.Amber, 1.8.dp.toPx(), Offset(ex, eyeY))
+                    }
+                    drawCircle(color = StudioColors.Amber, radius = 2.1.dp.toPx(), center = Offset(cx, mouthY + 0.5.dp.toPx()))
                 }
                 else -> {
-                    val eyeColor = if (mood == RobotMood.HAPPY_JUMP) StudioColors.Emerald else StudioColors.Cyan
-                    drawCircle(eyeColor, 2.7.dp.toPx(), Offset(eyeLX, eyeY))
-                    drawCircle(eyeColor, 2.7.dp.toPx(), Offset(eyeRX, eyeY))
+                    // Warm friendly human-like eyes with iris & catchlight
+                    listOf(eyeLX, eyeRX).forEach { ex ->
+                        drawCircle(Color(0xFFE0F2FE), 3.2.dp.toPx(), Offset(ex, eyeY))
+                        drawCircle(StudioColors.Cyan, 2.1.dp.toPx(), Offset(ex, eyeY))
+                        drawCircle(Color(0xFF0A192F), 1.1.dp.toPx(), Offset(ex, eyeY))
+                        drawCircle(Color.White, 0.85.dp.toPx(), Offset(ex - 0.8.dp.toPx(), eyeY - 0.8.dp.toPx()))
+                    }
+                    // Warm gentle smile
+                    drawArc(
+                        color = Color(0xFF67E8F9),
+                        startAngle = 20f,
+                        sweepAngle = 140f,
+                        useCenter = false,
+                        topLeft = Offset(cx - 4.6.dp.toPx(), mouthY - 2.6.dp.toPx()),
+                        size = Size(9.2.dp.toPx(), 5.2.dp.toPx()),
+                        style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round),
+                    )
                 }
             }
 
-            // Torso
-            val torsoW = w * 0.42f
-            val torsoH = h * 0.28f
-            val torsoTop = headTop + headH + 1.5.dp.toPx()
-            drawRoundRect(
-                brush = bodyBrush,
-                topLeft = Offset(cx - torsoW / 2f, torsoTop),
-                size = Size(torsoW, torsoH),
-                cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
-            )
-            drawRoundRect(
-                color = StudioColors.Violet.copy(alpha = 0.6f),
-                topLeft = Offset(cx - torsoW / 2f, torsoTop),
-                size = Size(torsoW, torsoH),
-                cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
-                style = Stroke(width = 1.2.dp.toPx()),
-            )
-            // Chest core LED
-            drawCircle(
-                color = StudioColors.Cyan,
-                radius = 2.5.dp.toPx(),
-                center = Offset(cx, torsoTop + torsoH * 0.5f),
-            )
-
-            // Arms
+            // Friendly little expressive hands on the sides of the squircle
             val armRaisePx = handRaise.value * 11.dp.toPx()
             val hangArmsUp = mood == RobotMood.SLIPPING_HANG
-            val leftArmEndY = if (hangArmsUp) torsoTop - 10.dp.toPx() else torsoTop + torsoH * 0.7f - armRaisePx * 0.4f
-            val rightArmEndY = if (hangArmsUp) torsoTop - 10.dp.toPx() else torsoTop + torsoH * 0.7f - armRaisePx
+            val armStartY = sqTop + sqSize * 0.62f
+            val leftArmEndY = if (hangArmsUp) sqTop - 4.dp.toPx() else armStartY + 3.dp.toPx() - armRaisePx * 0.4f
+            val rightArmEndY = if (hangArmsUp) sqTop - 4.dp.toPx() else armStartY + 3.dp.toPx() - armRaisePx
             drawLine(
-                color = Color(0xFF8FA7CC),
-                start = Offset(cx - torsoW / 2f, torsoTop + 3.dp.toPx()),
-                end = Offset(cx - torsoW * 0.85f, leftArmEndY),
-                strokeWidth = 2.8.dp.toPx(),
+                color = StudioColors.Cyan.copy(alpha = 0.85f),
+                start = Offset(sqLeft, armStartY),
+                end = Offset(sqLeft - 5.5.dp.toPx(), leftArmEndY),
+                strokeWidth = 2.6.dp.toPx(),
                 cap = StrokeCap.Round,
             )
-            drawLine(
-                color = Color(0xFF8FA7CC),
-                start = Offset(cx + torsoW / 2f, torsoTop + 3.dp.toPx()),
-                end = Offset(cx + torsoW * 0.85f, rightArmEndY),
-                strokeWidth = 2.8.dp.toPx(),
-                cap = StrokeCap.Round,
-            )
+            drawCircle(color = Color(0xFFBAE6FD), radius = 2.1.dp.toPx(), center = Offset(sqLeft - 5.5.dp.toPx(), leftArmEndY))
 
-            // Dangling / Walking Legs hanging gently over the card border
-            val legStartY = torsoTop + torsoH
+            drawLine(
+                color = StudioColors.Cyan.copy(alpha = 0.85f),
+                start = Offset(sqLeft + sqSize, armStartY),
+                end = Offset(sqLeft + sqSize + 5.5.dp.toPx(), rightArmEndY),
+                strokeWidth = 2.6.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+            drawCircle(color = Color(0xFFBAE6FD), radius = 2.1.dp.toPx(), center = Offset(sqLeft + sqSize + 5.5.dp.toPx(), rightArmEndY))
+
+            // Cute little swinging feet dangling gently over the card edge
+            val legStartY = sqTop + sqSize
             val walkCycle = if (mood == RobotMood.WALKING_IN) sin(xFraction.value * 36f) * 4.dp.toPx() else 0f
             val swingL = if (mood == RobotMood.SITTING) legSwing * 3.dp.toPx() else walkCycle
             val swingR = if (mood == RobotMood.SITTING) -legSwing * 3.dp.toPx() else -walkCycle
 
-            rotate(degrees = swingL * 3f, pivot = Offset(cx - torsoW * 0.24f, legStartY)) {
+            rotate(degrees = swingL * 3f, pivot = Offset(cx - sqSize * 0.22f, legStartY)) {
                 drawLine(
-                    color = Color(0xFF7B93BC),
-                    start = Offset(cx - torsoW * 0.24f, legStartY),
-                    end = Offset(cx - torsoW * 0.26f, h * 0.96f),
-                    strokeWidth = 3.dp.toPx(),
+                    color = Color(0xFF67E8F9).copy(alpha = 0.85f),
+                    start = Offset(cx - sqSize * 0.22f, legStartY),
+                    end = Offset(cx - sqSize * 0.24f, h * 0.94f),
+                    strokeWidth = 2.8.dp.toPx(),
                     cap = StrokeCap.Round,
                 )
             }
-            rotate(degrees = swingR * 3f, pivot = Offset(cx + torsoW * 0.24f, legStartY)) {
+            rotate(degrees = swingR * 3f, pivot = Offset(cx + sqSize * 0.22f, legStartY)) {
                 drawLine(
-                    color = Color(0xFF7B93BC),
-                    start = Offset(cx + torsoW * 0.24f, legStartY),
-                    end = Offset(cx + torsoW * 0.26f, h * 0.96f),
-                    strokeWidth = 3.dp.toPx(),
+                    color = Color(0xFF67E8F9).copy(alpha = 0.85f),
+                    start = Offset(cx + sqSize * 0.22f, legStartY),
+                    end = Offset(cx + sqSize * 0.24f, h * 0.94f),
+                    strokeWidth = 2.8.dp.toPx(),
                     cap = StrokeCap.Round,
                 )
             }

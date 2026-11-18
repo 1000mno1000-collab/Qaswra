@@ -1,13 +1,14 @@
 package com.example.audio.tts
 
 import android.content.Context
-import android.util.Log
 import com.example.audio.AudioDecoder
+import com.example.audio.EdgeTtsClient
 import com.example.audio.EdgeTtsSynthResult
 import com.example.audio.OnlineGuard
 import com.example.audio.StereoBiquadFilter
 import com.example.audio.TARGET_SAMPLE_RATE
 import com.example.audio.applyPitchAndSpeedOffline
+import com.example.audio.buildPitchAndSpeedFfmpegChains
 import com.example.audio.cache.SmartCacheManager
 import com.example.audio.clamp
 import com.example.audio.fx.StudioLuxuryAudioFilter
@@ -36,7 +37,6 @@ import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
 
 sealed interface FreeEmotionalTtsOutcome {
@@ -45,23 +45,24 @@ sealed interface FreeEmotionalTtsOutcome {
     data class Error(val message: String) : FreeEmotionalTtsOutcome
 }
 
-private data class PollinationsSynthResult(
+private data class CloudTtsSynthesisAttempt(
     val buffer: StereoAudioBuffer?,
+    val prosodyAppliedInEngine: Boolean,
     val errors: List<String>,
 )
 
 /**
- * 100% Online, free, keyless Cloud Human Voice AI client powered exclusively by
- * Pollinations OpenAI Audio (`https://text.pollinations.ai/...?model=openai-audio&voice={onyx|nova|shimmer|alloy|echo}`),
- * gated strictly by OnlineGuard.
+ * 100% Online, free, keyless Cloud Human Neural Voice client:
+ * 1. Primary: Microsoft Edge Neural Voices (`speech.platform.bing.com` — e.g. `ar-IQ-BasselNeural`,
+ *    `ar-SA-HamedNeural`, `ar-EG-ShakirNeural`, `en-US-AndrewNeural`, `fa-IR-FaridNeural`, `tr-TR-AhmetNeural`)
+ *    with native Rate (%), Pitch (Hz), emotional cadence & full Arabic diacritics.
+ * 2. Fallback: Google Translate Neural TTS HD (`translate.googleapis.com` / `translate.google.com`)
+ *    plus gender/emotion shaping.
+ * 3. Optional FFmpegKit human vocal warmth & Arabic articulation mastering (clarity for هـ / خ / ح).
  */
 object FreeEmotionalTtsClient {
-    private const val TAG = "FreeEmotionalTts"
     private const val PREFS_NAME = "sonix_free_tts_prefs"
     private const val KEY_LUXURY_ENHANCEMENT = "studio_luxury_enhancement"
-
-    private const val USER_AGENT =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     fun getSavedStudioLuxuryEnhancement(context: Context): Boolean {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -86,7 +87,7 @@ object FreeEmotionalTtsClient {
         language: AppLanguage = AppLanguage.AR,
         studioLuxuryEnhancement: Boolean = getSavedStudioLuxuryEnhancement(context),
     ): FreeEmotionalTtsOutcome = withContext(Dispatchers.IO) {
-        val cleanText = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim())
+        val cleanText = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim(), applyLightDiacritics = true)
         if (cleanText.isEmpty()) {
             return@withContext FreeEmotionalTtsOutcome.Error(
                 when (language) {
@@ -102,36 +103,52 @@ object FreeEmotionalTtsClient {
         }
 
         val cacheDir = File(context.cacheDir, "free_emotional_tts").apply { mkdirs() }
-        val primaryVoice = resolvePollinationsVoice(gender, style)
-        val fallbackVoice = when (gender) {
-            TtsGender.MALE -> if (primaryVoice == "onyx") "alloy" else "onyx"
-            TtsGender.FEMALE -> if (primaryVoice == "nova") "shimmer" else "nova"
-        }
-
         val collectedErrors = mutableListOf<String>()
-        var result = synthesizeViaPollinationsAudio(
-            context = context,
+
+        // 1. Primary: Microsoft Edge Neural TTS with selected dialect, gender, rate %, pitch & emotion
+        val primaryVoice = if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
+        var attempt = synthesizeViaEdgeNeural(
             cacheDir = cacheDir,
             text = cleanText,
-            dialect = dialect,
-            voice = primaryVoice,
+            voiceName = primaryVoice,
+            localeTag = dialect.localeTag,
             style = style,
+            speechRate = speechRate,
+            pitch = pitch,
         )
-        collectedErrors += result.errors
+        collectedErrors += attempt.errors
 
-        if (result.buffer == null || result.buffer.frameCount <= 0) {
-            result = synthesizeViaPollinationsAudio(
+        // 1b. Regional Neural Voice fallback (e.g., ar-SA neural) if specific regional Edge voice fails
+        if (attempt.buffer == null || attempt.buffer.frameCount <= 0) {
+            val backupVoice = resolveBackupEdgeVoice(dialect, gender)
+            if (backupVoice != null && backupVoice != primaryVoice) {
+                attempt = synthesizeViaEdgeNeural(
+                    cacheDir = cacheDir,
+                    text = cleanText,
+                    voiceName = backupVoice,
+                    localeTag = dialect.fallbackLocaleTag,
+                    style = style,
+                    speechRate = speechRate,
+                    pitch = pitch,
+                )
+                collectedErrors += attempt.errors
+            }
+        }
+
+        // 2. Fallback: 100% Free HTTPS Google Translate Neural TTS HD (zero 404/402 servers)
+        if (attempt.buffer == null || attempt.buffer.frameCount <= 0) {
+            attempt = synthesizeViaGoogleTranslateHd(
                 context = context,
                 cacheDir = cacheDir,
                 text = cleanText,
                 dialect = dialect,
-                voice = fallbackVoice,
                 style = style,
+                speechRate = speechRate,
             )
-            collectedErrors += result.errors
+            collectedErrors += attempt.errors
         }
 
-        val stitchedBuffer = result.buffer
+        val stitchedBuffer = attempt.buffer
         if (stitchedBuffer == null || stitchedBuffer.frameCount <= 0) {
             val detail = collectedErrors
                 .map { it.trim() }
@@ -139,19 +156,19 @@ object FreeEmotionalTtsClient {
                 .distinct()
                 .take(3)
                 .joinToString(" | ")
-                .ifBlank { "Empty or invalid Pollinations audio payload" }
+                .ifBlank { "Cloud neural TTS servers unreachable" }
             AppDiagnosticLog.logRecoverable(
-                toolName = "Pollinations OpenAI Audio TTS",
+                toolName = "Cloud Neural TTS",
                 titleAr = "تعذر توليد الصوت البشري السحابي",
-                titleEn = "Pollinations OpenAI Audio TTS Failed",
+                titleEn = "Cloud Neural TTS Failed",
                 causeAr = detail,
                 causeEn = detail,
-                errorCode = "POLLINATIONS_TTS_ERR",
+                errorCode = "CLOUD_NEURAL_TTS_ERR",
             )
             val userMsg = when (language) {
                 AppLanguage.EN -> "Cloud AI Voice connection failed: $detail"
-                AppLanguage.FA -> "خطا در اتصال به صدای انسانی ابری: $detail"
-                AppLanguage.AR -> "تعذر الاتصال بخادم الصوت البشري السحابي: $detail"
+                AppLanguage.FA -> "خطا در اتصال به موتور صدای ابری: $detail"
+                AppLanguage.AR -> "تعذر الاتصال بمحرك النطق السحابي: $detail"
             }
             return@withContext FreeEmotionalTtsOutcome.Error(userMsg)
         }
@@ -164,6 +181,7 @@ object FreeEmotionalTtsClient {
             style = style,
             speechRate = speechRate,
             pitch = pitch,
+            prosodyAlreadyAppliedInEngine = attempt.prosodyAppliedInEngine,
             studioLuxuryEnhancement = studioLuxuryEnhancement,
         )
 
@@ -193,88 +211,66 @@ object FreeEmotionalTtsClient {
         )
     }
 
-    private fun resolvePollinationsVoice(gender: TtsGender, style: TtsDeliveryStyle): String {
-        return when (gender) {
-            TtsGender.MALE -> when (style) {
-                TtsDeliveryStyle.ENERGETIC -> "echo"
-                TtsDeliveryStyle.RADIO_ANCHOR, TtsDeliveryStyle.STORYTELLING -> "alloy"
-                else -> "onyx"
-            }
-            TtsGender.FEMALE -> when (style) {
-                TtsDeliveryStyle.DRAMATIC, TtsDeliveryStyle.SAD -> "shimmer"
-                else -> "nova"
-            }
+    private fun resolveBackupEdgeVoice(dialect: TtsDialect, gender: TtsGender): String? {
+        val loc = dialect.localeTag.lowercase(Locale.US)
+        return when {
+            loc.startsWith("ar") -> if (gender == TtsGender.MALE) "ar-SA-HamedNeural" else "ar-SA-ZariyahNeural"
+            loc.startsWith("en") -> if (gender == TtsGender.MALE) "en-US-GuyNeural" else "en-US-JennyNeural"
+            loc.startsWith("fa") -> if (gender == TtsGender.MALE) "fa-IR-FaridNeural" else "fa-IR-DilaraNeural"
+            loc.startsWith("tr") -> if (gender == TtsGender.MALE) "tr-TR-AhmetNeural" else "tr-TR-EmelNeural"
+            else -> null
         }
     }
 
-    private suspend fun synthesizeViaPollinationsAudio(
-        context: Context,
+    private suspend fun synthesizeViaEdgeNeural(
         cacheDir: File,
         text: String,
-        dialect: TtsDialect,
-        voice: String,
+        voiceName: String,
+        localeTag: String,
         style: TtsDeliveryStyle,
-    ): PollinationsSynthResult {
+        speechRate: Float,
+        pitch: Float,
+    ): CloudTtsSynthesisAttempt {
         val errors = mutableListOf<String>()
-        val chunks = splitSentencesSmoothly(text, maxChars = 360)
+        val chunks = splitSentencesSmoothly(text, maxChars = 420)
         if (chunks.isEmpty()) {
-            errors += "Pollinations: No speakable characters"
-            return PollinationsSynthResult(null, errors)
+            return CloudTtsSynthesisAttempt(null, true, listOf("EdgeNeural: Empty chunks"))
         }
 
-        val dialectCue = buildDialectActingCue(dialect)
-        val emotionCue = buildEmotionActingCue(style)
-        val pauseMs = (style.breathPauseMs * 0.55f).roundToInt().coerceIn(80, 250)
+        val pauseMs = (style.breathPauseMs * 0.55f).roundToInt().coerceIn(80, 260)
         val decodedChunks = ArrayList<StereoAudioBuffer>(chunks.size)
+        val combinedRate = clamp(speechRate * style.rateFactor, 0.55f, 1.75f)
 
         for ((index, chunk) in chunks.withIndex()) {
             coroutineContext.ensureActive()
-            val prompt = buildString {
-                append("Act as a professional human voice actor. ")
-                append(dialectCue)
-                append(' ')
-                append(emotionCue)
-                append(" Read ONLY the following script aloud naturally with authentic pronunciation, human breathing pauses, and zero commentary or translation: ")
-                append(chunk)
-            }
-            val encodedPrompt = URLEncoder.encode(prompt, "UTF-8").replace("+", "%20")
-            val primaryUrl = "https://text.pollinations.ai/$encodedPrompt?model=openai-audio&voice=$voice"
-            val mirrorUrl = "https://text.pollinations.ai/$encodedPrompt?model=openai-audio&voice=alloy"
-
-            val outcome = NetworkImmunityManager.fetchAudioWithFallback(
-                urls = listOf(primaryUrl, mirrorUrl),
-                context = context,
-                headers = mapOf("Referer" to "https://pollinations.ai/"),
-                timeoutMs = 30_000L,
-                providerLabel = "Pollinations($voice)",
+            val edgeAttempt = EdgeTtsClient.synthesizeRawMp3WithReason(
+                text = chunk,
+                voiceName = voiceName,
+                localeTag = localeTag,
+                speechRate = combinedRate,
+                pitch = pitch,
+                pitchOffsetHz = style.pitchOffsetHz,
             )
-            val bytes = when (outcome) {
-                is NetworkFetchOutcome.Success -> outcome.value.bytes
-                is NetworkFetchOutcome.Offline -> {
-                    errors += outcome.reason
-                    return PollinationsSynthResult(null, errors)
-                }
-                is NetworkFetchOutcome.Failure -> {
-                    errors += "${outcome.errorCode}: ${outcome.message}"
-                    return PollinationsSynthResult(null, errors)
-                }
+            val bytes = edgeAttempt.bytes
+            if (bytes == null || bytes.size < 512) {
+                errors += edgeAttempt.failureReason ?: "EdgeNeural($voiceName) returned empty audio"
+                return CloudTtsSynthesisAttempt(null, true, errors)
             }
 
-            val ext = if (bytes.size >= 4 && bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte()) "wav" else "mp3"
-            val chunkFile = File(cacheDir, "polli_chunk_${UUID.randomUUID()}.$ext")
+            val chunkFile = File(cacheDir, "edge_chunk_${UUID.randomUUID()}.mp3")
             val decoded = try {
                 chunkFile.writeBytes(bytes)
                 AudioDecoder.decodeFile(chunkFile)
             } catch (e: Exception) {
-                errors += "Pollinations decode ${e.javaClass.simpleName}: ${e.message ?: "decode failed"}"
+                errors += "Edge decode ${e.javaClass.simpleName}: ${e.message ?: "decode failed"}"
                 null
             } finally {
                 chunkFile.delete()
             }
 
             if (decoded == null || decoded.frameCount <= 0) {
-                errors += "Pollinations: Invalid audio stream on chunk ${index + 1}/${chunks.size}"
-                return PollinationsSynthResult(null, errors)
+                errors += "EdgeNeural($voiceName): Invalid MP3 on chunk ${index + 1}/${chunks.size}"
+                return CloudTtsSynthesisAttempt(null, true, errors)
             }
 
             val unified = if (decoded.sampleRate == TARGET_SAMPLE_RATE) {
@@ -282,38 +278,94 @@ object FreeEmotionalTtsClient {
             } else {
                 resampleStereo(decoded, TARGET_SAMPLE_RATE)
             }
-            decodedChunks += trimSilenceEdgesAndFade(unified, keepPadMs = 28)
+            decodedChunks += trimSilenceEdgesAndFade(unified, keepPadMs = 26)
         }
 
         val stitched = stitchSentenceBuffersSmoothly(decodedChunks, pauseMs)
-        return PollinationsSynthResult(stitched, errors)
+        return CloudTtsSynthesisAttempt(stitched, prosodyAppliedInEngine = true, errors = errors)
     }
 
-    private fun buildDialectActingCue(dialect: TtsDialect): String = when (dialect.id) {
-        "iraqi" -> "Speak in authentic warm Iraqi Baghdad Arabic dialect."
-        "egyptian" -> "Speak in natural fluent Egyptian Arabic dialect."
-        "saudi" -> "Speak in clear authentic Saudi Najdi Arabic dialect."
-        "emirati" -> "Speak in smooth authentic Gulf Emirati Arabic dialect."
-        "syrian" -> "Speak in warm authentic Levantine Syrian Arabic dialect."
-        "jordanian" -> "Speak in natural Jordanian Levantine Arabic dialect."
-        "moroccan" -> "Speak in natural Moroccan Darija Arabic dialect."
-        "algerian" -> "Speak in natural Algerian Arabic dialect."
-        "tunisian" -> "Speak in natural Tunisian Arabic dialect."
-        "standard" -> "Speak in eloquent Modern Standard Arabic (Fusha) with crisp articulation."
-        "en_us" -> "Speak in natural American English."
-        "persian" -> "Speak in fluent Iranian Persian (Farsi)."
-        "turkish" -> "Speak in natural Istanbul Turkish."
-        else -> "Speak naturally in ${dialect.localeTag} language/accent."
+    private suspend fun synthesizeViaGoogleTranslateHd(
+        context: Context,
+        cacheDir: File,
+        text: String,
+        dialect: TtsDialect,
+        style: TtsDeliveryStyle,
+        speechRate: Float,
+    ): CloudTtsSynthesisAttempt {
+        val errors = mutableListOf<String>()
+        val tl = resolveGoogleLangCode(dialect.localeTag)
+        val chunks = splitSentencesSmoothly(text, maxChars = 180)
+        if (chunks.isEmpty()) {
+            return CloudTtsSynthesisAttempt(null, false, listOf("GoogleTTS: Empty chunks"))
+        }
+
+        val pauseMs = (style.breathPauseMs * 0.50f).roundToInt().coerceIn(75, 240)
+        val speedParam = fmt(clamp(speechRate * style.rateFactor, 0.50f, 1.45f))
+        val decodedChunks = ArrayList<StereoAudioBuffer>(chunks.size)
+
+        for ((index, chunk) in chunks.withIndex()) {
+            coroutineContext.ensureActive()
+            val encoded = URLEncoder.encode(chunk, "UTF-8")
+            val urls = listOf(
+                "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&ttsspeed=$speedParam&q=$encoded",
+                "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&ttsspeed=$speedParam&q=$encoded",
+                "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=$tl&ttsspeed=$speedParam&q=$encoded",
+            )
+
+            val outcome = NetworkImmunityManager.fetchAudioWithFallback(
+                urls = urls,
+                context = context,
+                headers = mapOf("Referer" to "https://translate.google.com/"),
+                timeoutMs = 22_000L,
+                providerLabel = "GoogleCloudTTS($tl)",
+            )
+            val bytes = when (outcome) {
+                is NetworkFetchOutcome.Success -> outcome.value.bytes
+                is NetworkFetchOutcome.Offline -> {
+                    errors += outcome.reason
+                    return CloudTtsSynthesisAttempt(null, false, errors)
+                }
+                is NetworkFetchOutcome.Failure -> {
+                    errors += "${outcome.errorCode}: ${outcome.message}"
+                    return CloudTtsSynthesisAttempt(null, false, errors)
+                }
+            }
+
+            val chunkFile = File(cacheDir, "gtts_chunk_${UUID.randomUUID()}.mp3")
+            val decoded = try {
+                chunkFile.writeBytes(bytes)
+                AudioDecoder.decodeFile(chunkFile)
+            } catch (e: Exception) {
+                errors += "GoogleTTS decode ${e.javaClass.simpleName}: ${e.message ?: "decode failed"}"
+                null
+            } finally {
+                chunkFile.delete()
+            }
+
+            if (decoded == null || decoded.frameCount <= 0) {
+                errors += "GoogleTTS: Invalid stream on chunk ${index + 1}/${chunks.size}"
+                return CloudTtsSynthesisAttempt(null, false, errors)
+            }
+
+            val unified = if (decoded.sampleRate == TARGET_SAMPLE_RATE) {
+                decoded
+            } else {
+                resampleStereo(decoded, TARGET_SAMPLE_RATE)
+            }
+            decodedChunks += trimSilenceEdgesAndFade(unified, keepPadMs = 24)
+        }
+
+        val stitched = stitchSentenceBuffersSmoothly(decodedChunks, pauseMs)
+        return CloudTtsSynthesisAttempt(stitched, prosodyAppliedInEngine = false, errors = errors)
     }
 
-    private fun buildEmotionActingCue(style: TtsDeliveryStyle): String = when (style) {
-        TtsDeliveryStyle.NATURAL_WARM -> "Deliver with a warm, calm, conversational human tone."
-        TtsDeliveryStyle.RADIO_ANCHOR -> "Deliver like a confident studio radio presenter with steady authority."
-        TtsDeliveryStyle.STORYTELLING -> "Deliver with captivating cinematic storytelling pacing and natural pauses."
-        TtsDeliveryStyle.ENERGETIC -> "Deliver with upbeat, joyful, energetic enthusiasm."
-        TtsDeliveryStyle.DRAMATIC -> "Deliver with deep dramatic cinema-trailer gravity and emotional resonance."
-        TtsDeliveryStyle.SAD -> "Deliver gently with heartfelt melancholic sadness and soft reflective breaths."
-        TtsDeliveryStyle.ANGRY -> "Deliver with intense, sharp, determined emotional force."
+    private fun resolveGoogleLangCode(localeTag: String): String {
+        val base = localeTag.substringBefore('-').lowercase(Locale.US)
+        return when (base) {
+            "ar", "en", "fa", "tr" -> base
+            else -> "ar"
+        }
     }
 
     private suspend fun applyEmotionAndLuxuryShaping(
@@ -324,70 +376,100 @@ object FreeEmotionalTtsClient {
         style: TtsDeliveryStyle,
         speechRate: Float,
         pitch: Float,
+        prosodyAlreadyAppliedInEngine: Boolean,
         studioLuxuryEnhancement: Boolean,
     ): StereoAudioBuffer = withContext(Dispatchers.Default) {
         if (inputBuffer.frameCount <= 0) return@withContext inputBuffer
 
         val sr = inputBuffer.sampleRate.coerceAtLeast(8000)
+
+        // When prosodyAlreadyAppliedInEngine == true (Edge Neural TTS), Edge already rendered dialect,
+        // gender, pitch, and speed natively — avoid double pitch/tempo shifting.
         val sliderSemitones = (12.0 * ln(pitch.coerceIn(0.65f, 1.45f).toDouble()) / ln(2.0)).toFloat()
         val styleSemitones = style.pitchOffsetHz / 14.0f
-        val totalSemitones = clamp(sliderSemitones + styleSemitones, -9.0f, 9.0f)
-        val pitchRatio = 2.0.pow(totalSemitones / 12.0).toFloat()
+        val genderFallbackSemitones = if (!prosodyAlreadyAppliedInEngine && gender == TtsGender.MALE) -3.4f else 0f
+        val totalSemitones = if (prosodyAlreadyAppliedInEngine) {
+            0f
+        } else {
+            clamp(sliderSemitones + styleSemitones + genderFallbackSemitones, -9.0f, 9.0f)
+        }
+        val targetTempo = if (prosodyAlreadyAppliedInEngine) {
+            1.0f
+        } else {
+            clamp(speechRate * style.rateFactor, 0.55f, 1.75f)
+        }
 
-        val targetTempo = clamp(speechRate * style.rateFactor, 0.52f, 1.75f)
+        val needsPitchOrTempo = abs(totalSemitones) >= 0.08f || abs(targetTempo - 1.0f) >= 0.03f
+
+        // Skip extra EQ/compression when Edge Neural generated natively and Studio Luxury Warmth toggle is OFF.
+        if (!studioLuxuryEnhancement && !needsPitchOrTempo) {
+            return@withContext normalizeAudio(inputBuffer, -1.5f)
+        }
 
         val warmthDb = clamp(
-            style.warmthDb + (if (gender == TtsGender.MALE) 1.2f else 0.4f) + (if (studioLuxuryEnhancement) 0.8f else 0f),
-            1.2f,
-            5.4f,
+            style.warmthDb + (if (gender == TtsGender.MALE) 1.1f else 0.4f) + 0.7f,
+            1.4f,
+            5.0f,
         )
+        // Presence tuned around 2.4–2.8 kHz for crystal-clear Arabic articulation (مخارج الحروف مثل الهاء والخاء)
         val presenceDb = when (style) {
-            TtsDeliveryStyle.DRAMATIC -> 2.4f
-            TtsDeliveryStyle.RADIO_ANCHOR -> 2.8f
-            TtsDeliveryStyle.ENERGETIC -> 2.3f
-            TtsDeliveryStyle.ANGRY -> 2.6f
-            TtsDeliveryStyle.SAD -> 1.2f
+            TtsDeliveryStyle.DRAMATIC -> 2.3f
+            TtsDeliveryStyle.RADIO_ANCHOR -> 2.6f
+            TtsDeliveryStyle.ENERGETIC -> 2.2f
+            TtsDeliveryStyle.ANGRY -> 2.4f
+            TtsDeliveryStyle.SAD -> 1.3f
             TtsDeliveryStyle.STORYTELLING -> 1.9f
             TtsDeliveryStyle.NATURAL_WARM -> 2.0f
         }
         val airDb = when (style) {
-            TtsDeliveryStyle.SAD -> 0.9f
+            TtsDeliveryStyle.SAD -> 1.0f
             TtsDeliveryStyle.DRAMATIC -> 1.5f
             else -> 1.8f
         }
 
-        val filterStages = mutableListOf<String>()
-        val applyPitchInFfmpeg = abs(pitchRatio - 1.0f) >= 0.015f
-        if (applyPitchInFfmpeg) {
-            filterStages += "asetrate=${sr}*${fmt(pitchRatio)}"
-            filterStages += "aresample=$sr"
+        val warmthChain = if (studioLuxuryEnhancement) {
+            listOf(
+                "highpass=f=65",
+                "equalizer=f=155:width_type=h:width=115:g=${fmt(warmthDb)}",
+                "equalizer=f=315:width_type=h:width=180:g=1.4",
+                "equalizer=f=2450:width_type=h:width=1100:g=${fmt(presenceDb)}",
+                "equalizer=f=4800:width_type=h:width=1500:g=-1.5",
+                "equalizer=f=9200:width_type=h:width=2600:g=${fmt(airDb)}",
+                "acompressor=threshold=-18dB:ratio=3.2:attack=8:release=75:makeup=2.8",
+                "alimiter=limit=0.95",
+            )
+        } else {
+            listOf(
+                "highpass=f=65",
+                "equalizer=f=2450:width_type=h:width=1100:g=1.0",
+                "alimiter=limit=0.96",
+            )
         }
-        val compensatedTempo = if (applyPitchInFfmpeg) targetTempo / pitchRatio else targetTempo
-        appendFfmpegAtempoStages(filterStages, compensatedTempo)
 
-        filterStages += "highpass=f=70"
-        filterStages += "equalizer=f=155:width_type=h:width=110:g=${fmt(warmthDb)}"
-        filterStages += "equalizer=f=320:width_type=h:width=185:g=1.4"
-        filterStages += "equalizer=f=4800:width_type=h:width=1600:g=-1.6"
-        filterStages += "equalizer=f=2800:width_type=h:width=1200:g=${fmt(presenceDb)}"
-        filterStages += "equalizer=f=9500:width_type=h:width=2600:g=${fmt(airDb)}"
-
-        if (studioLuxuryEnhancement) {
-            filterStages += "acompressor=threshold=-18dB:ratio=3.5:attack=8:release=75:makeup=3.0"
-            filterStages += "alimiter=limit=0.95"
+        val ffmpegCandidates: List<String> = if (needsPitchOrTempo) {
+            val (rubberbandChain, soxrFallbackChain) = buildPitchAndSpeedFfmpegChains(
+                semitones = totalSemitones,
+                tempoRatio = targetTempo,
+            )
+            listOf(rubberbandChain, soxrFallbackChain).map { chain ->
+                (listOf(chain) + warmthChain).joinToString(",")
+            }
+        } else {
+            listOf(warmthChain.joinToString(","))
         }
 
         val ffmpegResult = tryExecuteFfmpegKit(
             cacheDir = cacheDir,
             inputBuffer = inputBuffer,
             sampleRate = sr,
-            filterGraph = filterStages.joinToString(","),
+            filterGraphs = ffmpegCandidates,
         )
         if (ffmpegResult != null && ffmpegResult.frameCount > 0) {
             return@withContext ffmpegResult
         }
 
-        val pitchedAndTimed = if (abs(totalSemitones) >= 0.05f || abs(targetTempo - 1.0f) >= 0.02f) {
+        // Pure-Kotlin click-free fallback if FFmpegKit is unavailable
+        val pitchedAndTimed = if (needsPitchOrTempo) {
             applyPitchAndSpeedOffline(
                 buffer = inputBuffer,
                 semitones = totalSemitones,
@@ -397,6 +479,10 @@ object FreeEmotionalTtsClient {
             inputBuffer
         }
 
+        if (!studioLuxuryEnhancement) {
+            return@withContext normalizeAudio(pitchedAndTimed, -1.5f)
+        }
+
         val eqSmoothed = applyEmotionalToneEqualizer(
             buffer = pitchedAndTimed,
             warmthDb = warmthDb,
@@ -404,36 +490,37 @@ object FreeEmotionalTtsClient {
             airDb = airDb,
         )
 
-        if (studioLuxuryEnhancement) {
-            StudioLuxuryAudioFilter.applyLuxuryStudioEnhancement(
-                context = context,
-                inputAudioFile = null,
-                decodedBuffer = eqSmoothed,
-                style = style,
-            )
-        } else {
-            normalizeAudio(eqSmoothed, -1.6f)
-        }
+        StudioLuxuryAudioFilter.applyLuxuryStudioEnhancement(
+            context = context,
+            inputAudioFile = null,
+            decodedBuffer = eqSmoothed,
+            style = style,
+        )
     }
 
     private suspend fun tryExecuteFfmpegKit(
         cacheDir: File,
         inputBuffer: StereoAudioBuffer,
         sampleRate: Int,
-        filterGraph: String,
+        filterGraphs: List<String>,
     ): StereoAudioBuffer? = withContext(Dispatchers.IO) {
         val rawWav = File(cacheDir, "ff_in_${UUID.randomUUID()}.wav")
         val outWav = File(cacheDir, "ff_out_${UUID.randomUUID()}.wav")
         try {
             if (!FfmpegKitBridge.isAvailable()) return@withContext null
             writeStereoWavFile(rawWav, inputBuffer)
-            val cmd = "-y -i \"${rawWav.absolutePath}\" -af \"$filterGraph\" -ar $sampleRate -ac 2 \"${outWav.absolutePath}\""
-            val ok = FfmpegKitBridge.execute(cmd, toolName = "PollinationsTTS", logNonZeroFailure = true)
-            if (ok && outWav.exists() && outWav.length() > 44L) {
-                AudioDecoder.decodeFile(outWav)
-            } else {
-                null
+            for (graph in filterGraphs) {
+                if (outWav.exists()) outWav.delete()
+                val cmd = "-y -i \"${rawWav.absolutePath}\" -af \"$graph\" -ar $sampleRate -ac 2 \"${outWav.absolutePath}\""
+                val ok = FfmpegKitBridge.execute(cmd, toolName = "CloudNeuralTTS", logNonZeroFailure = false)
+                if (ok && outWav.exists() && outWav.length() > 44L) {
+                    val decoded = AudioDecoder.decodeFile(outWav)
+                    if (decoded != null && decoded.frameCount > 0) {
+                        return@withContext decoded
+                    }
+                }
             }
+            null
         } catch (_: Throwable) {
             null
         } finally {
@@ -455,12 +542,12 @@ object FreeEmotionalTtsClient {
         val outR = buffer.right.copyOf()
 
         val filters = listOf(
-            StereoBiquadFilter().apply { configureHighPass(sr, 70.0, 0.707) },
+            StereoBiquadFilter().apply { configureHighPass(sr, 65.0, 0.707) },
             StereoBiquadFilter().apply { configurePeaking(sr, 155.0, 1.4, warmthDb.toDouble()) },
-            StereoBiquadFilter().apply { configurePeaking(sr, 320.0, 1.7, 1.4) },
-            StereoBiquadFilter().apply { configurePeaking(sr, 4800.0, 2.5, -1.6) },
-            StereoBiquadFilter().apply { configurePeaking(sr, 2800.0, 2.0, presenceDb.toDouble()) },
-            StereoBiquadFilter().apply { configurePeaking(sr, 9500.0, 2.2, airDb.toDouble()) },
+            StereoBiquadFilter().apply { configurePeaking(sr, 315.0, 1.7, 1.4) },
+            StereoBiquadFilter().apply { configurePeaking(sr, 2450.0, 2.0, presenceDb.toDouble()) },
+            StereoBiquadFilter().apply { configurePeaking(sr, 4800.0, 2.4, -1.5) },
+            StereoBiquadFilter().apply { configurePeaking(sr, 9200.0, 2.2, airDb.toDouble()) },
         )
 
         val blockSize = 2048
@@ -480,21 +567,6 @@ object FreeEmotionalTtsClient {
         }
 
         return StereoAudioBuffer(outL, outR, sr)
-    }
-
-    private fun appendFfmpegAtempoStages(stages: MutableList<String>, rawTempo: Float) {
-        var remaining = rawTempo.coerceIn(0.35f, 3.0f)
-        while (remaining < 0.5f) {
-            stages += "atempo=0.5"
-            remaining /= 0.5f
-        }
-        while (remaining > 2.0f) {
-            stages += "atempo=2.0"
-            remaining /= 2.0f
-        }
-        if (abs(remaining - 1.0f) >= 0.01f) {
-            stages += "atempo=${fmt(remaining)}"
-        }
     }
 
     private fun trimSilenceEdgesAndFade(
@@ -631,19 +703,6 @@ object FreeEmotionalTtsClient {
         }
         if (cur.isNotEmpty()) out += cur.toString().trim()
         return out
-    }
-
-    private fun isLikelyAudioPayload(bytes: ByteArray): Boolean {
-        if (bytes.size < 256) return false
-        val head = bytes.copyOfRange(0, min(32, bytes.size)).toString(Charsets.US_ASCII).trimStart()
-        if (head.startsWith("<") || head.startsWith("{")) return false
-        val b0 = bytes[0].toInt() and 0xFF
-        val b1 = bytes[1].toInt() and 0xFF
-        val isId3 = head.startsWith("ID3")
-        val isMp3FrameSync = b0 == 0xFF && (b1 and 0xE0) == 0xE0
-        val isWav = head.startsWith("RIFF")
-        val isOgg = head.startsWith("OggS")
-        return isId3 || isMp3FrameSync || isWav || isOgg || bytes.size > 2048
     }
 
     private fun fmt(value: Float): String = "%.2f".format(Locale.US, value)

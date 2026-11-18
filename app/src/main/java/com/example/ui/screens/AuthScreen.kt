@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import java.security.MessageDigest
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -96,6 +97,7 @@ import com.example.model.AppLanguage
 import com.example.studio.ui.lit
 import com.example.ui.components.LanguageBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
+import com.example.ui.components.SonixExitConfirmDialog
 import com.example.ui.theme.SonixTheme
 import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioUiState
@@ -181,6 +183,11 @@ fun AuthScreen(
     var isSubmitting by remember { mutableStateOf(false) }
     var isGoogleLoading by remember { mutableStateOf(false) }
     var langDialogOpen by remember { mutableStateOf(false) }
+    var exitConfirmDialogOpen by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = true) {
+        exitConfirmDialogOpen = true
+    }
 
     fun finishFirebaseGoogleUser(user: FirebaseUser?) {
         isGoogleLoading = false
@@ -306,6 +313,9 @@ fun AuthScreen(
         onTogglePasswordVisibility = { passwordVisible = !passwordVisible },
         onGoogleSignIn = {
             if (isSubmitting || isGoogleLoading) return@AuthScreenContent
+            isGoogleLoading = true
+            errorMsg = null
+
             runCatching {
                 if (FirebaseApp.getApps(context).isEmpty()) {
                     SonixCrashGuard.safeInitializeFirebase(context)
@@ -316,6 +326,7 @@ fun AuthScreen(
 
             val activity = context.findActivity()
             if (activity == null) {
+                isGoogleLoading = false
                 errorMsg = if (isEn) {
                     "Unable to find Activity to launch Google Sign-In."
                 } else {
@@ -326,6 +337,7 @@ fun AuthScreen(
 
             val cm = credentialManager ?: runCatching { CredentialManager.create(activity) }.getOrNull()
             if (cm == null) {
+                isGoogleLoading = false
                 errorMsg = if (isEn) {
                     "Credential Manager is unavailable on this device."
                 } else {
@@ -336,6 +348,7 @@ fun AuthScreen(
 
             val auth = runCatching { FirebaseAuth.getInstance() }.getOrElse { e ->
                 Log.e("Auth", "FirebaseAuth unavailable", e)
+                isGoogleLoading = false
                 errorMsg = if (isEn) {
                     "Firebase Auth is not initialized: ${e.localizedMessage ?: e.javaClass.simpleName}"
                 } else {
@@ -344,8 +357,6 @@ fun AuthScreen(
                 return@AuthScreenContent
             }
 
-            isGoogleLoading = true
-            errorMsg = null
             scope.launch {
                 try {
                     val result = try {
@@ -357,7 +368,7 @@ fun AuthScreen(
                         val request = GetCredentialRequest.Builder()
                             .addCredentialOption(googleIdOption)
                             .build()
-                        kotlinx.coroutines.withTimeoutOrNull(15_000L) {
+                        kotlinx.coroutines.withTimeoutOrNull(8_500L) {
                             cm.getCredential(activity, request)
                         } ?: run {
                             Log.w(
@@ -578,6 +589,16 @@ fun AuthScreen(
         currentLanguage = lang,
         onSelect = { viewModel.setLanguage(it) },
         onDismiss = { langDialogOpen = false },
+    )
+
+    SonixExitConfirmDialog(
+        open = exitConfirmDialogOpen,
+        language = lang,
+        onStay = { exitConfirmDialogOpen = false },
+        onConfirmExit = {
+            exitConfirmDialogOpen = false
+            context.findActivity()?.finish()
+        },
     )
 }
 
@@ -938,8 +959,17 @@ private fun AuthScreenContent(
                             }
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                text = t(lang, "auth_google_signin"),
+                                text = if (isGoogleLoading) {
+                                    when (lang) {
+                                        AppLanguage.EN -> "Fetching accounts..."
+                                        AppLanguage.FA -> "در حال دریافت حساب‌ها..."
+                                        AppLanguage.AR -> "جاري جلب الحسابات..."
+                                    }
+                                } else {
+                                    t(lang, "auth_google_signin")
+                                },
                                 style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
                             )
                         }
 

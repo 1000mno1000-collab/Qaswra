@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -84,6 +88,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.imageResource
@@ -110,11 +115,18 @@ import com.example.ui.components.LanguageBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
 import com.example.ui.components.MiniAiRobotCompanion
 import com.example.ui.components.RealTimeWaveformCanvas
+import com.example.ui.components.SonixExitConfirmDialog
 import com.example.ui.components.ToolInfoDialog
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+
+private tailrec fun Context.findHostActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findHostActivity()
+    else -> null
+}
 
 @Immutable
 private data class HomeToolTile(
@@ -147,8 +159,14 @@ fun HomeScreen(
     },
 ) {
     val lang = uiState.language
+    val context = LocalContext.current
     var langDialogOpen by remember { mutableStateOf(false) }
     var activeToolInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var exitConfirmDialogOpen by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = true) {
+        exitConfirmDialogOpen = true
+    }
 
     val activeEffectsCount = uiState.dspConfig.chain.count { it.enabled }
     val userLabel = when (val auth = uiState.authSession) {
@@ -194,14 +212,6 @@ fun HomeScreen(
                         accent = StudioColors.Cyan,
                         route = StudioRoute.SpeechToText,
                         infoKey = "speech_to_text_info",
-                    ),
-                    HomeToolTile(
-                        id = "smart_assistant",
-                        titleKey = "tool_smart_assistant",
-                        icon = Icons.Rounded.AutoAwesome,
-                        accent = StudioColors.Cyan,
-                        route = StudioRoute.SmartAssistant,
-                        infoKey = "tool_smart_assistant_info",
                     ),
                 ),
             ),
@@ -854,7 +864,8 @@ fun HomeScreen(
                     )
                 }
 
-                val rows = family.tools.chunked(3)
+                val columns = if (family.id == "ai_voice") 2 else 3
+                val rows = family.tools.chunked(columns)
                 rows.forEachIndexed { rowIdx, rowTools ->
                     item(key = "family_${family.id}_row_$rowIdx", contentType = "family_tools_row") {
                         Row(
@@ -868,6 +879,7 @@ fun HomeScreen(
                                     accent = tile.accent,
                                     testTag = "home_tile_${tile.id}",
                                     hasInfo = tile.infoKey != null,
+                                    aspectRatio = if (columns == 2) 1.38f else 1f,
                                     onInfoClick = {
                                         tile.infoKey?.let { key ->
                                             activeToolInfo = t(lang, tile.titleKey) to t(lang, key)
@@ -877,7 +889,7 @@ fun HomeScreen(
                                     modifier = Modifier.weight(1f),
                                 )
                             }
-                            repeat(3 - rowTools.size) {
+                            repeat(columns - rowTools.size) {
                                 Spacer(modifier = Modifier.weight(1f))
                             }
                         }
@@ -968,6 +980,16 @@ fun HomeScreen(
             onDismiss = { activeToolInfo = null },
         )
     }
+
+    SonixExitConfirmDialog(
+        open = exitConfirmDialogOpen,
+        language = lang,
+        onStay = { exitConfirmDialogOpen = false },
+        onConfirmExit = {
+            exitConfirmDialogOpen = false
+            context.findHostActivity()?.finish()
+        },
+    )
 }
 
 @Composable
@@ -1039,6 +1061,7 @@ private fun ToolSquareTile(
     accent: Color,
     testTag: String,
     hasInfo: Boolean = false,
+    aspectRatio: Float = 1f,
     onInfoClick: () -> Unit = {},
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1060,7 +1083,7 @@ private fun ToolSquareTile(
         color = StudioColors.CardSurface,
         border = BorderStroke(1.dp, accent.copy(alpha = 0.28f)),
         modifier = modifier
-            .aspectRatio(1f)
+            .aspectRatio(aspectRatio)
             .defaultMinSize(minHeight = 48.dp)
             .lit(tileInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 16.dp)
             .testTag(testTag),

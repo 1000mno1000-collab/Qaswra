@@ -42,14 +42,14 @@ class EqualizerProcessor {
 }
 
 class PitchShiftProcessor {
-    private val bufSize = 8192
+    private val bufSize = 16384
     private val mask = bufSize - 1
     private val ringL = FloatArray(bufSize)
     private val ringR = FloatArray(bufSize)
     private var writeIdx = 0
     private var readPosA = 0.0
     private var readPosB = 2048.0
-    private val grainSize = 2048
+    private val grainSize = 4096
 
     private fun readInterpolated(ring: FloatArray, pos: Double): Float {
         val i0 = floor(pos).toInt() and mask
@@ -66,7 +66,6 @@ class PitchShiftProcessor {
     ) {
         if (abs(p.semitones) < 0.05f) return
         val pitchRatio = clamp(2.0.pow(p.semitones / 12.0), 0.5, 2.0)
-        val rateDiff = pitchRatio - 1.0
         val wet = clamp(p.wetMix, 0f, 1f)
         val dry = 1f - wet
         val halfGrain = grainSize * 0.5
@@ -78,7 +77,8 @@ class PitchShiftProcessor {
             ringR[writeIdx] = inR
 
             val phaseA = (((writeIdx - readPosA) % grainSize) + grainSize) % grainSize
-            val weightA = (1.0 - abs(phaseA - halfGrain) / halfGrain).toFloat()
+            val normPhase = (phaseA / grainSize).coerceIn(0.0, 1.0)
+            val weightA = (0.5 * (1.0 - kotlin.math.cos(2.0 * PI * normPhase))).toFloat()
             val weightB = 1f - weightA
 
             val outL = readInterpolated(ringL, readPosA) * weightA + readInterpolated(ringL, readPosB) * weightB
@@ -92,12 +92,12 @@ class PitchShiftProcessor {
             readPosB = (readPosB + pitchRatio) % bufSize
 
             val distA = ((writeIdx - readPosA) + bufSize) % bufSize
-            if (distA < 64 || distA > grainSize + 512) {
+            if (distA < 128 || distA > grainSize + 2048) {
                 readPosA = ((writeIdx - halfGrain) + bufSize) % bufSize
             }
             val distB = ((writeIdx - readPosB) + bufSize) % bufSize
-            if (distB < 64 || distB > grainSize + 512) {
-                readPosB = ((writeIdx - (if (rateDiff >= 0) grainSize.toDouble() else halfGrain)) + bufSize) % bufSize
+            if (distB < 128 || distB > grainSize + 2048) {
+                readPosB = ((writeIdx - grainSize.toDouble()) + bufSize) % bufSize
             }
         }
     }

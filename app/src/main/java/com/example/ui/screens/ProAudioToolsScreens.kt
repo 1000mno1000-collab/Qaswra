@@ -87,6 +87,8 @@ import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import kotlinx.coroutines.delay
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Composable
@@ -360,15 +362,39 @@ fun PitchAndSpeedScreen(
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
-    val semitones = uiState.dspConfig.pitchShift.semitones
-    val tempo = uiState.dspConfig.timeStretch.tempoRatio
+    val vmSemitones = uiState.dspConfig.pitchShift.semitones
+    val vmTempo = uiState.dspConfig.timeStretch.tempoRatio
+
+    var localSemitones by remember { mutableFloatStateOf(vmSemitones) }
+    var localTempo by remember { mutableFloatStateOf(vmTempo) }
+    var userEditedSliders by remember { mutableStateOf(false) }
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
+
+    // Keep local slider values synced with Undo / Redo / Reset-to-zero / Apply resets
+    LaunchedEffect(vmSemitones, vmTempo) {
+        if (abs(localSemitones - vmSemitones) > 0.01f) {
+            localSemitones = vmSemitones
+        }
+        if (abs(localTempo - vmTempo) > 0.005f) {
+            localTempo = vmTempo
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.beginLiveToolSession("pitch_speed")
+        viewModel.setPitchSpeedLivePreviewActive(true)
+    }
+
+    // 80ms debounce for zero-stutter native PlaybackParams live preview
+    LaunchedEffect(localSemitones, localTempo, userEditedSliders) {
+        if (!userEditedSliders) return@LaunchedEffect
+        delay(80L)
+        viewModel.updatePitchSpeedParamsLive(localSemitones, localTempo)
+        viewModel.ensureLivePreviewPlaying()
     }
 
     androidx.activity.compose.BackHandler {
+        viewModel.setPitchSpeedLivePreviewActive(false)
         viewModel.discardLiveToolSession("pitch_speed")
         onBack()
     }
@@ -378,22 +404,18 @@ fun PitchAndSpeedScreen(
         if (restored != null) {
             val st = restored.floatParams["semitones"] ?: 0f
             val tr = restored.floatParams["tempoRatio"] ?: 1f
-            viewModel.updateDspConfig { prev ->
-                prev.copy(
-                    pitchShift = prev.pitchShift.copy(semitones = st, wetMix = 1f),
-                    timeStretch = prev.timeStretch.copy(tempoRatio = tr),
-                )
-                    .withSlotEnabled(EffectType.PITCH_SHIFT, kotlin.math.abs(st) >= 0.05f)
-                    .withSlotEnabled(EffectType.TIME_STRETCH, kotlin.math.abs(tr - 1f) >= 0.02f)
-            }
+            localSemitones = st
+            localTempo = tr
+            viewModel.updatePitchSpeedParamsLive(st, tr)
         }
     }
 
-    val latestSemi by rememberUpdatedState(semitones)
-    val latestTempo by rememberUpdatedState(tempo)
+    val latestSemi by rememberUpdatedState(localSemitones)
+    val latestTempo by rememberUpdatedState(localTempo)
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopToolPreview()
+            viewModel.setPitchSpeedLivePreviewActive(false)
             val committed = viewModel.isLiveToolSessionCommitted("pitch_speed")
             viewModel.discardLiveToolSession("pitch_speed")
             if (committed) {
@@ -412,9 +434,14 @@ fun PitchAndSpeedScreen(
     StudioScrollColumn {
         StudioFocusTopBar(
             title = t(lang, "tool_pitch_speed"),
-            subtitle = if (lang == AppLanguage.EN) "Adjust pitch semitones & tempo independently" else "تعديل حدة الطبقة الصوتية وسرعة الإيقاع بدقة",
+            subtitle = if (lang == AppLanguage.EN) {
+                "Decoupled studio pitch & speed live preview with FFmpeg Rubberband baking"
+            } else {
+                "تعديل حدة الطبقة والسرعة بشكل مستقل مع معاينة حية فورية ومعالجة احترافية"
+            },
             language = lang,
             onBack = {
+                viewModel.setPitchSpeedLivePreviewActive(false)
                 viewModel.discardLiveToolSession("pitch_speed")
                 onBack()
             },
@@ -425,8 +452,14 @@ fun PitchAndSpeedScreen(
                     language = lang,
                     undoTag = "pitch_speed_top_undo_button",
                     redoTag = "pitch_speed_top_redo_button",
-                    onUndo = { viewModel.undoLastEdit() },
-                    onRedo = { viewModel.redoLastEdit() },
+                    onUndo = {
+                        userEditedSliders = false
+                        viewModel.undoLastEdit()
+                    },
+                    onRedo = {
+                        userEditedSliders = false
+                        viewModel.redoLastEdit()
+                    },
                 )
             },
         )
@@ -437,11 +470,43 @@ fun PitchAndSpeedScreen(
             uiState = uiState,
             onHoldBypassChange = { viewModel.setHoldBypass(it) },
             onToggleBypass = { viewModel.toggleBypass() },
-            onUndo = { viewModel.undoLastEdit() },
-            onRedo = { viewModel.redoLastEdit() },
-            onResetZero = { viewModel.resetAllEffects() },
+            onUndo = {
+                userEditedSliders = false
+                viewModel.undoLastEdit()
+            },
+            onRedo = {
+                userEditedSliders = false
+                viewModel.redoLastEdit()
+            },
+            onResetZero = {
+                userEditedSliders = false
+                localSemitones = 0f
+                localTempo = 1.0f
+                viewModel.resetAllEffects()
+            },
             onOpenSaveDraft = { saveDraftDialogOpen = true },
         )
+
+        val bypassActive = uiState.dspConfig.bypassAll || uiState.isHoldBypassing
+        if (bypassActive) {
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = StudioColors.Amber.copy(alpha = 0.14f)),
+                border = BorderStroke(1.dp, StudioColors.Amber.copy(alpha = 0.6f)),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = if (lang == AppLanguage.EN) {
+                        "Bypass Active: Playing original unmodified audio"
+                    } else {
+                        "وضع مقارنة الأصل مفعّل: يتم الآن سماع الصوت الأصلي بدون تعديل"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = StudioColors.Amber,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                )
+            }
+        }
 
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -457,42 +522,74 @@ fun PitchAndSpeedScreen(
             ) {
                 StudioParamSlider(
                     label = t(lang, "effect_pitch_shift"),
-                    value = semitones,
+                    value = localSemitones,
                     min = -12f,
                     max = 12f,
-                    formattedValue = "${"%+.1f".format(semitones)} st",
+                    formattedValue = "${"%+.1f".format(localSemitones)} st",
                     accentColor = StudioColors.Cyan,
                     testTag = "pitch_tool_semitones",
                     onValueChange = {
-                        viewModel.updateDspConfig { prev ->
-                            prev.copy(pitchShift = prev.pitchShift.copy(semitones = it, wetMix = 1f))
-                                .withSlotEnabled(EffectType.PITCH_SHIFT, kotlin.math.abs(it) >= 0.05f)
-                        }
-                        viewModel.ensureLivePreviewPlaying()
+                        userEditedSliders = true
+                        localSemitones = it
                     },
                 )
 
                 StudioParamSlider(
                     label = t(lang, "effect_time_stretch"),
-                    value = tempo,
+                    value = localTempo,
                     min = 0.5f,
                     max = 2.0f,
-                    formattedValue = "${"%.2f".format(tempo)}x",
+                    formattedValue = "${"%.2f".format(localTempo)}x",
                     accentColor = StudioColors.Violet,
                     testTag = "speed_tool_tempo",
                     onValueChange = {
-                        viewModel.updateDspConfig { prev ->
-                            prev.copy(timeStretch = prev.timeStretch.copy(tempoRatio = it))
-                                .withSlotEnabled(EffectType.TIME_STRETCH, kotlin.math.abs(it - 1f) >= 0.02f)
-                        }
-                        viewModel.ensureLivePreviewPlaying()
+                        userEditedSliders = true
+                        localTempo = it
                     },
                 )
 
+                if (uiState.isProcessing || uiState.purifyProgress != null) {
+                    val prog = uiState.purifyProgress ?: 0f
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = if (lang == AppLanguage.EN) "Rendering high-precision DSP..." else "جاري المعالجة الصوتية عالية الدقة...",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioColors.Cyan,
+                            )
+                            Text(
+                                text = "${(prog.coerceIn(0f, 1f) * 100f).roundToInt()}%",
+                                style = TelemetryTextStyle,
+                                color = StudioColors.Cyan,
+                            )
+                        }
+                        LinearProgressIndicator(
+                            progress = { prog.coerceIn(0f, 1f) },
+                            color = StudioColors.Cyan,
+                            trackColor = StudioColors.BgTop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(CircleShape)
+                                .testTag("pitch_speed_progress_bar"),
+                        )
+                    }
+                }
+
                 val applyPitchInteraction = remember { MutableInteractionSource() }
                 Button(
-                    onClick = { viewModel.applyPitchAndSpeed(semitones, tempo) },
-                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
+                    onClick = {
+                        userEditedSliders = false
+                        viewModel.applyPitchAndSpeed(localSemitones, localTempo)
+                    },
+                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing &&
+                        (abs(localSemitones) >= 0.05f || abs(localTempo - 1f) >= 0.02f),
                     interactionSource = applyPitchInteraction,
                     colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
                     shape = RoundedCornerShape(14.dp),

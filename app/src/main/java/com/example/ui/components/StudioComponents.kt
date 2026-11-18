@@ -1090,3 +1090,73 @@ fun PersistentTransportBar(
         }
     }
 }
+
+@Composable
+fun SonixExitConfirmDialog(
+    open: Boolean,
+    language: AppLanguage,
+    onStay: () -> Unit,
+    onConfirmExit: () -> Unit,
+) {
+    if (!open) return
+    val isEn = language == AppLanguage.EN
+    AlertDialog(
+        onDismissRequest = onStay,
+        containerColor = StudioColors.CardSurface,
+        titleContentColor = StudioColors.TextPrimary,
+        textContentColor = StudioColors.TextSecondary,
+        shape = RoundedCornerShape(22.dp),
+        title = {
+            Text(
+                text = if (isEn) "Confirm Exit from Sonix ✦" else "تأكيد الخروج من Sonix ✦",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = StudioColors.Cyan,
+            )
+        },
+        text = {
+            Text(
+                text = if (isEn) {
+                    "Are you sure you want to close the app? (Make sure to save your audio edits first)"
+                } else {
+                    "هل تريد بالتأكيد إغلاق التطبيق؟ (تأكد من حفظ تعديلاتك الصوتية أولاً)"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = StudioColors.TextSecondary,
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirmExit,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = StudioColors.RoseBright,
+                    contentColor = StudioColors.BgTop,
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 48.dp)
+                    .testTag("exit_dialog_confirm_button"),
+            ) {
+                Text(
+                    text = if (isEn) "Exit" else "خروج",
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                )
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onStay,
+                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.6f)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 48.dp)
+                    .testTag("exit_dialog_stay_button"),
+            ) {
+                Text(
+                    text = if (isEn) "Stay in App" else "بقاء في التطبيق",
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = StudioColors.Cyan,
+                )
+            }
+        },
+    )
+}

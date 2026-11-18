@@ -2,15 +2,25 @@ package com.example.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -27,6 +38,7 @@ import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.RecordVoiceOver
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
@@ -44,10 +56,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -55,13 +71,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.example.audio.MergeStudioMode
 import com.example.audio.MergeStudioParams
+import com.example.audio.computeMergeTimelineLayout
 import com.example.audio.formatDurationMs
 import com.example.i18n.t
 import com.example.model.AppLanguage
@@ -80,7 +105,10 @@ import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 @Composable
 fun UnifiedMergeOverlayStudioScreen(
@@ -112,6 +140,7 @@ fun UnifiedMergeOverlayStudioScreen(
             val fp = restored.floatParams
             params = MergeStudioParams(
                 mode = mode,
+                primaryStartOffsetSec = fp["primaryStartOffsetSec"] ?: params.primaryStartOffsetSec,
                 crossfadeSec = fp["crossfadeSec"] ?: params.crossfadeSec,
                 overlayFadeInSec = fp["overlayFadeInSec"] ?: params.overlayFadeInSec,
                 overlayFadeOutSec = fp["overlayFadeOutSec"] ?: params.overlayFadeOutSec,
@@ -135,6 +164,7 @@ fun UnifiedMergeOverlayStudioScreen(
     DisposableEffect(toolId) {
         onDispose {
             viewModel.stopToolPreview()
+            viewModel.clearMergeStudioPreview()
             val cur = latestParams
             viewModel.saveToolSessionToCache(
                 toolId = toolId,
@@ -151,6 +181,7 @@ fun UnifiedMergeOverlayStudioScreen(
                     MergeStudioMode.OVERLAY -> "Free Overlay"
                 },
                 floatParams = mapOf(
+                    "primaryStartOffsetSec" to cur.primaryStartOffsetSec,
                     "crossfadeSec" to cur.crossfadeSec,
                     "overlayFadeInSec" to cur.overlayFadeInSec,
                     "overlayFadeOutSec" to cur.overlayFadeOutSec,
@@ -185,6 +216,14 @@ fun UnifiedMergeOverlayStudioScreen(
     val hasPrimary = uiState.hasAudio
     val hasSecondary = !uiState.mixBgName.isNullOrBlank()
     val canProcess = hasPrimary && hasSecondary
+
+    LaunchedEffect(params, hasPrimary, hasSecondary, uiState.durationMs, uiState.mixBgDurationMs) {
+        if (hasPrimary && hasSecondary) {
+            viewModel.syncMergeStudioPreview(params)
+        } else {
+            viewModel.clearMergeStudioPreview()
+        }
+    }
 
     fun updateParams(debounceMs: Long = 0L, transform: (MergeStudioParams) -> MergeStudioParams) {
         preferVmUndo = false
@@ -378,6 +417,25 @@ fun UnifiedMergeOverlayStudioScreen(
                     }
                 }
             }
+        }
+
+        // Dual-Track Interactive Timeline above Balance & Mode Settings
+        if (hasPrimary || hasSecondary) {
+            DualTrackInteractiveTimelineCard(
+                language = lang,
+                primaryName = if (hasPrimary) uiState.activeProjectName else t(lang, "no_audio_loaded"),
+                primaryDurMs = if (hasPrimary) uiState.durationMs else 0L,
+                primaryPeaks = uiState.waveformPeaks,
+                secondaryName = uiState.mixBgName ?: t(lang, "smart_mixer_music_track"),
+                secondaryDurMs = if (hasSecondary) uiState.mixBgDurationMs else 0L,
+                secondaryPeaks = uiState.mixBgPeaks,
+                hasPrimary = hasPrimary,
+                hasSecondary = hasSecondary,
+                params = params,
+                playbackPosMs = uiState.playback.positionMs,
+                onSeekFraction = { frac -> viewModel.seekToFraction(frac) },
+                onUpdateParams = { debounceMs, transform -> updateParams(debounceMs, transform) },
+            )
         }
 
         // Mode Selector & Core Controls
@@ -631,8 +689,9 @@ fun UnifiedMergeOverlayStudioScreen(
                     )
                 }
 
+                val isPreviewActive = uiState.isToolPreviewPlaying || (canProcess && uiState.playback.isPlaying)
                 PreviewAndApplyActionRow(
-                    isPreviewPlaying = uiState.isToolPreviewPlaying,
+                    isPreviewPlaying = isPreviewActive,
                     previewEnabled = canProcess && !uiState.isBusy,
                     applyEnabled = canProcess && !uiState.isBusy,
                     language = lang,
@@ -768,6 +827,410 @@ private fun CollapsibleServiceCard(
             AnimatedVisibility(visible = expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     content()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DualTrackInteractiveTimelineCard(
+    language: AppLanguage,
+    primaryName: String,
+    primaryDurMs: Long,
+    primaryPeaks: List<Float>,
+    secondaryName: String,
+    secondaryDurMs: Long,
+    secondaryPeaks: List<Float>,
+    hasPrimary: Boolean,
+    hasSecondary: Boolean,
+    params: MergeStudioParams,
+    playbackPosMs: Long,
+    onSeekFraction: (Float) -> Unit,
+    onUpdateParams: (Long, (MergeStudioParams) -> MergeStudioParams) -> Unit,
+) {
+    val layout = remember(primaryDurMs, secondaryDurMs, params) {
+        computeMergeTimelineLayout(primaryDurMs, secondaryDurMs, params)
+    }
+    val spanMs = remember(layout) { max(layout.totalDurationMs, 2000L) }
+    var draggingTrack by remember { mutableIntStateOf(0) } // 0 = none, 1 = primary, 2 = secondary
+    var dragBadgeMs by remember { mutableStateOf<Long?>(null) }
+
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+        border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.4f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("merge_dual_track_timeline_card"),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Layers,
+                        contentDescription = null,
+                        tint = StudioColors.Cyan,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = if (language == AppLanguage.EN) "Dual-Track Timeline" else "المساران الزمنيان التفاعليان",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = StudioColors.TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = StudioColors.BgTop,
+                        border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
+                    ) {
+                        Text(
+                            text = formatDurationMs(layout.totalDurationMs),
+                            style = TelemetryTextStyle,
+                            color = StudioColors.Cyan,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
+                    if (params.primaryStartOffsetSec > 0.05f || params.overlayStartOffsetSec > 0.05f) {
+                        IconButton(
+                            onClick = {
+                                onUpdateParams(0L) {
+                                    it.copy(
+                                        primaryStartOffsetSec = 0f,
+                                        overlayStartOffsetSec = 0f,
+                                        transitionGapSec = 0f,
+                                    )
+                                }
+                            },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .testTag("merge_timeline_reset_offsets"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Refresh,
+                                contentDescription = if (language == AppLanguage.EN) "Reset track offsets" else "إعادة ضبط مواضع المسارات",
+                                tint = StudioColors.TextSecondary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            Text(
+                text = if (language == AppLanguage.EN) {
+                    "Drag either track horizontally to offset start time • Tap ruler to seek"
+                } else {
+                    "اسحب أي مسار أفقياً لتعديل نقطة البداية • اضغط على المسطرة للتمرير الفوري"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = StudioColors.TextSecondary,
+            )
+
+            dragBadgeMs?.let { liveMs ->
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (draggingTrack == 1) StudioColors.Cyan else StudioColors.Amber,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                ) {
+                    val trackLabel = if (draggingTrack == 1) {
+                        if (language == AppLanguage.EN) "Track 1 Start" else "بداية المسار الأول"
+                    } else {
+                        when (params.mode) {
+                            MergeStudioMode.CROSSFADE -> if (language == AppLanguage.EN) "Crossfade" else "مدة التداخل"
+                            else -> if (language == AppLanguage.EN) "Track 2 Start" else "بداية المسار الثاني"
+                        }
+                    }
+                    Text(
+                        text = "$trackLabel: ${formatDurationMs(liveMs)}",
+                        style = TelemetryTextStyle.copy(fontWeight = FontWeight.Bold),
+                        color = StudioColors.BgTop,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
+            }
+
+            // Force LTR coordinate axis so audio timeline always advances left -> right cleanly
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(StudioColors.BgTop)
+                        .border(1.dp, StudioColors.Border, RoundedCornerShape(14.dp))
+                        .padding(vertical = 8.dp),
+                ) {
+                    val laneWidthDp = maxWidth
+                    val laneWidthPx = with(LocalDensity.current) { laneWidthDp.toPx().coerceAtLeast(1f) }
+                    val playheadFrac = (playbackPosMs.toFloat() / spanMs.toFloat()).coerceIn(0f, 1f)
+                    val latestParams by rememberUpdatedState(params)
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        // Interactive Time Ruler
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(24.dp)
+                                .padding(horizontal = 8.dp)
+                                .pointerInput(spanMs) {
+                                    detectTapGestures { offset ->
+                                        val frac = (offset.x / size.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                        onSeekFraction(frac)
+                                    }
+                                },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("00:00", style = TelemetryTextStyle, color = StudioColors.TextMuted)
+                            Text(
+                                text = formatDurationMs(spanMs / 2L),
+                                style = TelemetryTextStyle,
+                                color = StudioColors.TextMuted,
+                            )
+                            Text(
+                                text = formatDurationMs(spanMs),
+                                style = TelemetryTextStyle,
+                                color = StudioColors.Cyan,
+                            )
+                        }
+
+                        // Top Track: Primary Audio (Cyan)
+                        TimelineTrackLane(
+                            label = primaryName,
+                            durationMs = primaryDurMs,
+                            startMs = layout.primaryStartMs,
+                            spanMs = spanMs,
+                            peaks = primaryPeaks,
+                            accent = StudioColors.Cyan,
+                            enabled = hasPrimary,
+                            isDragging = draggingTrack == 1,
+                            laneWidthPx = laneWidthPx,
+                            tag = "merge_timeline_track_primary",
+                            onDragDeltaPx = { dx ->
+                                draggingTrack = 1
+                                val dSec = (dx / laneWidthPx) * (spanMs / 1000f)
+                                val nextSec = (latestParams.primaryStartOffsetSec + dSec).coerceIn(0f, 60f)
+                                dragBadgeMs = (nextSec * 1000f).roundToLong()
+                                onUpdateParams(120L) { it.copy(primaryStartOffsetSec = nextSec) }
+                            },
+                            onDragEnd = {
+                                draggingTrack = 0
+                                dragBadgeMs = null
+                            },
+                        )
+
+                        // Bottom Track: Secondary Audio (Amber)
+                        TimelineTrackLane(
+                            label = secondaryName,
+                            durationMs = secondaryDurMs,
+                            startMs = layout.secondaryStartMs,
+                            spanMs = spanMs,
+                            peaks = secondaryPeaks,
+                            accent = StudioColors.Amber,
+                            enabled = hasSecondary,
+                            isDragging = draggingTrack == 2,
+                            laneWidthPx = laneWidthPx,
+                            tag = "merge_timeline_track_secondary",
+                            onDragDeltaPx = { dx ->
+                                draggingTrack = 2
+                                val dSec = (dx / laneWidthPx) * (spanMs / 1000f)
+                                when (latestParams.mode) {
+                                    MergeStudioMode.OVERLAY -> {
+                                        val nextSec = (latestParams.overlayStartOffsetSec + dSec).coerceIn(0f, 60f)
+                                        dragBadgeMs = (nextSec * 1000f).roundToLong()
+                                        onUpdateParams(120L) { it.copy(overlayStartOffsetSec = nextSec) }
+                                    }
+                                    MergeStudioMode.SEQUENTIAL -> {
+                                        val nextGap = (latestParams.transitionGapSec + dSec).coerceIn(0f, 10f)
+                                        val nextStartMs = latestParams.primaryStartOffsetSec * 1000f + primaryDurMs + nextGap * 1000f
+                                        dragBadgeMs = nextStartMs.roundToLong()
+                                        onUpdateParams(120L) { it.copy(transitionGapSec = nextGap) }
+                                    }
+                                    MergeStudioMode.CROSSFADE -> {
+                                        // Dragging left increases overlap (crossfadeSec), dragging right decreases overlap
+                                        val nextXf = (latestParams.crossfadeSec - dSec).coerceIn(0.1f, 15f)
+                                        dragBadgeMs = (nextXf * 1000f).roundToLong()
+                                        onUpdateParams(120L) { it.copy(crossfadeSec = nextXf) }
+                                    }
+                                }
+                            },
+                            onDragEnd = {
+                                draggingTrack = 0
+                                dragBadgeMs = null
+                            },
+                        )
+                    }
+
+                    // Crossfade overlap visual highlight when active
+                    if (params.mode == MergeStudioMode.CROSSFADE && layout.crossfadeActualMs > 0L) {
+                        val xfStartFrac = (layout.secondaryStartMs.toFloat() / spanMs.toFloat()).coerceIn(0f, 1f)
+                        val xfWidthFrac = (layout.crossfadeActualMs.toFloat() / spanMs.toFloat()).coerceIn(0.01f, 1f - xfStartFrac)
+                        Canvas(modifier = Modifier.matchParentSize()) {
+                            drawRect(
+                                color = StudioColors.Emerald.copy(alpha = 0.16f),
+                                topLeft = Offset(xfStartFrac * size.width, 28.dp.toPx()),
+                                size = Size(xfWidthFrac * size.width, size.height - 32.dp.toPx()),
+                            )
+                        }
+                    }
+
+                    // Continuous vertical synchronized Playhead spanning both tracks
+                    Canvas(modifier = Modifier.matchParentSize()) {
+                        val px = (playheadFrac * size.width).coerceIn(2f, size.width - 2f)
+                        drawLine(
+                            color = StudioColors.TextPrimary,
+                            start = Offset(px, 0f),
+                            end = Offset(px, size.height),
+                            strokeWidth = 2.2.dp.toPx(),
+                        )
+                        drawCircle(
+                            color = StudioColors.Cyan,
+                            radius = 5.dp.toPx(),
+                            center = Offset(px, 12.dp.toPx()),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineTrackLane(
+    label: String,
+    durationMs: Long,
+    startMs: Long,
+    spanMs: Long,
+    peaks: List<Float>,
+    accent: Color,
+    enabled: Boolean,
+    isDragging: Boolean,
+    laneWidthPx: Float,
+    tag: String,
+    onDragDeltaPx: (Float) -> Unit,
+    onDragEnd: () -> Unit,
+) {
+    val startFrac = (startMs.toFloat() / spanMs.toFloat()).coerceIn(0f, 0.94f)
+    val durFrac = if (enabled && durationMs > 0L) {
+        (durationMs.toFloat() / spanMs.toFloat()).coerceIn(0.08f, 1f - startFrac)
+    } else {
+        0.30f
+    }
+    val offsetPx = (startFrac * laneWidthPx).roundToInt()
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(62.dp)
+            .background(StudioColors.ElevatedSurface.copy(alpha = 0.45f)),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = accent.copy(alpha = if (isDragging) 0.30f else 0.18f),
+            border = BorderStroke(
+                width = if (isDragging) 2.dp else 1.2.dp,
+                color = if (enabled) accent else StudioColors.Border,
+            ),
+            modifier = Modifier
+                .offset { IntOffset(offsetPx, 0) }
+                .fillMaxWidth(durFrac)
+                .fillMaxHeight()
+                .padding(vertical = 3.dp)
+                .then(
+                    if (enabled) {
+                        Modifier.pointerInput(spanMs) {
+                            detectHorizontalDragGestures(
+                                onDragEnd = onDragEnd,
+                                onDragCancel = onDragEnd,
+                                onHorizontalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    onDragDeltaPx(dragAmount)
+                                },
+                            )
+                        }
+                    } else {
+                        Modifier
+                    },
+                )
+                .testTag(tag),
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                // Mini live waveform inside clip block
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 4.dp, vertical = 14.dp),
+                ) {
+                    val bars = if (peaks.isNotEmpty()) peaks else List(24) { 0.35f }
+                    val step = size.width / bars.size.coerceAtLeast(1)
+                    val midY = size.height * 0.5f
+                    bars.forEachIndexed { idx, amp ->
+                        val h = max(3f, amp.coerceIn(0.08f, 1f) * size.height * 0.9f)
+                        drawRoundRect(
+                            color = accent.copy(alpha = 0.52f),
+                            topLeft = Offset(idx * step + 1f, midY - h * 0.5f),
+                            size = Size(max(2f, step * 0.6f), h),
+                            cornerRadius = CornerRadius(2f, 2f),
+                        )
+                    }
+                }
+
+                // Header pill inside clip: name + duration + start badge
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.DragIndicator,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = StudioColors.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        text = "+${formatDurationMs(startMs)} (${formatDurationMs(durationMs)})",
+                        style = TelemetryTextStyle,
+                        color = accent,
+                        maxLines = 1,
+                    )
                 }
             }
         }

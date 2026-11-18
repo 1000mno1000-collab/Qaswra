@@ -729,7 +729,13 @@ private fun SonixRootApp(
                                             launchSingleTop = true
                                         }
                                     },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = {
+                                        if (!navController.popBackStack()) {
+                                            navController.navigate(StudioRoute.Home) {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                    },
                                 )
                             }
                             composable<StudioRoute.Record> {
