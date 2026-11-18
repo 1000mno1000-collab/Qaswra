@@ -29,6 +29,9 @@ android {
             ?.trim()
             ?.toBooleanStrictOrNull() ?: true
         buildConfigField("boolean", "DEVELOPER_PANEL_ENABLED", developerPanelEnabled.toString())
+        if (!file("google-services.json").exists()) {
+            resValue("string", "default_web_client_id", "")
+        }
     }
 
     signingConfigs {

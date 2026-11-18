@@ -99,6 +99,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -161,6 +162,14 @@ import com.example.viewmodel.StudioSideEffect
 import com.example.viewmodel.StudioViewModel
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.Source
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 
 private class CreateTypedDocumentContract : ActivityResultContract<Pair<String, String>, Uri?>() {
     override fun createIntent(context: Context, input: Pair<String, String>): Intent {
@@ -202,6 +211,7 @@ class MainActivity : ComponentActivity() {
         }
 
         initializeFirebaseSafely()
+        runFirebaseStartupDiagnostic()
 
         try {
             AppDiagnosticLog.init(this)
@@ -322,6 +332,61 @@ class MainActivity : ComponentActivity() {
 
     private fun initializeFirebaseSafely() {
         SonixCrashGuard.safeInitializeFirebase(this)
+    }
+
+    private fun runFirebaseStartupDiagnostic() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val app = FirebaseApp.getApps(this@MainActivity).firstOrNull()
+                    ?: FirebaseApp.initializeApp(this@MainActivity)
+                if (app == null) {
+                    Log.e("SonixFirebaseDiag", "MainActivity startup check: FirebaseApp is not initialized.")
+                    return@launch
+                }
+                val auth = runCatching { FirebaseAuth.getInstance() }.getOrNull()
+                val authUid = runCatching { auth?.currentUser?.uid }.getOrNull()
+                val dbId = getString(R.string.firestore_database_id)
+                val db = FirebaseFirestore.getInstance(dbId)
+                Log.i(
+                    "SonixFirebaseDiag",
+                    "MainActivity Firebase startup check | app=${app.name} | project=${app.options.projectId} | authReady=${auth != null} | uid=${authUid ?: "signed_out"} | db=$dbId",
+                )
+
+                val snapshot = withTimeoutOrNull(6_000L) {
+                    db.collection("app_diagnostics")
+                        .document("startup_probe")
+                        .get(Source.SERVER)
+                        .await()
+                }
+                if (snapshot != null) {
+                    val probeValue = snapshot.get("status") ?: snapshot.data
+                    Log.i(
+                        "SonixFirebaseDiag",
+                        "MainActivity Firestore test fetch succeeded | exists=${snapshot.exists()} | value=$probeValue",
+                    )
+                } else {
+                    Log.w(
+                        "SonixFirebaseDiag",
+                        "MainActivity Firestore test fetch timed out after 6000ms (offline or slow network).",
+                    )
+                }
+            } catch (e: FirebaseFirestoreException) {
+                if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                    Log.i(
+                        "SonixFirebaseDiag",
+                        "MainActivity Firestore reachable (server responded with PERMISSION_DENIED per security rules).",
+                    )
+                } else {
+                    Log.e(
+                        "SonixFirebaseDiag",
+                        "MainActivity Firestore diagnostic error [${e.code}]: ${e.message}",
+                        e,
+                    )
+                }
+            } catch (t: Throwable) {
+                Log.e("SonixFirebaseDiag", "MainActivity Firebase diagnostic failed: ${t.message}", t)
+            }
+        }
     }
 }
 
