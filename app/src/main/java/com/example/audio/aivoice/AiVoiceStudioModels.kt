@@ -58,6 +58,54 @@ enum class AiVoiceEngineKind(
         badgeEn = "24kHz • 32 Arabic Voices + Dialects • Free No Card",
         requiresRemoteGpu = false,
     ),
+    ;
+
+    fun supportedEmotions(): List<AiVoiceEmotion> = when (this) {
+        VOXCPM_2, SONIX_LOCAL_STUDIO -> AiVoiceEmotion.entries
+        AUDAR_TTS_V1_FLASH, AUDAR_TTS_V1_TURBO -> listOf(
+            AiVoiceEmotion.NEUTRAL,
+            AiVoiceEmotion.SAD,
+            AiVoiceEmotion.CRYING,
+            AiVoiceEmotion.JOY,
+            AiVoiceEmotion.EXCITED,
+            AiVoiceEmotion.SURPRISED,
+            AiVoiceEmotion.WHISPER,
+            AiVoiceEmotion.LAUGH,
+        )
+        EDGE_NEURAL_FREE -> listOf(
+            AiVoiceEmotion.NEUTRAL,
+            AiVoiceEmotion.CALM,
+            AiVoiceEmotion.SAD,
+            AiVoiceEmotion.JOY,
+            AiVoiceEmotion.EXCITED,
+            AiVoiceEmotion.ANGER,
+        )
+    }
+
+    fun supportsVoiceDesignPrompt(): Boolean = this == VOXCPM_2
+
+    fun supportsEmotionIntensity(): Boolean =
+        this == VOXCPM_2 || this == AUDAR_TTS_V1_FLASH || this == AUDAR_TTS_V1_TURBO
+
+    fun supportsPitchShiftControl(): Boolean =
+        this == SONIX_LOCAL_STUDIO || this == EDGE_NEURAL_FREE
+
+    fun supportsVoiceCloning(): Boolean =
+        this == VOXCPM_2 || this == AUDAR_TTS_V1_FLASH || this == AUDAR_TTS_V1_TURBO
+
+    fun supportsLanguage(language: AiVoiceLanguage): Boolean = when (this) {
+        AUDAR_TTS_V1_FLASH, AUDAR_TTS_V1_TURBO -> language.audarSupported
+        SONIX_LOCAL_STUDIO -> language in setOf(
+            AiVoiceLanguage.AR,
+            AiVoiceLanguage.EN,
+            AiVoiceLanguage.FA,
+            AiVoiceLanguage.TR,
+        )
+        VOXCPM_2, EDGE_NEURAL_FREE -> language.voxCpmSupported
+    }
+
+    fun supportedLanguages(): List<AiVoiceLanguage> =
+        AiVoiceLanguage.entries.filter { supportsLanguage(it) }
 }
 
 @Serializable
@@ -156,8 +204,28 @@ enum class AiVoiceCategory(
     ELDERLY("elderly", "مسن", "Elderly"),
     NARRATOR("narrator", "راوي / وثائقي", "Narrator"),
     CARTOON("cartoon", "شخصية كرتونية", "Cartoon"),
-    CUSTOM_DESIGN("custom", "تصميم مخصص", "Custom Design"),
+    CUSTOM_DESIGN("custom", "تصميم مخصص", "Custom Design");
+
+    fun toGroupFilter(): AiVoiceGroupFilter = when (this) {
+        MALE -> AiVoiceGroupFilter.MALE
+        FEMALE -> AiVoiceGroupFilter.FEMALE
+        CHILD, ELDERLY, NARRATOR, CARTOON, CUSTOM_DESIGN -> AiVoiceGroupFilter.CHARACTERS
+    }
 }
+
+enum class AiVoiceGroupFilter(
+    val id: String,
+    val titleAr: String,
+    val titleEn: String,
+) {
+    MALE("male", "رجالي", "Male"),
+    FEMALE("female", "نسائي", "Female"),
+    CHARACTERS("characters", "شخصيات", "Characters"),
+    FAVORITES("favorites", "المفضلة", "Favorites"),
+}
+
+fun countScriptWords(text: String): Int =
+    text.trim().split(Regex("\\s+")).count { it.isNotEmpty() }
 
 @Immutable
 @Serializable
@@ -295,6 +363,7 @@ data class AiVoiceStudioUiState(
     val isPlayingOutput: Boolean = false,
     val playbackPositionMs: Long = 0L,
     val savedCharacters: List<AiVoiceCharacter> = emptyList(),
+    val favoriteCharacterIds: Set<String> = emptySet(),
     val dialogueTurns: List<AiDialogueTurn> = DEFAULT_DIALOGUE_TURNS,
     val backendServerUrl: String = "",
     val backendBearerToken: String = "",
@@ -302,6 +371,9 @@ data class AiVoiceStudioUiState(
 ) {
     val allCharacters: List<AiVoiceCharacter>
         get() = savedCharacters + BUILT_IN_AI_VOICE_CHARACTERS
+
+    fun isCharacterFavorite(characterId: String): Boolean =
+        characterId in favoriteCharacterIds || savedCharacters.any { it.id == characterId }
 }
 
 val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(

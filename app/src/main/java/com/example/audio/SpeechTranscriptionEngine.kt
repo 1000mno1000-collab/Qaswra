@@ -9,20 +9,29 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.compose.runtime.Immutable
+import com.example.diagnostics.AppDiagnosticLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 @Immutable
 data class NativeSpeechState(
     val isListening: Boolean = false,
     val isRoutingClip: Boolean = false,
-    val localeTag: String = "ar-SA",
+    val localeTag: String = "ar-IQ",
     val partialText: String = "",
     val committedText: String = "",
     val rmsDb: Float = 0f,
     val errorMessage: String? = null,
+    val backendMode: SttBackendMode = SttBackendMode.AUTO,
+    val activeEngineLabel: String = "",
+    val localModelState: SherpaAsrModelState = SherpaAsrModelState(),
 ) {
     val displayText: String
         get() = listOf(committedText.trim(), partialText.trim())
@@ -33,29 +42,69 @@ data class NativeSpeechState(
 class StudioSpeechTranscriber(private val context: Context) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val _state = MutableStateFlow(NativeSpeechState())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val localMoonshineEngine = SherpaMoonshineAsrEngine(context.applicationContext)
+
+    private val _state = MutableStateFlow(
+        NativeSpeechState(localModelState = localMoonshineEngine.modelState.value),
+    )
     val state: StateFlow<NativeSpeechState> = _state.asStateFlow()
 
+    private val sessionGuard = Any()
     private var recognizer: SpeechRecognizer? = null
     @Volatile private var keepListening = false
-    @Volatile private var currentLocaleTag = "ar-SA"
+    @Volatile private var currentLocaleTag = "ar-IQ"
     @Volatile private var currentSessionId = 0L
+    @Volatile private var currentBackendMode = SttBackendMode.AUTO
+    @Volatile private var lastSessionStartMs = 0L
+    @Volatile private var consecutiveFastDisconnects = 0
 
     private var endOfSpeechWatchdog: Runnable? = null
 
-    fun isAvailable(): Boolean = runCatching {
-        SpeechRecognizer.isRecognitionAvailable(context.applicationContext)
-    }.getOrDefault(false)
+    init {
+        scope.launch {
+            localMoonshineEngine.modelState.collect { modelSt ->
+                _state.update { it.copy(localModelState = modelSt) }
+            }
+        }
+    }
+
+    fun isAvailable(): Boolean {
+        val localReady = localMoonshineEngine.isModelReady() && localMoonshineEngine.isNativeLibraryAvailable()
+        val systemAvailable = runCatching {
+            SpeechRecognizer.isRecognitionAvailable(context.applicationContext)
+        }.getOrDefault(false)
+        return localReady || systemAvailable
+    }
+
+    fun isLocalArabicModelReady(): Boolean = localMoonshineEngine.isModelReady()
+
+    fun setBackendMode(mode: SttBackendMode) {
+        currentBackendMode = mode
+        _state.update { it.copy(backendMode = mode, errorMessage = null) }
+        if (keepListening) {
+            val clip = _state.value.isRoutingClip
+            startListening(currentLocaleTag, isClipRouting = clip)
+        }
+    }
+
+    suspend fun downloadLocalArabicModel(): Boolean = localMoonshineEngine.ensureModelsDownloaded()
+
+    fun cancelLocalModelDownload() = localMoonshineEngine.cancelDownload()
+
+    fun clearLocalArabicModel() {
+        if (localMoonshineEngine.isCurrentlyCapturing()) {
+            stop()
+        }
+        localMoonshineEngine.clearCachedModels()
+    }
 
     fun setLocale(localeTag: String) {
         currentLocaleTag = localeTag
         _state.update { it.copy(localeTag = localeTag) }
         if (keepListening) {
-            mainHandler.post {
-                if (keepListening) {
-                    scheduleNextLoop(delayMs = 120L)
-                }
-            }
+            val clip = _state.value.isRoutingClip
+            startListening(localeTag, isClipRouting = clip)
         }
     }
 
@@ -79,47 +128,137 @@ class StudioSpeechTranscriber(private val context: Context) {
         }
     }
 
+    internal fun shouldUseLocalMoonshine(localeTag: String, isClipRouting: Boolean): Boolean {
+        if (isClipRouting) return false
+        val isArabic = localeTag.startsWith("ar", ignoreCase = true)
+        if (!isArabic) return false
+        val ready = localMoonshineEngine.isModelReady() && localMoonshineEngine.isNativeLibraryAvailable()
+        if (!ready) return false
+        return when (currentBackendMode) {
+            SttBackendMode.AUTO, SttBackendMode.LOCAL_MOONSHINE_AR -> true
+            SttBackendMode.ANDROID_SYSTEM -> false
+        }
+    }
+
     fun startListening(localeTag: String, isClipRouting: Boolean) {
-        currentLocaleTag = localeTag
-        mainHandler.post {
-            if (!isAvailable()) {
+        synchronized(sessionGuard) {
+            currentLocaleTag = localeTag
+            keepListening = false
+            val mySessionId = ++currentSessionId
+            consecutiveFastDisconnects = 0
+            localMoonshineEngine.stop()
+            cancelEndOfSpeechWatchdog()
+            mainHandler.removeCallbacksAndMessages(null)
+            destroyAndroidRecognizerOnMain()
+
+            val useLocal = shouldUseLocalMoonshine(localeTag, isClipRouting)
+            if (currentBackendMode == SttBackendMode.LOCAL_MOONSHINE_AR && !localMoonshineEngine.isModelReady()) {
                 _state.update {
                     it.copy(
                         isListening = false,
                         isRoutingClip = false,
-                        errorMessage = "Speech recognition service is not available on this device.",
+                        activeEngineLabel = "",
+                        errorMessage = "يرجى تحميل نموذج Moonshine Arabic المحلي أولاً أو اختيار التبديل التلقائي.",
                     )
                 }
-                return@post
+                return
             }
-            cancelEndOfSpeechWatchdog()
-            mainHandler.removeCallbacksAndMessages(null)
-            keepListening = true
-            _state.update {
-                it.copy(
-                    isListening = true,
-                    isRoutingClip = isClipRouting,
-                    localeTag = localeTag,
-                    partialText = "",
-                    errorMessage = null,
+
+            if (useLocal) {
+                keepListening = true
+                _state.update {
+                    it.copy(
+                        isListening = true,
+                        isRoutingClip = false,
+                        localeTag = localeTag,
+                        partialText = "",
+                        errorMessage = null,
+                        activeEngineLabel = "Moonshine Arabic v2 + Silero VAD (محلي مستمر)",
+                    )
+                }
+                val started = localMoonshineEngine.startContinuousCapture(
+                    onPartialUpdate = { partial ->
+                        if (keepListening && currentSessionId == mySessionId) {
+                            _state.update { it.copy(partialText = partial, errorMessage = null) }
+                        }
+                    },
+                    onSegmentCommitted = { segment ->
+                        if (currentSessionId == mySessionId) {
+                            _state.update { cur ->
+                                val merged = mergeTranscriptText(cur.committedText, segment)
+                                cur.copy(committedText = merged, partialText = "", errorMessage = null)
+                            }
+                        }
+                    },
+                    onRmsDb = { db ->
+                        if (keepListening && currentSessionId == mySessionId) {
+                            _state.update { it.copy(rmsDb = db) }
+                        }
+                    },
+                    onFatalError = { errMsg ->
+                        if (currentSessionId == mySessionId) {
+                            keepListening = false
+                            _state.update { cur ->
+                                cur.copy(
+                                    isListening = false,
+                                    isRoutingClip = false,
+                                    partialText = "",
+                                    committedText = cur.displayText,
+                                    rmsDb = 0f,
+                                    errorMessage = errMsg,
+                                )
+                            }
+                        }
+                    },
                 )
+                if (started) return
+                // Fallback safely if native library cannot initialize on this ABI/device
+                keepListening = false
             }
-            beginSessionOnMain(++currentSessionId)
+
+            mainHandler.post {
+                if (currentSessionId != mySessionId) return@post
+                val systemAvail = runCatching {
+                    SpeechRecognizer.isRecognitionAvailable(context.applicationContext)
+                }.getOrDefault(false)
+                if (!systemAvail) {
+                    _state.update {
+                        it.copy(
+                            isListening = false,
+                            isRoutingClip = false,
+                            activeEngineLabel = "",
+                            errorMessage = "خدمة التعرف على الكلام غير متوفرة — حمّل نموذج Moonshine العربي للعمل محلياً.",
+                        )
+                    }
+                    return@post
+                }
+                keepListening = true
+                _state.update {
+                    it.copy(
+                        isListening = true,
+                        isRoutingClip = isClipRouting,
+                        localeTag = localeTag,
+                        partialText = "",
+                        errorMessage = null,
+                        activeEngineLabel = "Android SpeechRecognizer (${localeTag})",
+                    )
+                }
+                beginAndroidSessionOnMain(mySessionId)
+            }
         }
     }
 
     fun stop() {
-        keepListening = false
-        currentSessionId++
-        cancelEndOfSpeechWatchdog()
-        mainHandler.removeCallbacksAndMessages(null)
-        mainHandler.post {
-            runCatching { recognizer?.stopListening() }
-            runCatching { recognizer?.cancel() }
-            runCatching { recognizer?.destroy() }
-            recognizer = null
+        synchronized(sessionGuard) {
+            keepListening = false
+            currentSessionId++
+            consecutiveFastDisconnects = 0
+            localMoonshineEngine.stop()
+            cancelEndOfSpeechWatchdog()
+            mainHandler.removeCallbacksAndMessages(null)
+            destroyAndroidRecognizerOnMain()
             _state.update { cur ->
-                val merged = cur.displayText
+                val merged = mergeTranscriptText(cur.committedText, cur.partialText)
                 cur.copy(
                     isListening = false,
                     isRoutingClip = false,
@@ -132,6 +271,18 @@ class StudioSpeechTranscriber(private val context: Context) {
         }
     }
 
+    private fun destroyAndroidRecognizerOnMain() {
+        val r = recognizer
+        recognizer = null
+        if (r != null) {
+            mainHandler.post {
+                runCatching { r.stopListening() }
+                runCatching { r.cancel() }
+                runCatching { r.destroy() }
+            }
+        }
+    }
+
     private fun cancelEndOfSpeechWatchdog() {
         endOfSpeechWatchdog?.let { mainHandler.removeCallbacks(it) }
         endOfSpeechWatchdog = null
@@ -139,18 +290,8 @@ class StudioSpeechTranscriber(private val context: Context) {
 
     private fun commitPartialIntoTranscript() {
         _state.update { cur ->
-            val pending = cur.partialText.trim()
-            if (pending.isEmpty()) {
-                cur
-            } else {
-                val base = cur.committedText.trim()
-                val merged = when {
-                    base.isEmpty() -> pending
-                    base.endsWith(pending) -> base
-                    else -> "$base $pending"
-                }
-                cur.copy(committedText = merged, partialText = "")
-            }
+            val merged = mergeTranscriptText(cur.committedText, cur.partialText)
+            cur.copy(committedText = merged, partialText = "")
         }
     }
 
@@ -160,12 +301,12 @@ class StudioSpeechTranscriber(private val context: Context) {
         val nextId = ++currentSessionId
         mainHandler.postDelayed({
             if (keepListening && currentSessionId == nextId) {
-                beginSessionOnMain(nextId)
+                beginAndroidSessionOnMain(nextId)
             }
         }, delayMs)
     }
 
-    private fun beginSessionOnMain(sessionId: Long) {
+    private fun beginAndroidSessionOnMain(sessionId: Long) {
         if (!keepListening || sessionId != currentSessionId) return
         cancelEndOfSpeechWatchdog()
         runCatching { recognizer?.cancel() }
@@ -179,12 +320,13 @@ class StudioSpeechTranscriber(private val context: Context) {
                 it.copy(
                     isListening = false,
                     isRoutingClip = false,
-                    errorMessage = "Unable to initialize Android SpeechRecognizer.",
+                    errorMessage = "تعذر تهيئة خدمة Android SpeechRecognizer.",
                 )
             }
             return
         }
         recognizer = sr
+        lastSessionStartMs = System.currentTimeMillis()
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 if (sessionId != currentSessionId) return
@@ -193,6 +335,7 @@ class StudioSpeechTranscriber(private val context: Context) {
 
             override fun onBeginningOfSpeech() {
                 if (sessionId != currentSessionId) return
+                consecutiveFastDisconnects = 0
                 cancelEndOfSpeechWatchdog()
             }
 
@@ -206,52 +349,76 @@ class StudioSpeechTranscriber(private val context: Context) {
             override fun onEndOfSpeech() {
                 if (!keepListening || sessionId != currentSessionId) return
                 cancelEndOfSpeechWatchdog()
-                // Fallback watchdog in case some OEM speech engines stall after onEndOfSpeech
                 val watchdog = Runnable {
                     if (keepListening && sessionId == currentSessionId) {
                         commitPartialIntoTranscript()
-                        scheduleNextLoop(delayMs = 150L)
+                        scheduleNextLoop(delayMs = 160L)
                     }
                 }
                 endOfSpeechWatchdog = watchdog
-                mainHandler.postDelayed(watchdog, 2600L)
+                mainHandler.postDelayed(watchdog, 2_800L)
             }
 
             override fun onError(error: Int) {
                 if (sessionId != currentSessionId) return
                 cancelEndOfSpeechWatchdog()
+                commitPartialIntoTranscript()
 
-                // Continuous Dictation Loop: preserve any partial words & restart immediately on silence/timeout/busy
-                val recoverableLoopError =
-                    error == SpeechRecognizer.ERROR_NO_MATCH ||       // code 7
-                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || // code 6
-                        error == SpeechRecognizer.ERROR_CLIENT ||         // code 5
-                        error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||// code 8
-                        error == SpeechRecognizer.ERROR_AUDIO             // transient audio focus hiccup
+                val elapsed = System.currentTimeMillis() - lastSessionStartMs
+                if (elapsed < 1_500L && (error == 11 || error == 10 || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY)) {
+                    consecutiveFastDisconnects++
+                } else if (elapsed >= 3_000L) {
+                    consecutiveFastDisconnects = 0
+                }
 
-                if (keepListening && recoverableLoopError) {
-                    commitPartialIntoTranscript()
-                    _state.update { it.copy(errorMessage = null, rmsDb = 0f) }
-                    val restartDelay = when (error) {
-                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 280L
-                        SpeechRecognizer.ERROR_AUDIO -> 320L
-                        else -> 120L
+                // Recoverable errors include silence timeouts (6/7), transient client/busy/audio (3/5/8),
+                // rate-limit (10), and Android 12+ service disconnects (11: ERROR_SERVER_DISCONNECTED).
+                if (keepListening && isRecoverableSpeechError(error)) {
+                    // Destroy broken service binder completely before reconnecting
+                    runCatching { sr.cancel() }
+                    runCatching { sr.destroy() }
+                    if (recognizer === sr) recognizer = null
+
+                    // If local Moonshine Arabic model is installed & user got repeated code 11/10 on Arabic, switch automatically!
+                    if (error == 11 &&
+                        consecutiveFastDisconnects >= 2 &&
+                        shouldUseLocalMoonshine(currentLocaleTag, isClipRouting = false)
+                    ) {
+                        AppDiagnosticLog.logRecoverable(
+                            toolName = "StudioSpeechTranscriber",
+                            titleAr = "التبديل التلقائي إلى Moonshine المحلي",
+                            titleEn = "Auto-switched STT from error 11 to Local Moonshine AR",
+                            causeAr = "تكرار خطأ خدمة النظام (code 11) أثناء الإملاء المستمر",
+                            causeEn = "Repeated SpeechRecognizer ERROR_SERVER_DISCONNECTED (11)",
+                            errorCode = "STT_ERR_11",
+                        )
+                        startListening(currentLocaleTag, isClipRouting = _state.value.isRoutingClip)
+                        return
                     }
-                    scheduleNextLoop(delayMs = restartDelay)
+
+                    val delayMs = computeRetryBackoffMs(error, consecutiveFastDisconnects)
+                    _state.update { it.copy(errorMessage = null, rmsDb = 0f) }
+                    scheduleNextLoop(delayMs = delayMs)
                     return
                 }
 
-                // Fatal errors only (e.g., revoked mic permission / missing offline pack / network error)
                 keepListening = false
-                commitPartialIntoTranscript()
+                AppDiagnosticLog.logRecoverable(
+                    toolName = "StudioSpeechTranscriber",
+                    titleAr = "توقف خدمة التعرف على الكلام (code $error)",
+                    titleEn = "SpeechRecognizer stopped (code $error)",
+                    causeAr = "خطأ في خدمة التعرف على الكلام على الجهاز",
+                    causeEn = "SpeechRecognizer error code=$error",
+                    errorCode = "STT_ERR_$error",
+                )
                 val msg = when (error) {
                     SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
-                        "Microphone permission is required for speech recognition."
+                        "صلاحية الميكروفون مطلوبة للتعرف على الكلام."
                     SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
-                        "Speech recognizer network unavailable (enable offline speech pack or check connection)."
+                        "تعذر الاتصال بخدمة الكلام السحابية — يمكنك تحميل نموذج Moonshine المحلي للعمل بدون إنترنت."
                     SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED, SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
-                        "Selected recognition language pack is not installed on this device."
-                    else -> "Speech recognition stopped (code $error)."
+                        "حزمة اللغة المختارة غير مثبتة في خدمة النظام."
+                    else -> "توقفت خدمة التعرف على الكلام (code $error)."
                 }
                 _state.update { cur ->
                     cur.copy(
@@ -267,19 +434,19 @@ class StudioSpeechTranscriber(private val context: Context) {
             override fun onResults(results: Bundle?) {
                 if (sessionId != currentSessionId) return
                 cancelEndOfSpeechWatchdog()
+                consecutiveFastDisconnects = 0
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val top = matches?.firstOrNull()?.trim().orEmpty()
                 if (top.isNotEmpty()) {
                     _state.update { cur ->
-                        val base = cur.committedText.trim()
-                        val nextCommitted = if (base.isEmpty()) top else "$base $top"
+                        val nextCommitted = mergeTranscriptText(cur.committedText, top)
                         cur.copy(committedText = nextCommitted, partialText = "", errorMessage = null)
                     }
                 } else {
                     commitPartialIntoTranscript()
                 }
                 if (keepListening) {
-                    scheduleNextLoop(delayMs = 110L)
+                    scheduleNextLoop(delayMs = 120L)
                 } else {
                     _state.update { it.copy(isListening = false, isRoutingClip = false, rmsDb = 0f) }
                 }
@@ -292,6 +459,7 @@ class StudioSpeechTranscriber(private val context: Context) {
                     ?.trim()
                     .orEmpty()
                 if (partial.isNotEmpty()) {
+                    consecutiveFastDisconnects = 0
                     _state.update { it.copy(partialText = partial, errorMessage = null) }
                 }
             }
@@ -305,13 +473,13 @@ class StudioSpeechTranscriber(private val context: Context) {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, currentLocaleTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10_000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 8_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 15_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 12_000L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 5_000L)
         }
         runCatching { sr.startListening(intent) }.onFailure { err ->
             if (keepListening) {
-                scheduleNextLoop(delayMs = 260L)
+                scheduleNextLoop(delayMs = 450L)
             } else {
                 _state.update {
                     it.copy(
@@ -327,12 +495,11 @@ class StudioSpeechTranscriber(private val context: Context) {
     fun destroy() {
         keepListening = false
         currentSessionId++
+        localMoonshineEngine.stop()
+        localMoonshineEngine.cancelDownload()
         cancelEndOfSpeechWatchdog()
         mainHandler.removeCallbacksAndMessages(null)
-        mainHandler.post {
-            runCatching { recognizer?.cancel() }
-            runCatching { recognizer?.destroy() }
-            recognizer = null
-        }
+        destroyAndroidRecognizerOnMain()
+        scope.cancel()
     }
 }

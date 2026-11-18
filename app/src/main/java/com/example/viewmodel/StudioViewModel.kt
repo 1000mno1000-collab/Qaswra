@@ -28,6 +28,7 @@ import com.example.audio.MergeStudioParams
 import com.example.audio.NativeSpeechState
 import com.example.audio.OnlineGuard
 import com.example.audio.ReelsTemplateParams
+import com.example.audio.SttBackendMode
 import com.example.audio.ai.LocalModelStatus
 import com.example.audio.ai.LocalNeuralVoiceEngine
 import com.example.audio.ai.OnlineSoundHistoryItem
@@ -5149,8 +5150,32 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Native Android SpeechRecognizer Studio
+    // Native Android SpeechRecognizer + Sherpa-ONNX Moonshine AR Studio
     fun isSpeechRecognizerAvailable(): Boolean = speechTranscriber.isAvailable()
+
+    fun isLocalSpeechModelReady(): Boolean = speechTranscriber.isLocalArabicModelReady()
+
+    fun setSpeechBackendMode(mode: SttBackendMode) {
+        speechTranscriber.setBackendMode(mode)
+    }
+
+    fun downloadLocalSpeechModel() {
+        viewModelScope.launch(safeCoroutineHandler) {
+            val ok = speechTranscriber.downloadLocalArabicModel()
+            if (ok) {
+                postBanner("تم تحميل نموذج Moonshine العربي بنجاح — جاهز للتفريغ المستمر أوفلاين")
+            }
+        }
+    }
+
+    fun cancelLocalSpeechDownload() {
+        speechTranscriber.cancelLocalModelDownload()
+    }
+
+    fun clearLocalSpeechModel() {
+        speechTranscriber.clearLocalArabicModel()
+        postBanner("تم حذف ملفات نموذج الكلام المحلي لتحرير المساحة")
+    }
 
     fun setSpeechLocale(localeTag: String) {
         speechTranscriber.setLocale(localeTag)
@@ -6512,13 +6537,36 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setAiVoiceEngine(engine: AiVoiceEngineKind) {
-        _aiVoiceUiState.update {
-            it.copy(
+        _aiVoiceUiState.update { cur ->
+            val clampedEmotion = if (cur.selectedEmotion in engine.supportedEmotions()) {
+                cur.selectedEmotion
+            } else {
+                AiVoiceEmotion.NEUTRAL
+            }
+            val clampedLanguage = if (engine.supportsLanguage(cur.selectedLanguage)) {
+                cur.selectedLanguage
+            } else {
+                AiVoiceLanguage.AR
+            }
+            cur.copy(
                 selectedEngine = engine,
+                selectedEmotion = clampedEmotion,
+                selectedLanguage = clampedLanguage,
                 errorTitle = null,
                 errorDetail = null,
                 setupRequiredGuide = null,
             )
+        }
+    }
+
+    fun toggleAiVoiceCharacterFavorite(characterId: String) {
+        _aiVoiceUiState.update { cur ->
+            val next = if (characterId in cur.favoriteCharacterIds) {
+                cur.favoriteCharacterIds - characterId
+            } else {
+                cur.favoriteCharacterIds + characterId
+            }
+            cur.copy(favoriteCharacterIds = next)
         }
     }
 
@@ -6572,13 +6620,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun selectAiVoiceCharacter(character: AiVoiceCharacter) {
         _aiVoiceUiState.update { cur ->
+            val targetEngine = character.preferredEngine
+            val safeEmotion = if (character.defaultEmotion in targetEngine.supportedEmotions()) {
+                character.defaultEmotion
+            } else {
+                AiVoiceEmotion.NEUTRAL
+            }
+            val safeLanguage = if (targetEngine.supportsLanguage(character.language)) {
+                character.language
+            } else {
+                AiVoiceLanguage.AR
+            }
             cur.copy(
                 selectedCharacterId = character.id,
-                selectedEngine = character.preferredEngine,
-                selectedLanguage = character.language,
+                selectedEngine = targetEngine,
+                selectedLanguage = safeLanguage,
                 selectedDialect = character.dialect,
                 selectedCategory = character.category,
-                selectedEmotion = character.defaultEmotion,
+                selectedEmotion = safeEmotion,
                 emotionIntensity = character.defaultEmotionIntensity,
                 selectedPace = character.defaultPace,
                 pitchOffsetSemitones = character.pitchOffsetSemitones,

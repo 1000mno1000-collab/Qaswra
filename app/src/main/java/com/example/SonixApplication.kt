@@ -16,15 +16,34 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.Source
 import com.google.firebase.firestore.firestoreSettings
 import com.google.firebase.firestore.persistentCacheSettings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
+
+data class FirebaseStartupCheckResult(
+    val packageName: String,
+    val firebaseAppInitialized: Boolean,
+    val authReady: Boolean,
+    val firestoreReachable: Boolean,
+    val projectId: String,
+    val mobileAppId: String,
+    val databaseId: String,
+    val summary: String,
+)
 
 data class StartupErrorReport(
     val threadName: String,
@@ -53,6 +72,10 @@ object SonixCrashGuard {
 
     private val _uncaughtError = MutableStateFlow<StartupErrorReport?>(null)
     val uncaughtError: StateFlow<StartupErrorReport?> = _uncaughtError.asStateFlow()
+
+    private val _firebaseConnectivityState = MutableStateFlow<FirebaseStartupCheckResult?>(null)
+    val firebaseConnectivityState: StateFlow<FirebaseStartupCheckResult?> =
+        _firebaseConnectivityState.asStateFlow()
 
     fun updateForegroundActivity(activity: Activity?, active: Boolean) {
         if (active && activity != null) {
@@ -175,11 +198,22 @@ object SonixCrashGuard {
             .build()
     }
 
+    fun ensureFirebaseInitialized(context: Context): Boolean {
+        val appCtx = context.applicationContext ?: context
+        safeInitializeFirebase(appCtx)
+        return runCatching { FirebaseApp.getApps(appCtx).isNotEmpty() }.getOrDefault(false)
+    }
+
     fun safeInitializeFirebase(context: Context) {
         val appCtx = context.applicationContext ?: context
         try {
             if (FirebaseApp.getApps(appCtx).isEmpty()) {
-                val autoInitialized = runCatching { FirebaseApp.initializeApp(appCtx) }.getOrNull()
+                val resourceOptions = runCatching { FirebaseOptions.fromResource(appCtx) }.getOrNull()
+                val autoInitialized = if (resourceOptions != null) {
+                    runCatching { FirebaseApp.initializeApp(appCtx, resourceOptions) }.getOrNull()
+                } else {
+                    runCatching { FirebaseApp.initializeApp(appCtx) }.getOrNull()
+                }
                 if (autoInitialized == null && FirebaseApp.getApps(appCtx).isEmpty()) {
                     val options = parseFirebaseOptionsFromAssetsOrNull(appCtx)
                         ?: buildFallbackFirebaseOptions()
@@ -223,6 +257,86 @@ object SonixCrashGuard {
         } catch (t: Throwable) {
             Log.w("SonixStartup", "FirebaseFirestore initialization skipped safely: ${t.message}")
         }
+    }
+
+    suspend fun verifyFirebaseConnectivity(context: Context): FirebaseStartupCheckResult {
+        val appCtx = context.applicationContext ?: context
+        val initialized = ensureFirebaseInitialized(appCtx)
+        val app = runCatching { FirebaseApp.getApps(appCtx).firstOrNull() }.getOrNull()
+        val projectId = app?.options?.projectId.orEmpty()
+        val mobileAppId = app?.options?.applicationId.orEmpty()
+        val dbId = runCatching { appCtx.getString(R.string.firestore_database_id) }.getOrDefault("")
+
+        if (!initialized || app == null) {
+            val failResult = FirebaseStartupCheckResult(
+                packageName = appCtx.packageName,
+                firebaseAppInitialized = false,
+                authReady = false,
+                firestoreReachable = false,
+                projectId = projectId,
+                mobileAppId = mobileAppId,
+                databaseId = dbId,
+                summary = "FirebaseApp not initialized for ${appCtx.packageName}",
+            )
+            Log.w("SonixFirebaseCheck", "Firebase startup check: ${failResult.summary}")
+            _firebaseConnectivityState.value = failResult
+            return failResult
+        }
+
+        val auth = runCatching { Firebase.auth }.getOrNull()
+        val authReady = auth != null
+        val authUid = runCatching { auth?.currentUser?.uid }.getOrNull()
+
+        var firestoreReachable = false
+        var firestoreStatus = "SKIPPED"
+        if (dbId.isNotBlank()) {
+            val db = runCatching { FirebaseFirestore.getInstance(dbId) }.getOrNull()
+            if (db != null) {
+                try {
+                    val snapshot = withTimeoutOrNull(6_000L) {
+                        db.collection("_startup_check").limit(1).get(Source.SERVER).await()
+                    }
+                    if (snapshot != null) {
+                        firestoreReachable = true
+                        firestoreStatus = "CONNECTED"
+                    } else {
+                        firestoreStatus = "TIMEOUT_OFFLINE"
+                    }
+                } catch (e: FirebaseFirestoreException) {
+                    // PERMISSION_DENIED proves the live Firestore server received our request and evaluated rules.
+                    if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                        firestoreReachable = true
+                        firestoreStatus = "CONNECTED_RULES_ACTIVE"
+                    } else {
+                        firestoreStatus = "ERROR_${e.code.name}"
+                    }
+                } catch (t: Throwable) {
+                    firestoreStatus = "LOCAL_ONLY_${t.javaClass.simpleName}"
+                }
+            }
+        }
+
+        val summary = buildString {
+            append("CONFIRMED: Firebase ready | package=").append(appCtx.packageName)
+            append(" | project=").append(projectId)
+            append(" | appId=").append(mobileAppId)
+            append(" | auth=").append(if (authReady) "OK(uid=${authUid ?: "signed_out"})" else "UNAVAILABLE")
+            append(" | firestore=").append(firestoreStatus)
+        }
+        Log.i("SonixFirebaseCheck", summary)
+
+        val result = FirebaseStartupCheckResult(
+            packageName = appCtx.packageName,
+            firebaseAppInitialized = true,
+            authReady = authReady,
+            firestoreReachable = firestoreReachable,
+            projectId = projectId,
+            mobileAppId = mobileAppId,
+            databaseId = dbId,
+            summary = summary,
+        )
+        _firebaseConnectivityState.value = result
+        return result
     }
 
     fun installUncaughtExceptionHandler(context: Context) {
@@ -324,6 +438,8 @@ object SonixCrashGuard {
 }
 
 class SonixApplication : Application() {
+    private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onCreate() {
         try {
             super.onCreate()
@@ -357,10 +473,25 @@ class SonixApplication : Application() {
         } catch (t: Throwable) {
             Log.e("SonixStartup", "Failed to install crash handler", t)
         }
+        // Initialize Firebase explicitly in Application before any Auth/Firestore service calls.
+        try {
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                FirebaseApp.initializeApp(this)
+            }
+        } catch (t: Throwable) {
+            Log.w("SonixStartup", "Direct FirebaseApp.initializeApp(this) deferred to safe init: ${t.message}")
+        }
         try {
             SonixCrashGuard.safeInitializeFirebase(this)
         } catch (t: Throwable) {
             Log.w("SonixStartup", "Safe Firebase init caught error: ${t.message}")
+        }
+        startupScope.launch {
+            runCatching {
+                SonixCrashGuard.verifyFirebaseConnectivity(this@SonixApplication)
+            }.onFailure { t ->
+                Log.w("SonixFirebaseCheck", "Startup verification skipped: ${t.message}")
+            }
         }
     }
 

@@ -73,6 +73,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.audio.SttBackendMode
 import com.example.audio.formatDurationMs
 import com.example.i18n.t
 import com.example.model.AppLanguage
@@ -112,7 +113,8 @@ fun SpeechToTextScreen(
     @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
     val stt = uiState.speechState
-    val recognizerAvailable = remember { viewModel.isSpeechRecognizerAvailable() }
+    val systemRecognizerAvailable = remember { viewModel.isSpeechRecognizerAvailable() }
+    val recognizerAvailable = systemRecognizerAvailable || stt.localModelState.isInstalled
 
     var infoDialogOpen by remember { mutableStateOf(false) }
     var pendingClipRouteAfterGrant by remember { mutableStateOf(false) }
@@ -149,7 +151,8 @@ fun SpeechToTextScreen(
 
     val locales = remember {
         listOf(
-            SpeechLocaleChoice("ar-SA", "العربية", "Arabic", "عربی"),
+            SpeechLocaleChoice("ar-IQ", "العربية (العراق)", "Arabic (Iraq)", "عربی عراقی"),
+            SpeechLocaleChoice("ar-SA", "العربية (الفصحى)", "Arabic (MSA)", "عربی فصیح"),
             SpeechLocaleChoice("en-US", "English", "English", "انگلیسی"),
             SpeechLocaleChoice("fa-IR", "فارسی", "Persian", "فارسی"),
         )
@@ -208,6 +211,173 @@ fun SpeechToTextScreen(
                     color = StudioColors.Amber,
                     modifier = Modifier.padding(14.dp),
                 )
+            }
+        }
+
+        // Local Moonshine Arabic v2 + Silero VAD Card (Continuous Offline Recognition)
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(
+                1.dp,
+                if (stt.localModelState.isInstalled) StudioColors.Emerald.copy(alpha = 0.55f) else StudioColors.Border,
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("stt_moonshine_card"),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = if (lang == AppLanguage.EN) {
+                            "Local Continuous Arabic Engine (Moonshine v2 + Silero VAD)"
+                        } else {
+                            "المحرك المحلي المستمر (Moonshine AR v2 + Silero VAD)"
+                        },
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = StudioColors.TextPrimary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = if (stt.localModelState.isInstalled) {
+                            StudioColors.Emerald.copy(alpha = 0.18f)
+                        } else {
+                            StudioColors.ElevatedSurface
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (stt.localModelState.isInstalled) StudioColors.Emerald else StudioColors.Border,
+                        ),
+                    ) {
+                        Text(
+                            text = if (stt.localModelState.isInstalled) {
+                                if (lang == AppLanguage.EN) "Offline Ready" else "جاهز أوفلاين"
+                            } else {
+                                "119 MB"
+                            },
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = if (stt.localModelState.isInstalled) StudioColors.Emerald else StudioColors.TextSecondary,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+
+                if (stt.localModelState.isDownloading) {
+                    LinearProgressIndicator(
+                        progress = { stt.localModelState.progress.coerceIn(0.02f, 1f) },
+                        color = StudioColors.Cyan,
+                        trackColor = StudioColors.BgTop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(7.dp)
+                            .clip(CircleShape),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = stt.localModelState.activeStageLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StudioColors.Cyan,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedButton(
+                            onClick = { viewModel.cancelLocalSpeechDownload() },
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("stt_cancel_model_download_btn"),
+                        ) {
+                            Text(t(lang, "cancel"))
+                        }
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(
+                            SttBackendMode.AUTO to (if (lang == AppLanguage.EN) "Auto (Local First)" else "تلقائي (محلي أولاً)"),
+                            SttBackendMode.LOCAL_MOONSHINE_AR to (if (lang == AppLanguage.EN) "Moonshine Offline" else "Moonshine محلي"),
+                            SttBackendMode.ANDROID_SYSTEM to (if (lang == AppLanguage.EN) "Android Speech" else "خدمة أندرويد"),
+                        ).forEach { (mode, label) ->
+                            FilterChip(
+                                selected = stt.backendMode == mode,
+                                onClick = { viewModel.setSpeechBackendMode(mode) },
+                                label = { Text(label, maxLines = 1) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.20f),
+                                    selectedLabelColor = StudioColors.Cyan,
+                                ),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("stt_backend_chip_${mode.name}"),
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (!stt.localModelState.isInstalled) {
+                            Button(
+                                onClick = { viewModel.downloadLocalSpeechModel() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = StudioColors.Emerald,
+                                    contentColor = StudioColors.BgTop,
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("stt_download_moonshine_button"),
+                            ) {
+                                Text(
+                                    text = if (lang == AppLanguage.EN) {
+                                        "Download Offline Arabic Model (119 MB)"
+                                    } else {
+                                        "تحميل نموذج Moonshine العربي (119 MB أوفلاين)"
+                                    },
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { viewModel.clearLocalSpeechModel() },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("stt_clear_moonshine_button"),
+                            ) {
+                                Icon(Icons.Rounded.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (lang == AppLanguage.EN) "Remove Offline Cache" else "حذف الملفات المحملة")
+                            }
+                        }
+                    }
+                }
+
+                if (!stt.localModelState.errorMessage.isNullOrBlank()) {
+                    Text(
+                        text = stt.localModelState.errorMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.RoseBright,
+                    )
+                }
             }
         }
 
@@ -304,8 +474,9 @@ fun SpeechToTextScreen(
                             )
                         }
                         if (!stt.isRoutingClip) {
+                            val activeBadge = stt.activeEngineLabel.ifBlank { t(lang, "stt_continuous_active") }
                             Text(
-                                text = t(lang, "stt_continuous_active"),
+                                text = activeBadge,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = StudioColors.Emerald,
                             )
@@ -396,7 +567,7 @@ fun SpeechToTextScreen(
                                     onOpenPicker(AudioPickerTarget.IMPORT_MAIN)
                                 }
                             },
-                            enabled = recognizerAvailable,
+                            enabled = systemRecognizerAvailable,
                             interactionSource = clipInteraction,
                             border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),

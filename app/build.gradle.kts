@@ -76,6 +76,10 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 val sherpaLibsDir = file("libs")
@@ -165,12 +169,17 @@ dependencies {
     implementation(libs.androidx.credentials.play.services)
     implementation(libs.googleid)
 
-    // Sherpa-ONNX (Kokoro / Nabra-82M) AAR + Maintained FFmpegKit (16KB page size + Android 15/16)
+    // Sherpa-ONNX (Kokoro / Nabra-82M / Moonshine AR + Silero VAD) AAR + Maintained FFmpegKit
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:8.1.9")
+    implementation(libs.commons.compress)
 
     debugImplementation(libs.androidx.ui.tooling)
+    debugImplementation(libs.androidx.ui.test.manifest)
     testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.ui.test.junit4)
 }
 
 secrets {

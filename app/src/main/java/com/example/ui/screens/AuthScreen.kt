@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.MutableContextWrapper
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
@@ -86,6 +87,7 @@ import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
+import androidx.credentials.PrepareGetCredentialResponse
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
@@ -102,7 +104,6 @@ import com.example.ui.theme.SonixTheme
 import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.FirebaseApp
@@ -111,11 +112,17 @@ import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 
-private const val GOOGLE_WEB_CLIENT_ID =
-    "71794555883-1j2b8ckt6mriegaem2vji34ov5vofpb4.apps.googleusercontent.com"
+private fun resolveGoogleWebClientId(context: Context): String? {
+    return runCatching { context.getString(R.string.default_web_client_id) }
+        .getOrNull()
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+}
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -172,6 +179,17 @@ fun AuthScreen(
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) {
         runCatching { CredentialManager.create(context) }.getOrNull()
+    }
+    val googleWebClientId = remember(context) { resolveGoogleWebClientId(context) }
+    val signInWithGoogleRequest = remember(googleWebClientId) {
+        googleWebClientId?.let { clientId ->
+            GetCredentialRequest.Builder()
+                .addCredentialOption(GetSignInWithGoogleOption.Builder(clientId).build())
+                .build()
+        }
+    }
+    var preparedHandle by remember {
+        mutableStateOf<PrepareGetCredentialResponse.PendingGetCredentialHandle?>(null)
     }
 
     var isSignUp by remember { mutableStateOf(false) }
@@ -268,18 +286,36 @@ fun AuthScreen(
         }
     }
 
-    // Restore existing Firebase session on startup
-    LaunchedEffect(isPreview) {
+    // Restore active Firebase session & pre-warm device Google accounts in parallel on startup
+    LaunchedEffect(isPreview, credentialManager, signInWithGoogleRequest) {
         if (isPreview) return@LaunchedEffect
-        runCatching {
-            if (FirebaseApp.getApps(context).isEmpty()) {
-                SonixCrashGuard.safeInitializeFirebase(context)
+        val initialized = SonixCrashGuard.ensureFirebaseInitialized(context)
+        if (initialized) {
+            val auth = runCatching { FirebaseAuth.getInstance() }.getOrNull()
+            val existingUser = runCatching { auth?.currentUser }.getOrNull()
+            if (existingUser != null) {
+                finishFirebaseGoogleUser(existingUser)
+                return@LaunchedEffect
             }
         }
-        val auth = runCatching { FirebaseAuth.getInstance() }.getOrNull() ?: return@LaunchedEffect
-        val existingUser = runCatching { auth.currentUser }.getOrNull()
-        if (existingUser != null) {
-            finishFirebaseGoogleUser(existingUser)
+        // Pre-fetch device Google accounts via CredentialManager.prepareGetCredential (API 34+)
+        // so tapping "Sign in with Google" pops up accounts immediately without cold IPC delay.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            credentialManager != null &&
+            signInWithGoogleRequest != null
+        ) {
+            val handle = withContext(Dispatchers.IO) {
+                runCatching {
+                    kotlinx.coroutines.withTimeoutOrNull(4_500L) {
+                        credentialManager.prepareGetCredential(signInWithGoogleRequest)
+                            .pendingGetCredentialHandle
+                    }
+                }.getOrNull()
+            }
+            if (handle != null) {
+                preparedHandle = handle
+                Log.i("Auth", "Device Google accounts pre-warmed and ready for instant display.")
+            }
         }
     }
 
@@ -316,12 +352,15 @@ fun AuthScreen(
             isGoogleLoading = true
             errorMsg = null
 
-            runCatching {
-                if (FirebaseApp.getApps(context).isEmpty()) {
-                    SonixCrashGuard.safeInitializeFirebase(context)
+            val firebaseReady = SonixCrashGuard.ensureFirebaseInitialized(context)
+            if (!firebaseReady) {
+                isGoogleLoading = false
+                errorMsg = if (isEn) {
+                    "Firebase is not configured yet for Google Sign-In. You can use Email Sign-In or Guest Mode."
+                } else {
+                    "خدمات Firebase السحابية غير مهيأة حالياً لتسجيل Google. يمكنك المتابعة بالبريد أو كضيف."
                 }
-            }.onFailure { e ->
-                Log.e("Auth", "FirebaseApp manual initialization failed", e)
+                return@AuthScreenContent
             }
 
             val activity = context.findActivity()
@@ -357,53 +396,40 @@ fun AuthScreen(
                 return@AuthScreenContent
             }
 
+            val request = signInWithGoogleRequest
+            if (request == null) {
+                isGoogleLoading = false
+                errorMsg = if (isEn) {
+                    "Google Sign-In configuration missing: default_web_client_id not found."
+                } else {
+                    "إعدادات تسجيل الدخول عبر Google غير مكتملة (default_web_client_id)."
+                }
+                return@AuthScreenContent
+            }
+
+            val activityContextWrapper = MutableContextWrapper(activity)
+            val cachedHandle = preparedHandle
+            preparedHandle = null
+
             scope.launch {
                 try {
-                    val result = try {
-                        val googleIdOption = GetGoogleIdOption.Builder()
-                            .setFilterByAuthorizedAccounts(false)
-                            .setAutoSelectEnabled(false)
-                            .setServerClientId(GOOGLE_WEB_CLIENT_ID)
-                            .build()
-                        val request = GetCredentialRequest.Builder()
-                            .addCredentialOption(googleIdOption)
-                            .build()
-                        kotlinx.coroutines.withTimeoutOrNull(8_500L) {
-                            cm.getCredential(activity, request)
-                        } ?: run {
-                            Log.w(
-                                "Auth",
-                                "GetGoogleIdOption timed out; retrying with GetSignInWithGoogleOption",
-                            )
-                            val signInWithGoogleOption =
-                                GetSignInWithGoogleOption.Builder(GOOGLE_WEB_CLIENT_ID).build()
-                            val fallbackRequest = GetCredentialRequest.Builder()
-                                .addCredentialOption(signInWithGoogleOption)
-                                .build()
-                            kotlinx.coroutines.withTimeoutOrNull(25_000L) {
-                                cm.getCredential(activity, fallbackRequest)
+                    val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && cachedHandle != null) {
+                        try {
+                            kotlinx.coroutines.withTimeoutOrNull(18_000L) {
+                                cm.getCredential(activityContextWrapper, cachedHandle)
+                            }
+                        } catch (e: GetCredentialCancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.w("Auth", "Prepared handle expired/failed; opening direct chooser: ${e.message}")
+                            kotlinx.coroutines.withTimeoutOrNull(18_000L) {
+                                cm.getCredential(activityContextWrapper, request)
                             }
                         }
-                    } catch (firstErr: GetCredentialException) {
-                        val firstDetail =
-                            firstErr.errorMessage?.toString() ?: firstErr.localizedMessage ?: firstErr.message
-                        val shouldRetryWithFullGoogleFlow =
-                            firstErr is NoCredentialException || isTechnicalAuthRejection(firstDetail)
-                        if (!shouldRetryWithFullGoogleFlow) {
-                            throw firstErr
-                        }
-                        Log.w(
-                            "Auth",
-                            "GetGoogleIdOption failed ($firstDetail); retrying with GetSignInWithGoogleOption",
-                            firstErr,
-                        )
-                        val signInWithGoogleOption =
-                            GetSignInWithGoogleOption.Builder(GOOGLE_WEB_CLIENT_ID).build()
-                        val fallbackRequest = GetCredentialRequest.Builder()
-                            .addCredentialOption(signInWithGoogleOption)
-                            .build()
-                        kotlinx.coroutines.withTimeoutOrNull(25_000L) {
-                            cm.getCredential(activity, fallbackRequest)
+                    } else {
+                        // Direct GetSignInWithGoogleOption without waiting for One-Tap timeout so device accounts show immediately
+                        kotlinx.coroutines.withTimeoutOrNull(18_000L) {
+                            cm.getCredential(activityContextWrapper, request)
                         }
                     }
 
