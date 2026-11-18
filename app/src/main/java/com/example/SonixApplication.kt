@@ -199,6 +199,10 @@ object SonixCrashGuard {
             .build()
     }
 
+    @Volatile
+    var lastFirebaseInitError: String? = null
+        private set
+
     fun ensureFirebaseInitialized(context: Context): Boolean {
         val appCtx = context.applicationContext ?: context
         safeInitializeFirebase(appCtx)
@@ -209,24 +213,47 @@ object SonixCrashGuard {
         val appCtx = context.applicationContext ?: context
         try {
             if (FirebaseApp.getApps(appCtx).isEmpty()) {
-                val resourceOptions = runCatching { FirebaseOptions.fromResource(appCtx) }.getOrNull()
+                val resourceOptions = runCatching { FirebaseOptions.fromResource(appCtx) }
+                    .onFailure { t ->
+                        Log.w("SonixStartup", "FirebaseOptions.fromResource failed: ${t.message}")
+                    }
+                    .getOrNull()
                 val autoInitialized = if (resourceOptions != null) {
-                    runCatching { FirebaseApp.initializeApp(appCtx, resourceOptions) }.getOrNull()
+                    runCatching { FirebaseApp.initializeApp(appCtx, resourceOptions) }
+                        .onFailure { t ->
+                            lastFirebaseInitError = t.localizedMessage ?: t.javaClass.simpleName
+                            Log.w("SonixStartup", "FirebaseApp.initializeApp(options) failed: ${t.message}")
+                        }
+                        .getOrNull()
                 } else {
-                    runCatching { FirebaseApp.initializeApp(appCtx) }.getOrNull()
+                    runCatching { FirebaseApp.initializeApp(appCtx) }
+                        .onFailure { t ->
+                            lastFirebaseInitError = t.localizedMessage ?: t.javaClass.simpleName
+                            Log.w("SonixStartup", "FirebaseApp.initializeApp(ctx) failed: ${t.message}")
+                        }
+                        .getOrNull()
                 }
                 if (autoInitialized == null && FirebaseApp.getApps(appCtx).isEmpty()) {
                     val options = parseFirebaseOptionsFromAssetsOrNull(appCtx)
                         ?: buildFallbackFirebaseOptions()
                     if (options != null) {
                         FirebaseApp.initializeApp(appCtx, options)
+                        lastFirebaseInitError = null
                         Log.i("SonixStartup", "FirebaseApp initialized manually via FirebaseOptions.")
                     } else {
+                        if (lastFirebaseInitError.isNullOrBlank()) {
+                            lastFirebaseInitError = "FirebaseOptions.fromResource returned null (missing google-services resources)."
+                        }
                         Log.i("SonixStartup", "Firebase config not provided; running local studio tools.")
                     }
+                } else {
+                    lastFirebaseInitError = null
                 }
+            } else {
+                lastFirebaseInitError = null
             }
         } catch (t: Throwable) {
+            lastFirebaseInitError = t.localizedMessage ?: t.javaClass.simpleName
             Log.w("SonixStartup", "FirebaseApp.initializeApp failed safely: ${t.message}")
             AppDiagnosticLog.logRecoverable(
                 toolName = "FirebaseInit",

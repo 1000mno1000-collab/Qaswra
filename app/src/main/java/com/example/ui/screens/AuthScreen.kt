@@ -14,6 +14,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -355,6 +357,15 @@ fun AuthScreen(
             val firebaseReady = SonixCrashGuard.ensureFirebaseInitialized(context)
             if (!firebaseReady) {
                 isGoogleLoading = false
+                val initCause = SonixCrashGuard.lastFirebaseInitError
+                AppDiagnosticLog.logRecoverable(
+                    toolName = "GoogleSignIn",
+                    titleAr = "خدمات Firebase غير مهيأة لتسجيل Google",
+                    titleEn = "Firebase Not Initialized for Google Sign-In",
+                    causeAr = initCause ?: "FirebaseApp.getApps(context) is empty",
+                    causeEn = initCause ?: "FirebaseApp.getApps(context) is empty",
+                    errorCode = "FIREBASE_NOT_INITIALIZED",
+                )
                 errorMsg = if (isEn) {
                     "Firebase is not configured yet for Google Sign-In. You can use Email Sign-In or Guest Mode."
                 } else {
@@ -661,7 +672,7 @@ private fun AuthScreenContent(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 10.dp),
+                .padding(horizontal = 20.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -671,82 +682,90 @@ private fun AuthScreenContent(
             )
         }
 
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            contentAlignment = Alignment.Center,
         ) {
+            val minViewportHeight = (maxHeight - 16.dp).coerceAtLeast(0.dp)
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 520.dp)
+                    .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                val logoBorderBrush = remember {
-                    Brush.linearGradient(
-                        colors = listOf(StudioColors.Cyan, StudioColors.Violet),
-                    )
-                }
-                Surface(
-                    shape = RoundedCornerShape(26.dp),
-                    color = Color(0xFFFFFFFE),
-                    border = BorderStroke(
-                        width = 1.8.dp,
-                        brush = logoBorderBrush,
-                    ),
-                    shadowElevation = 14.dp,
-                    modifier = Modifier.size(88.dp),
-                ) {
-                    Image(
-                        bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
-                        contentDescription = t(lang, "app_name"),
-                        contentScale = ContentScale.Crop,
-                        filterQuality = FilterQuality.High,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(24.dp)),
-                    )
-                }
-
                 Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 520.dp)
+                        .heightIn(min = minViewportHeight),
+                    verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text(
-                        text = t(lang, "app_name"),
-                        style = MaterialTheme.typography.displaySmall.copy(
-                            fontWeight = FontWeight.ExtraBold,
-                            textDirection = TextDirection.Ltr,
+                    val logoBorderBrush = remember {
+                        Brush.linearGradient(
+                            colors = listOf(StudioColors.Cyan, StudioColors.Violet),
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = Color(0xFFFFFFFE),
+                        border = BorderStroke(
+                            width = 1.8.dp,
+                            brush = logoBorderBrush,
                         ),
-                        color = StudioColors.TextPrimary,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        softWrap = false,
-                    )
-                    Text(
-                        text = t(lang, "studio_tagline"),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = StudioColors.TextSecondary,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-
-                Card(
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-                    border = BorderStroke(1.dp, StudioColors.Border),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
+                        shadowElevation = 14.dp,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                            .size(76.dp)
+                            .testTag("auth_brand_logo"),
                     ) {
+                        Image(
+                            bitmap = ImageBitmap.imageResource(R.drawable.sonix_primary_logo),
+                            contentDescription = t(lang, "app_name"),
+                            contentScale = ContentScale.Crop,
+                            filterQuality = FilterQuality.High,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(20.dp)),
+                        )
+                    }
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = t(lang, "app_name"),
+                            style = MaterialTheme.typography.headlineLarge.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                textDirection = TextDirection.Ltr,
+                            ),
+                            color = StudioColors.TextPrimary,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                        Text(
+                            text = t(lang, "studio_tagline"),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = StudioColors.TextSecondary,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+
+                    Card(
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                        border = BorderStroke(1.dp, StudioColors.Border),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
                         // Sign In / Create Account segmented toggle
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1045,7 +1064,8 @@ private fun AuthScreenContent(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
             }
         }
     }
