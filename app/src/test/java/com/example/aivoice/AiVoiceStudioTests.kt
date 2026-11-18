@@ -193,4 +193,20 @@ class AiVoiceStudioTests {
         assertEquals("", defaultUi.backendBearerToken)
         assertEquals(AiVoiceEngineKind.VOXCPM_2, defaultUi.selectedEngine)
     }
+
+    @Test
+    fun userSelectableEnginesExcludeUnapprovedTurboAndPreservePrimaryAndOfflineFallback() {
+        val selectable = AiVoiceEngineKind.entries.filter { it.isUserSelectable }
+        assertTrue(selectable.contains(AiVoiceEngineKind.VOXCPM_2))
+        assertTrue(selectable.contains(AiVoiceEngineKind.SONIX_LOCAL_STUDIO))
+        assertTrue(selectable.none { it == AiVoiceEngineKind.AUDAR_TTS_V1_TURBO })
+    }
+
+    @Test
+    fun globalBuiltInCharactersProvideMaleFemaleRegionalAndGlobalVoices() {
+        assertTrue(BUILT_IN_AI_VOICE_CHARACTERS.any { it.category == AiVoiceCategory.MALE })
+        assertTrue(BUILT_IN_AI_VOICE_CHARACTERS.any { it.category == AiVoiceCategory.FEMALE })
+        assertTrue(BUILT_IN_AI_VOICE_CHARACTERS.any { it.language == AiVoiceLanguage.EN })
+        assertTrue(BUILT_IN_AI_VOICE_CHARACTERS.map { it.dialect }.toSet().size >= 4)
+    }
 }

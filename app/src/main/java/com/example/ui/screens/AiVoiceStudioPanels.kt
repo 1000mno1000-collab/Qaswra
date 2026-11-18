@@ -11,10 +11,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Add
@@ -66,6 +70,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -88,7 +93,7 @@ fun AiVoiceConfigurationBanner(
     state: AiVoiceStudioUiState,
     isEnglish: Boolean,
     onDismiss: () -> Unit,
-    onOpenServerTab: () -> Unit,
+    onOpenServerTab: () -> Unit = {},
     onUseLocalFallback: () -> Unit,
 ) {
     val title = state.errorTitle ?: return
@@ -166,43 +171,24 @@ fun AiVoiceConfigurationBanner(
                     )
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                Button(
+                    onClick = onUseLocalFallback,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.Cyan,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("ai_voice_use_local_fallback_btn"),
                 ) {
-                    OutlinedButton(
-                        onClick = onOpenServerTab,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .testTag("ai_voice_open_server_setup_btn"),
-                    ) {
-                        Text(
-                            text = if (isEnglish) "Server Setup" else "ربط سيرفر GPU",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Button(
-                        onClick = onUseLocalFallback,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = StudioColors.Cyan,
-                            contentColor = StudioColors.BgTop,
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .testTag("ai_voice_use_local_fallback_btn"),
-                    ) {
-                        Text(
-                            text = if (isEnglish) "Use Local Engine" else "تشغيل بالمحلي الآن",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
+                    Text(
+                        text = if (isEnglish) "Use Local Studio Engine Now" else "تشغيل بالمحرك المحلي الآن",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.Bold,
+                    )
                 }
             }
         }
@@ -427,6 +413,7 @@ fun AiVoiceDialogueTab(
     onCancelSynthesis: () -> Unit,
 ) {
     val characters = state.allCharacters
+    val focusManager = LocalFocusManager.current
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Card(
@@ -509,14 +496,17 @@ fun AiVoiceDialogueTab(
 
                     Box {
                         OutlinedButton(
-                            onClick = { charMenuOpen = true },
+                            onClick = {
+                                focusManager.clearFocus()
+                                charMenuOpen = true
+                            },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = 48.dp),
                         ) {
                             Text(
-                                text = "${selectedChar.displayName(isEnglish)} • ${selectedChar.category.titleAr}",
+                                text = "${selectedChar.displayName(isEnglish)} • ${if (isEnglish) selectedChar.category.titleEn else selectedChar.category.titleAr}",
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -524,17 +514,47 @@ fun AiVoiceDialogueTab(
                         DropdownMenu(
                             expanded = charMenuOpen,
                             onDismissRequest = { charMenuOpen = false },
+                            containerColor = StudioColors.ElevatedSurface,
                         ) {
-                            characters.forEach { ch ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text("${ch.displayName(isEnglish)} (${if (isEnglish) ch.dialect.titleEn else ch.dialect.titleAr})")
-                                    },
-                                    onClick = {
-                                        onUpdateTurn(turn.id) { it.copy(characterId = ch.id, emotion = ch.defaultEmotion, pace = ch.defaultPace) }
-                                        charMenuOpen = false
-                                    },
-                                )
+                            Column(
+                                modifier = Modifier
+                                    .widthIn(min = 220.dp, max = 320.dp)
+                                    .heightIn(max = 216.dp)
+                                    .verticalScroll(rememberScrollState()),
+                            ) {
+                                characters.forEach { ch ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = "${ch.displayName(isEnglish)} (${if (isEnglish) ch.dialect.titleEn else ch.dialect.titleAr})",
+                                                color = if (ch.id == selectedChar.id) StudioColors.Cyan else StudioColors.TextPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        },
+                                        onClick = {
+                                            focusManager.clearFocus()
+                                            val nextEngine = when (state.selectedEngine) {
+                                                AiVoiceEngineKind.SONIX_LOCAL_STUDIO -> AiVoiceEngineKind.SONIX_LOCAL_STUDIO
+                                                AiVoiceEngineKind.EDGE_NEURAL_FREE -> AiVoiceEngineKind.EDGE_NEURAL_FREE
+                                                else -> ch.preferredEngine
+                                            }
+                                            val safeEmotion = if (ch.defaultEmotion in nextEngine.supportedEmotions()) {
+                                                ch.defaultEmotion
+                                            } else {
+                                                AiVoiceEmotion.NEUTRAL
+                                            }
+                                            onUpdateTurn(turn.id) {
+                                                it.copy(
+                                                    characterId = ch.id,
+                                                    emotion = safeEmotion,
+                                                    pace = ch.defaultPace,
+                                                )
+                                            }
+                                            charMenuOpen = false
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -554,15 +574,27 @@ fun AiVoiceDialogueTab(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
+                    val turnSupportedEmotions = remember(state.selectedEngine, selectedChar.preferredEngine) {
+                        val effectiveEngine = when (state.selectedEngine) {
+                            AiVoiceEngineKind.SONIX_LOCAL_STUDIO -> AiVoiceEngineKind.SONIX_LOCAL_STUDIO
+                            AiVoiceEngineKind.EDGE_NEURAL_FREE -> AiVoiceEngineKind.EDGE_NEURAL_FREE
+                            else -> selectedChar.preferredEngine
+                        }
+                        effectiveEngine.supportedEmotions()
+                    }
+
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        AiVoiceEmotion.entries.forEach { emo ->
+                        turnSupportedEmotions.forEach { emo ->
                             val selected = turn.emotion == emo
                             FilterChip(
                                 selected = selected,
-                                onClick = { onUpdateTurn(turn.id) { it.copy(emotion = emo) } },
+                                onClick = {
+                                    focusManager.clearFocus()
+                                    onUpdateTurn(turn.id) { it.copy(emotion = emo) }
+                                },
                                 label = { Text(if (isEnglish) emo.titleEn else emo.titleAr, maxLines = 1) },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.22f),
@@ -579,7 +611,10 @@ fun AiVoiceDialogueTab(
                         AiDeliveryPace.entries.forEach { pace ->
                             FilterChip(
                                 selected = turn.pace == pace,
-                                onClick = { onUpdateTurn(turn.id) { it.copy(pace = pace) } },
+                                onClick = {
+                                    focusManager.clearFocus()
+                                    onUpdateTurn(turn.id) { it.copy(pace = pace) }
+                                },
                                 label = { Text(if (isEnglish) pace.titleEn else pace.titleAr, maxLines = 1) },
                             )
                         }

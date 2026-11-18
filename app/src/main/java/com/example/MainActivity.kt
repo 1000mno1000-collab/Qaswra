@@ -20,6 +20,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -29,6 +34,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -46,10 +52,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.HourglassTop
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Tune
@@ -97,6 +106,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
@@ -695,56 +705,9 @@ private fun SonixRootApp(
                         modifier = Modifier
                             .fillMaxSize()
                             .statusBarsPadding()
-                            .padding(bottom = innerPadding.calculateBottomPadding()),
+                            .padding(bottom = innerPadding.calculateBottomPadding())
+                            .consumeWindowInsets(innerPadding),
                     ) {
-                        uiState.statusBanner?.let { banner ->
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Surface(
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = StudioColors.ElevatedSurface,
-                                    border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.5f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .widthIn(max = 640.dp),
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                    ) {
-                                        Text(
-                                            text = banner,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = StudioColors.Cyan,
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                        val dismissInteraction = remember { MutableInteractionSource() }
-                                        IconButton(
-                                            onClick = { viewModel.clearBanner() },
-                                            interactionSource = dismissInteraction,
-                                            modifier = Modifier
-                                                .size(48.dp)
-                                                .lit(dismissInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                                                .testTag("dismiss_banner_button"),
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Close,
-                                                contentDescription = "Dismiss",
-                                                tint = StudioColors.TextSecondary,
-                                                modifier = Modifier.size(18.dp),
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
 
                         uiState.importProgress?.let { progress ->
                             val pct = (progress.coerceIn(0f, 1f) * 100f).toInt()
@@ -1189,6 +1152,93 @@ private fun SonixRootApp(
                         onSelect = { viewModel.setSleepTimer(it) },
                         onDismiss = { sleepTimerDialogOpen = false },
                     )
+                }
+            }
+
+            // Floating top-center toast notification overlay above all controls, scrolling, and keyboard
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .padding(top = 8.dp, start = 16.dp, end = 16.dp)
+                    .zIndex(20f),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                AnimatedVisibility(
+                    visible = !uiState.statusBanner.isNullOrBlank(),
+                    enter = fadeIn() + slideInVertically { -it / 2 },
+                    exit = fadeOut() + slideOutVertically { -it / 2 },
+                ) {
+                    val banner = uiState.statusBanner.orEmpty()
+                    val isErr = banner.contains("تعذر") || banner.contains("خطأ") ||
+                        banner.contains("فشل") || banner.contains("failed", ignoreCase = true) ||
+                        banner.contains("error", ignoreCase = true)
+                    val isWait = banner.contains("جاري") || banner.contains("انتظار") ||
+                        banner.contains("تحميل") || banner.contains("Generating", ignoreCase = true) ||
+                        banner.contains("Loading", ignoreCase = true)
+                    val isSuccess = banner.contains("نجاح") || banner.contains("تم ") ||
+                        banner.contains("جاهز") || banner.contains("success", ignoreCase = true)
+
+                    val accentColor = when {
+                        isErr -> StudioColors.RoseBright
+                        isWait -> StudioColors.Amber
+                        isSuccess -> StudioColors.Emerald
+                        else -> StudioColors.Cyan
+                    }
+                    val statusIcon = when {
+                        isErr -> Icons.Rounded.ErrorOutline
+                        isWait -> Icons.Rounded.HourglassTop
+                        isSuccess -> Icons.Rounded.CheckCircle
+                        else -> Icons.Rounded.Info
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = StudioColors.ElevatedSurface.copy(alpha = 0.97f),
+                        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.6f)),
+                        shadowElevation = 10.dp,
+                        modifier = Modifier
+                            .widthIn(min = 220.dp, max = 520.dp)
+                            .testTag("floating_top_status_banner"),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = statusIcon,
+                                contentDescription = null,
+                                tint = accentColor,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = banner,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = StudioColors.TextPrimary,
+                                textAlign = TextAlign.Start,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            val dismissInteraction = remember { MutableInteractionSource() }
+                            IconButton(
+                                onClick = { viewModel.clearBanner() },
+                                interactionSource = dismissInteraction,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .lit(dismissInteraction, accentColor, cornerRadius = 24.dp)
+                                    .testTag("dismiss_banner_button"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Dismiss",
+                                    tint = StudioColors.TextSecondary,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

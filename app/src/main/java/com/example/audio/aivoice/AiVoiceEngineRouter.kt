@@ -685,6 +685,12 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
         val pitchRatio = Math.pow(2.0, ((request.pitchOffsetSemitones + request.emotion.pitchBiasSemitones) / 12.0)).toFloat()
             .coerceIn(0.65f, 1.60f)
 
+        val appLang = when (request.language) {
+            AiVoiceLanguage.EN -> AppLanguage.EN
+            AiVoiceLanguage.FA -> AppLanguage.FA
+            else -> AppLanguage.AR
+        }
+
         val outcome = smartRouter.synthesizeStudioVoiceWithStatus(
             context = context,
             text = textChunk,
@@ -693,7 +699,7 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
             style = mappedStyle,
             speechRate = speed,
             pitch = pitchRatio,
-            language = AppLanguage.AR,
+            language = appLang,
             studioLuxuryEnhancement = true,
             acousticMode = acousticMode,
             autoDownloadIfOnline = false,
@@ -707,10 +713,10 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
             )
             is VoiceRouteOutcome.Success -> {
                 var buf = outcome.result.buffer
-                if (request.emotion == AiVoiceEmotion.WHISPER) {
-                    buf = applySoftWhisperShaping(buf)
+                buf = if (request.emotion == AiVoiceEmotion.WHISPER) {
+                    applySoftWhisperShaping(buf)
                 } else {
-                    buf = applyCategoryFormantShaping(buf, request.category, request.emotion)
+                    applyCategoryFormantShaping(buf, request.category, request.emotion, request.emotionIntensity)
                 }
                 writeStereoWavFile(outWavFile, buf)
                 runCatching { outcome.result.audioFile.delete() }
@@ -730,8 +736,9 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
         input: StereoAudioBuffer,
         category: AiVoiceCategory,
         emotion: AiVoiceEmotion,
+        intensity: Float = 0.65f,
     ): StereoAudioBuffer {
-        return when (category) {
+        val catShaped = when (category) {
             AiVoiceCategory.CHILD -> transformVoiceOffline(
                 source = input,
                 pitchSemitones = 2.6f,
@@ -772,6 +779,73 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
                 studioMasteringPolish = true,
             )
             else -> input
+        }
+        val k = intensity.coerceIn(0.25f, 1.0f)
+        return when (emotion) {
+            AiVoiceEmotion.CRYING -> transformVoiceOffline(
+                source = catShaped,
+                pitchSemitones = 0.25f * k,
+                formantShift = 0.98f,
+                warmthDb = 2.2f * k,
+                presenceDb = -1.2f * k,
+                mix = 0.65f,
+                vibratoHz = 6.2f,
+                vibratoDepth = 0.18f * k,
+                studioMasteringPolish = true,
+            )
+            AiVoiceEmotion.SAD -> transformVoiceOffline(
+                source = catShaped,
+                pitchSemitones = -0.5f * k,
+                formantShift = 0.97f,
+                warmthDb = 2.5f * k,
+                presenceDb = -1.5f * k,
+                mix = 0.55f,
+                vibratoHz = 4.4f,
+                vibratoDepth = 0.08f * k,
+                studioMasteringPolish = true,
+            )
+            AiVoiceEmotion.FEAR -> transformVoiceOffline(
+                source = catShaped,
+                pitchSemitones = 0.6f * k,
+                formantShift = 1.04f,
+                warmthDb = -1.0f * k,
+                presenceDb = 2.2f * k,
+                mix = 0.65f,
+                vibratoHz = 7.4f,
+                vibratoDepth = 0.20f * k,
+                studioMasteringPolish = true,
+            )
+            AiVoiceEmotion.ANGER -> transformVoiceOffline(
+                source = catShaped,
+                pitchSemitones = -0.3f * k,
+                formantShift = 0.96f,
+                warmthDb = 1.5f * k,
+                presenceDb = 3.8f * k,
+                mix = 0.70f,
+                bassBoostDb = 2.0f * k,
+                studioMasteringPolish = true,
+            )
+            AiVoiceEmotion.JOY, AiVoiceEmotion.EXCITED, AiVoiceEmotion.LAUGH, AiVoiceEmotion.SURPRISED -> transformVoiceOffline(
+                source = catShaped,
+                pitchSemitones = 0.7f * k,
+                formantShift = 1.04f,
+                warmthDb = 0.6f * k,
+                presenceDb = 2.8f * k,
+                mix = 0.60f,
+                vibratoHz = if (emotion == AiVoiceEmotion.LAUGH) 8.5f else 0f,
+                vibratoDepth = if (emotion == AiVoiceEmotion.LAUGH) 0.14f * k else 0f,
+                studioMasteringPolish = true,
+            )
+            AiVoiceEmotion.CALM -> transformVoiceOffline(
+                source = catShaped,
+                pitchSemitones = -0.35f * k,
+                formantShift = 0.98f,
+                warmthDb = 3.0f * k,
+                presenceDb = -1.0f * k,
+                mix = 0.55f,
+                studioMasteringPolish = true,
+            )
+            else -> catShaped
         }
     }
 
@@ -1005,8 +1079,17 @@ class AiVoiceStudioCoordinator(
             )
         }
 
+        val autoSwitchedOffline = request.engine != AiVoiceEngineKind.SONIX_LOCAL_STUDIO &&
+            !OnlineGuard.isOnline(context)
+        val effectiveEngine = if (autoSwitchedOffline) AiVoiceEngineKind.SONIX_LOCAL_STUDIO else request.engine
+        val effectiveRequest = if (autoSwitchedOffline) {
+            request.copy(engine = effectiveEngine)
+        } else {
+            request
+        }
+
         val chunks = AiVoicePromptBuilder.splitTextIntoChunks(clean, maxCharsPerChunk = 260)
-        val provider = getProvider(request.engine)
+        val provider = getProvider(effectiveEngine)
         val tempFiles = mutableListOf<File>()
         val segments = mutableListOf<WavStitchSegment>()
         var lastPrompt = ""
@@ -1016,11 +1099,16 @@ class AiVoiceStudioCoordinator(
             for ((idx, chunk) in chunks.withIndex()) {
                 coroutineContext.ensureActive()
                 val pct = 0.08f + (idx.toFloat() / chunks.size.toFloat()) * 0.78f
-                onProgress(pct, "جاري توليد المقطع ${idx + 1} من ${chunks.size}...")
+                val progressMsg = if (autoSwitchedOffline) {
+                    "انقطع الإنترنت — التوليد التلقائي بالمحرك المحلي (${idx + 1}/${chunks.size})..."
+                } else {
+                    "جاري توليد المقطع ${idx + 1} من ${chunks.size}..."
+                }
+                onProgress(pct, progressMsg)
                 val chunkFile = File(outputDir, "aivoice_chunk_${UUID.randomUUID()}.wav")
                 tempFiles.add(chunkFile)
 
-                when (val res = provider.synthesizeChunk(context, request, chunk, backendUrl, chunkFile, bearerToken)) {
+                when (val res = provider.synthesizeChunk(context, effectiveRequest, chunk, backendUrl, chunkFile, bearerToken)) {
                     is AiVoiceSynthOutcome.ConfigurationRequired -> return@withContext res
                     is AiVoiceSynthOutcome.Error -> return@withContext res
                     is AiVoiceSynthOutcome.Success -> {
@@ -1036,15 +1124,20 @@ class AiVoiceStudioCoordinator(
             val stitched = AiVoiceAudioStitcher.stitchWavSegments(
                 segments = segments,
                 outFile = finalFile,
-                targetSampleRate = if (request.engine == AiVoiceEngineKind.VOXCPM_2 && isCloud) 48000 else TARGET_SAMPLE_RATE,
+                targetSampleRate = if (effectiveEngine == AiVoiceEngineKind.VOXCPM_2 && isCloud) 48000 else TARGET_SAMPLE_RATE,
             )
             onProgress(1f, "اكتمل التوليد بنجاح")
+            val summaryText = if (autoSwitchedOffline) {
+                "$lastPrompt • تبديل أوفلاين تلقائي"
+            } else {
+                lastPrompt
+            }
             AiVoiceSynthOutcome.Success(
                 audioFilePath = stitched.outputFile.absolutePath,
                 sampleRate = stitched.sampleRate,
                 durationMs = stitched.durationMs,
-                engineUsed = request.engine,
-                appliedPromptSummary = lastPrompt,
+                engineUsed = effectiveEngine,
+                appliedPromptSummary = summaryText,
                 isCloudGenerated = isCloud,
             )
         } finally {

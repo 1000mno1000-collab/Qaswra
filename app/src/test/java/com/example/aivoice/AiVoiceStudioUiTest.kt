@@ -288,4 +288,82 @@ class AiVoiceStudioUiTest {
         composeRule.onNodeWithTag("ai_voice_emotion_anger").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("ai_voice_emotion_whisper").assertDoesNotExist()
     }
+
+    @Test
+    fun serverUiIsHiddenAndEngineDropdownExcludesUnwantedTurbo() {
+        val state = AiVoiceStudioUiState(
+            errorTitle = "إعداد مطلوب",
+            setupRequiredGuide = "يرجى التبديل للمحلي",
+        )
+
+        composeRule.setContent {
+            SonixTheme {
+                AiVoiceStudioContentLayout(
+                    state = state,
+                    language = AppLanguage.AR,
+                    hasStudioAudio = false,
+                    onBack = {},
+                    onSelectTab = {},
+                    onDismissError = {},
+                    onUseLocalFallback = {},
+                    onPlayPause = {},
+                    onReplay = {},
+                    onStopPlayback = {},
+                    onSeekMs = {},
+                    onSaveWav = {},
+                    onShare = {},
+                    onInsertIntoStudio = {},
+                    onScriptChange = {},
+                    onSelectEngine = {},
+                    onSelectLanguage = {},
+                    onSelectDialect = {},
+                    onSelectCharacter = {},
+                    onToggleFavorite = {},
+                    onSelectEmotion = {},
+                    onSelectPace = {},
+                    onPitchOffsetChange = {},
+                    onIntensityChange = {},
+                    onDescriptionChange = {},
+                    onPickReferenceFile = {},
+                    onUseStudioBufferAsReference = {},
+                    onClearReference = {},
+                    onReferenceTranscriptChange = {},
+                    onRightsConfirmedChange = {},
+                    onOpenSaveCharacterDialog = {},
+                    onAddDialogueTurn = {},
+                    onRemoveDialogueTurn = {},
+                    onMoveDialogueTurn = { _, _ -> },
+                    onUpdateDialogueTurn = { _, _ -> },
+                    onSynthesizeDialogue = {},
+                    onApplyCharacterToStudio = {},
+                    onAddCharacterToDialogue = {},
+                    onSaveCustomCharacter = { _, _ -> },
+                    onDeleteSavedCharacter = {},
+                    onSaveBackendUrl = {},
+                    onSaveBackendToken = {},
+                    onCheckBackendHealth = { _, _ -> },
+                    onPreviewClick = {},
+                    onCancelSynthesis = {},
+                    onApproveClick = {},
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("ai_voice_tab_3").assertDoesNotExist()
+        composeRule.onNodeWithTag("ai_voice_open_server_setup_btn").assertDoesNotExist()
+        composeRule.onNodeWithTag("ai_voice_use_local_fallback_btn").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("ai_voice_scroll_list")
+            .performScrollToNode(hasTestTag("studio_group_voice_toggle"))
+        composeRule.onNodeWithTag("studio_group_voice_toggle").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("ai_voice_engine_dropdown").performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("ai_voice_engine_${AiVoiceEngineKind.VOXCPM_2.id}").assertIsDisplayed()
+        composeRule.onNodeWithTag("ai_voice_engine_${AiVoiceEngineKind.SONIX_LOCAL_STUDIO.id}").assertIsDisplayed()
+        composeRule.onNodeWithTag("ai_voice_engine_${AiVoiceEngineKind.AUDAR_TTS_V1_TURBO.id}").assertDoesNotExist()
+    }
 }

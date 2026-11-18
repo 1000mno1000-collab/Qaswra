@@ -183,6 +183,7 @@ import com.example.network.AppUpdateCheckResult
 import com.example.network.AppUpdateManager
 import com.example.network.AppUpdateOutcome
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
@@ -682,7 +683,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        val firebaseAuth = runCatching { Firebase.auth }.getOrNull()
+        val firebaseReady = FirebaseApp.getApps(getApplication()).isNotEmpty()
+        val firebaseAuth = if (firebaseReady) runCatching { Firebase.auth }.getOrNull() else null
         firebaseAuth?.addAuthStateListener(authStateListener)
         attachCloudListeners(firebaseAuth?.currentUser?.uid)
         if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
@@ -740,6 +742,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     val effectiveSession = if (
                         snap.authSession is AuthSession.SignedOut &&
                         cur.authSession is AuthSession.SignedIn &&
+                        FirebaseApp.getApps(getApplication()).isNotEmpty() &&
                         runCatching { FirebaseAuth.getInstance().currentUser != null }.getOrDefault(false)
                     ) {
                         cur.authSession
@@ -2948,7 +2951,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             repository.deleteProject(project.id)
             if (_uiState.value.activeProjectId == project.id) {
-                _uiState.update { it.copy(activeProjectId = 0L) }
+                _uiState.update { cur ->
+                    cur.copy(
+                        activeProjectId = 0L,
+                        activeProjectName = t(cur.language, "untitled_project"),
+                        activeCloudDraftId = null,
+                        hasUnsavedChanges = activeBuffer != null,
+                    )
+                }
             }
             postBanner("تم حذف المشروع \"${project.name}\"")
         }
@@ -6603,7 +6613,42 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setAiVoiceScriptText(text: String) {
-        _aiVoiceUiState.update { it.copy(scriptText = text) }
+        val prevText = _aiVoiceUiState.value.scriptText
+        if (prevText != text) {
+            stopAiVoiceOutput()
+        }
+        if (text.isBlank()) {
+            aiVoiceSynthJob?.cancel()
+            aiVoiceSynthJob = null
+            val oldPath = _aiVoiceUiState.value.lastOutputWavPath
+            if (!oldPath.isNullOrBlank()) {
+                runCatching { File(oldPath).delete() }
+            }
+            _aiVoiceUiState.update {
+                it.copy(
+                    scriptText = text,
+                    isSynthesizing = false,
+                    synthesisProgress = 0f,
+                    synthesisStatusLabel = "",
+                    lastOutputWavPath = null,
+                    lastOutputDurationMs = 0L,
+                    lastOutputAppliedPrompt = null,
+                    lastOutputEngine = null,
+                    errorTitle = null,
+                    errorDetail = null,
+                    setupRequiredGuide = null,
+                )
+            }
+        } else {
+            _aiVoiceUiState.update {
+                it.copy(
+                    scriptText = text,
+                    errorTitle = null,
+                    errorDetail = null,
+                    setupRequiredGuide = null,
+                )
+            }
+        }
     }
 
     fun setAiVoiceReferenceTranscript(text: String) {
@@ -7274,7 +7319,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         super.onCleared()
         developerPanelController.stopCollectors()
-        runCatching { Firebase.auth.removeAuthStateListener(authStateListener) }
+        if (FirebaseApp.getApps(getApplication()).isNotEmpty()) {
+            runCatching { Firebase.auth.removeAuthStateListener(authStateListener) }
+        }
         sliderDebounceJob?.cancel()
         activeOnlineJob?.cancel()
         aiVoiceSynthJob?.cancel()

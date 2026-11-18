@@ -1267,6 +1267,7 @@ fun TextToSpeechStudioScreen(
                     val sampleInteraction = remember { MutableInteractionSource() }
                     OutlinedButton(
                         onClick = {
+                            viewModel.stopTtsPreview()
                             preferVmUndo = false
                             textInput = selectedDialect.sampleText
                             ttsHistory.commit(currentTtsSnap(txt = selectedDialect.sampleText))
@@ -1285,6 +1286,9 @@ fun TextToSpeechStudioScreen(
                 OutlinedTextField(
                     value = textInput,
                     onValueChange = {
+                        if (it != textInput) {
+                            viewModel.stopTtsPreview()
+                        }
                         preferVmUndo = false
                         textInput = it
                         ttsHistory.commit(currentTtsSnap(txt = it), debounceMs = 350L)

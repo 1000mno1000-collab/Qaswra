@@ -119,12 +119,27 @@ class StudioSpeechTranscriber(private val context: Context) {
     }
 
     fun clear() {
+        val wasListening = keepListening
+        val wasClip = _state.value.isRoutingClip
+        val loc = currentLocaleTag
+        if (wasListening) {
+            synchronized(sessionGuard) {
+                currentSessionId++
+                localMoonshineEngine.stop()
+                cancelEndOfSpeechWatchdog()
+                mainHandler.removeCallbacksAndMessages(null)
+                destroyAndroidRecognizerOnMain()
+            }
+        }
         _state.update {
             it.copy(
                 committedText = "",
                 partialText = "",
                 errorMessage = null,
             )
+        }
+        if (wasListening) {
+            startListening(loc, isClipRouting = wasClip)
         }
     }
 

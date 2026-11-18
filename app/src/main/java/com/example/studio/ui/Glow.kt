@@ -9,75 +9,87 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
- * وهج ناعم خلف العنصر (طبقات شفافة متدرجة، بدون blur فخفيف على الـ GPU).
+ * تحديد ناعم وأنيق داخل حدود العنصر بدون أي توهج خارجي مزعج.
  * لا يغيّر حجم أو مكان العنصر.
  */
+@Suppress("UNUSED_PARAMETER")
 fun Modifier.glow(
     color: Color,
     enabled: Boolean,
     radius: Dp = 14.dp,
     cornerRadius: Dp = 16.dp,
-    maxAlpha: Float = 0.55f
+    maxAlpha: Float = 0.55f,
 ): Modifier = composed {
     val a = animateFloatAsState(
         targetValue = if (enabled) 1f else 0f,
-        animationSpec = tween(250),
-        label = "glow"
+        animationSpec = tween(180),
+        label = "subtle_accent",
     )
-    drawBehind {
+    drawWithContent {
+        drawContent()
         val t = a.value
         if (t > 0.01f) {
-            val layers = 5
-            val step = radius.toPx() / layers
             val cr = cornerRadius.toPx()
-            for (i in layers downTo 1) {
-                val grow = step * i
-                drawRoundRect(
-                    color = color.copy(alpha = maxAlpha * t * (1f - i / (layers + 1f)) * 0.5f),
-                    topLeft = Offset(-grow, -grow),
-                    size = Size(size.width + grow * 2f, size.height + grow * 2f),
-                    cornerRadius = CornerRadius(cr + grow, cr + grow)
-                )
-            }
+            drawRoundRect(
+                color = color.copy(alpha = 0.08f * t),
+                cornerRadius = CornerRadius(cr, cr),
+            )
+            drawRoundRect(
+                color = color.copy(alpha = 0.24f * t),
+                cornerRadius = CornerRadius(cr, cr),
+                style = Stroke(width = 1.dp.toPx()),
+            )
         }
     }
 }
 
 /**
- * إنارة + تصغير نابض عند الضغط. مرر نفس interactionSource المستخدم بالـ clickable/Card/Button.
- * selected = true يخلي الوهج ثابت (للأداة المختارة).
+ * استجابة لمسية ناعمة بالضغط مع إبراز خفيف ومتناسق بدون أي هالة زرقاء خارجية.
  */
 fun Modifier.lit(
     interaction: MutableInteractionSource,
     color: Color,
     selected: Boolean = false,
-    cornerRadius: Dp = 16.dp
+    cornerRadius: Dp = 16.dp,
 ): Modifier = composed {
     val pressed by interaction.collectIsPressedAsState()
-    val s = animateFloatAsState(
-        targetValue = if (pressed) 0.96f else 1f,
-        animationSpec = spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium),
-        label = "press"
+    val scale = animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMediumLow),
+        label = "press",
+    )
+    val tintAlpha = animateFloatAsState(
+        targetValue = when {
+            pressed -> 0.10f
+            selected -> 0.04f
+            else -> 0f
+        },
+        animationSpec = tween(150),
+        label = "press_tint",
     )
     this
         .graphicsLayer {
-            scaleX = s.value
-            scaleY = s.value
+            scaleX = scale.value
+            scaleY = scale.value
         }
-        .glow(
-            color = color,
-            enabled = pressed || selected,
-            radius = if (pressed) 20.dp else 14.dp,
-            cornerRadius = cornerRadius
-        )
+        .drawWithContent {
+            drawContent()
+            val alpha = tintAlpha.value
+            if (alpha > 0.005f) {
+                val cr = cornerRadius.toPx()
+                drawRoundRect(
+                    color = color.copy(alpha = alpha),
+                    cornerRadius = CornerRadius(cr, cr),
+                )
+            }
+        }
 }

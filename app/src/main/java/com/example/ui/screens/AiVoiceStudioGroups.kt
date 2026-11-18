@@ -16,19 +16,24 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Clear
@@ -46,6 +51,7 @@ import androidx.compose.material.icons.rounded.Mood
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RecordVoiceOver
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SettingsSuggest
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Star
@@ -74,6 +80,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,6 +90,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -112,6 +120,7 @@ internal fun StudioCollapsibleGroupCard(
     onToggle: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val focusManager = LocalFocusManager.current
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -125,7 +134,10 @@ internal fun StudioCollapsibleGroupCard(
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Surface(
-                onClick = onToggle,
+                onClick = {
+                    focusManager.clearFocus()
+                    onToggle()
+                },
                 color = StudioColors.CardSurface,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -200,12 +212,21 @@ internal fun CompactDropdownField(
     selectedText: String,
     buttonTag: String,
     modifier: Modifier = Modifier,
-    menuContent: @Composable (dismiss: () -> Unit) -> Unit,
+    searchable: Boolean = false,
+    searchPlaceholder: String = "",
+    menuContent: @Composable (searchQuery: String, dismiss: () -> Unit) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+
     Box(modifier = modifier) {
         OutlinedButton(
-            onClick = { expanded = true },
+            onClick = {
+                focusManager.clearFocus()
+                searchQuery = ""
+                expanded = true
+            },
             shape = RoundedCornerShape(12.dp),
             border = BorderStroke(1.dp, StudioColors.BorderBright),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
@@ -240,9 +261,59 @@ internal fun CompactDropdownField(
         }
         DropdownMenu(
             expanded = expanded,
-            onDismissRequest = { expanded = false },
+            onDismissRequest = {
+                searchQuery = ""
+                expanded = false
+            },
+            containerColor = StudioColors.ElevatedSurface,
         ) {
-            menuContent { expanded = false }
+            Column(
+                modifier = Modifier.widthIn(min = 210.dp, max = 320.dp),
+            ) {
+                if (searchable) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = {
+                            Text(
+                                text = searchPlaceholder.ifBlank { "بحث..." },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = StudioColors.TextMuted,
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Rounded.Search,
+                                contentDescription = null,
+                                tint = StudioColors.Cyan,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = StudioColors.Cyan,
+                            unfocusedBorderColor = StudioColors.Border,
+                            focusedTextColor = StudioColors.TextPrimary,
+                            unfocusedTextColor = StudioColors.TextPrimary,
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 216.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    menuContent(searchQuery) {
+                        searchQuery = ""
+                        expanded = false
+                    }
+                }
+            }
         }
     }
 }
@@ -378,6 +449,11 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
     var expanded by rememberSaveable { mutableStateOf(false) }
     var activeFilter by rememberSaveable { mutableStateOf(state.selectedCategory.toGroupFilter()) }
     var voicesDropdownOpen by rememberSaveable { mutableStateOf(true) }
+    val focusManager = LocalFocusManager.current
+
+    LaunchedEffect(state.selectedCharacterId, state.selectedCategory) {
+        activeFilter = state.selectedCategory.toGroupFilter()
+    }
 
     val selectedChar = state.allCharacters.firstOrNull { it.id == state.selectedCharacterId }
     val summary = buildString {
@@ -401,13 +477,13 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
         expanded = expanded,
         onToggle = { expanded = !expanded },
     ) {
-        // Engine Dropdown
+        // Engine Dropdown (bounded scrollable, hides unapproved commercial engine)
         CompactDropdownField(
             label = if (isEnglish) "Voice Engine" else "المحرك الصوتي",
             selectedText = if (isEnglish) state.selectedEngine.titleEn else state.selectedEngine.titleAr,
             buttonTag = "ai_voice_engine_dropdown",
-        ) { dismiss ->
-            AiVoiceEngineKind.entries.forEach { engine ->
+        ) { _, dismiss ->
+            AiVoiceEngineKind.entries.filter { it.isUserSelectable }.forEach { engine ->
                 DropdownMenuItem(
                     text = {
                         Column {
@@ -424,6 +500,7 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                         }
                     },
                     onClick = {
+                        focusManager.clearFocus()
                         onSelectEngine(engine)
                         dismiss()
                     },
@@ -432,7 +509,7 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
             }
         }
 
-        // Language & Arabic Dialect compact Dropdowns
+        // Language & Arabic Dialect compact searchable Dropdowns (4 visible rows max)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -442,11 +519,27 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                 selectedText = if (isEnglish) state.selectedLanguage.titleEn else state.selectedLanguage.titleAr,
                 buttonTag = "ai_voice_language_dropdown",
                 modifier = Modifier.weight(1f),
-            ) { dismiss ->
-                state.selectedEngine.supportedLanguages().forEach { langOpt ->
+                searchable = true,
+                searchPlaceholder = if (isEnglish) "Search language..." else "بحث عن لغة...",
+            ) { query, dismiss ->
+                val q = query.trim()
+                val langs = state.selectedEngine.supportedLanguages().filter { langOpt ->
+                    q.isEmpty() ||
+                        langOpt.titleAr.contains(q, ignoreCase = true) ||
+                        langOpt.titleEn.contains(q, ignoreCase = true) ||
+                        langOpt.nativeName.contains(q, ignoreCase = true) ||
+                        langOpt.code.contains(q, ignoreCase = true)
+                }
+                langs.forEach { langOpt ->
                     DropdownMenuItem(
-                        text = { Text(if (isEnglish) langOpt.titleEn else langOpt.titleAr) },
+                        text = {
+                            Text(
+                                text = if (isEnglish) langOpt.titleEn else langOpt.titleAr,
+                                color = if (langOpt == state.selectedLanguage) StudioColors.Cyan else StudioColors.TextPrimary,
+                            )
+                        },
                         onClick = {
+                            focusManager.clearFocus()
                             onSelectLanguage(langOpt)
                             dismiss()
                         },
@@ -461,11 +554,26 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                     selectedText = if (isEnglish) state.selectedDialect.titleEn else state.selectedDialect.titleAr,
                     buttonTag = "ai_voice_dialect_dropdown",
                     modifier = Modifier.weight(1f),
-                ) { dismiss ->
-                    AiArabicDialect.entries.forEach { dialect ->
+                    searchable = true,
+                    searchPlaceholder = if (isEnglish) "Search dialect..." else "بحث عن لهجة...",
+                ) { query, dismiss ->
+                    val q = query.trim()
+                    val dialects = AiArabicDialect.entries.filter { dialect ->
+                        q.isEmpty() ||
+                            dialect.titleAr.contains(q, ignoreCase = true) ||
+                            dialect.titleEn.contains(q, ignoreCase = true) ||
+                            dialect.id.contains(q, ignoreCase = true)
+                    }
+                    dialects.forEach { dialect ->
                         DropdownMenuItem(
-                            text = { Text(if (isEnglish) dialect.titleEn else dialect.titleAr) },
+                            text = {
+                                Text(
+                                    text = if (isEnglish) dialect.titleEn else dialect.titleAr,
+                                    color = if (dialect == state.selectedDialect) StudioColors.Cyan else StudioColors.TextPrimary,
+                                )
+                            },
                             onClick = {
+                                focusManager.clearFocus()
                                 onSelectDialect(dialect)
                                 dismiss()
                             },
@@ -493,6 +601,7 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                 FilterChip(
                     selected = isSelected,
                     onClick = {
+                        focusManager.clearFocus()
                         if (activeFilter == filter) {
                             voicesDropdownOpen = !voicesDropdownOpen
                         } else {
@@ -523,7 +632,7 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
             }
         }
 
-        // Filtered compact voice rows shown ONLY for active category when expanded
+        // Filtered compact voice rows shown ONLY for active category when expanded (~4 rows visible max)
         val matchingCharacters = remember(state.allCharacters, state.favoriteCharacterIds, activeFilter) {
             when (activeFilter) {
                 AiVoiceGroupFilter.FAVORITES -> state.allCharacters.filter { state.isCharacterFavorite(it.id) }
@@ -532,7 +641,13 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
         }
 
         AnimatedVisibility(visible = voicesDropdownOpen) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 248.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
                 if (matchingCharacters.isEmpty()) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
@@ -555,7 +670,10 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                         val isCharSelected = state.selectedCharacterId == ch.id
                         val isFav = state.isCharacterFavorite(ch.id)
                         Surface(
-                            onClick = { onSelectCharacter(ch) },
+                            onClick = {
+                                focusManager.clearFocus()
+                                onSelectCharacter(ch)
+                            },
                             shape = RoundedCornerShape(12.dp),
                             color = if (isCharSelected) StudioColors.Cyan.copy(alpha = 0.14f) else StudioColors.ElevatedSurface,
                             border = BorderStroke(
@@ -591,7 +709,10 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                                     )
                                 }
                                 IconButton(
-                                    onClick = { onToggleFavorite(ch.id) },
+                                    onClick = {
+                                        focusManager.clearFocus()
+                                        onToggleFavorite(ch.id)
+                                    },
                                     modifier = Modifier
                                         .size(48.dp)
                                         .testTag("ai_voice_fav_toggle_${ch.id}"),
@@ -624,6 +745,7 @@ internal fun AiVoiceGroup3EmotionCard(
     var expanded by rememberSaveable { mutableStateOf(false) }
     val supported = remember(state.selectedEngine) { state.selectedEngine.supportedEmotions() }
     val activeLabel = if (isEnglish) state.selectedEmotion.titleEn else state.selectedEmotion.titleAr
+    val focusManager = LocalFocusManager.current
 
     StudioCollapsibleGroupCard(
         title = if (isEnglish) "Emotion & Expression" else "التعبير والمشاعر",
@@ -642,7 +764,10 @@ internal fun AiVoiceGroup3EmotionCard(
                 val isSelected = state.selectedEmotion == emo
                 FilterChip(
                     selected = isSelected,
-                    onClick = { onSelectEmotion(emo) },
+                    onClick = {
+                        focusManager.clearFocus()
+                        onSelectEmotion(emo)
+                    },
                     label = { Text(if (isEnglish) emo.titleEn else emo.titleAr, maxLines = 1) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.22f),
@@ -721,7 +846,7 @@ internal fun AiVoiceGroup4ControlsCard(
             label = if (isEnglish) "Speech Speed" else "سرعة الكلام",
             selectedText = if (isEnglish) state.selectedPace.titleEn else state.selectedPace.titleAr,
             buttonTag = "ai_voice_pace_dropdown",
-        ) { dismiss ->
+        ) { _, dismiss ->
             AiDeliveryPace.entries.forEach { pace ->
                 DropdownMenuItem(
                     text = { Text(if (isEnglish) pace.titleEn else pace.titleAr) },
@@ -804,7 +929,7 @@ internal fun AiVoiceGroup4ControlsCard(
 }
 
 // =========================================================================
-// Group 5: Advanced Options (Cloning, Create Character, Dialogue, Server/Export)
+// Group 5: Advanced Options (Cloning, Create Character, Dialogue, Export)
 // =========================================================================
 @Composable
 internal fun AiVoiceGroup5AdvancedCard(
@@ -818,7 +943,7 @@ internal fun AiVoiceGroup5AdvancedCard(
     onRightsConfirmedChange: (Boolean) -> Unit,
     onOpenSaveCharacterDialog: () -> Unit,
     onOpenDialogueTab: () -> Unit,
-    onOpenServerTab: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onOpenServerTab: () -> Unit = {},
     onSaveOutputWav: () -> Unit,
     onShareOutput: () -> Unit,
 ) {
@@ -827,9 +952,9 @@ internal fun AiVoiceGroup5AdvancedCard(
     StudioCollapsibleGroupCard(
         title = if (isEnglish) "Advanced Options" else "خيارات متقدمة",
         summary = if (isEnglish) {
-            "Voice Cloning • Custom Character • Dialogue • Server & Export"
+            "Voice Cloning • Custom Character • Dialogue • Export"
         } else {
-            "استنساخ الصوت • إنشاء شخصية • الحوارات • السيرفر والتصدير"
+            "استنساخ الصوت • إنشاء شخصية • الحوارات • التصدير"
         },
         icon = Icons.Rounded.SettingsSuggest,
         cardTag = "studio_group_advanced",
@@ -978,23 +1103,11 @@ internal fun AiVoiceGroup5AdvancedCard(
             }
         }
 
-        // Export & Server shortcuts
+        // Export shortcuts
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedButton(
-                onClick = onOpenServerTab,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .defaultMinSize(minHeight = 48.dp)
-                    .testTag("ai_voice_goto_server_button"),
-            ) {
-                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text(if (isEnglish) "GPU Server" else "سيرفر GPU", maxLines = 1)
-            }
             OutlinedButton(
                 onClick = onSaveOutputWav,
                 enabled = !state.lastOutputWavPath.isNullOrBlank(),
@@ -1026,7 +1139,7 @@ internal fun AiVoiceGroup5AdvancedCard(
 }
 
 // =========================================================================
-// MANDATORY Sticky Bottom Action Bar (Always Pinned, Above System/Nav Bars)
+// MANDATORY Sticky Bottom Action Bar (Always Pinned Directly Above Keyboard/Nav Bar)
 // =========================================================================
 @Composable
 internal fun AiVoiceStickyBottomActionBar(
@@ -1038,10 +1151,11 @@ internal fun AiVoiceStickyBottomActionBar(
     onApproveClick: () -> Unit,
 ) {
     val hasOutput = !state.lastOutputWavPath.isNullOrBlank()
+    val focusManager = LocalFocusManager.current
     val insetModifier = if (!hasStudioAudio) {
-        Modifier.navigationBarsPadding()
+        Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
     } else {
-        Modifier
+        Modifier.imePadding()
     }
 
     Surface(
@@ -1051,7 +1165,6 @@ internal fun AiVoiceStickyBottomActionBar(
         modifier = Modifier
             .fillMaxWidth()
             .then(insetModifier)
-            .imePadding()
             .testTag("ai_voice_sticky_bottom_bar"),
     ) {
         Box(
@@ -1094,6 +1207,7 @@ internal fun AiVoiceStickyBottomActionBar(
                 // Button 1: معاينة الصوت (Preview / Play / Pause / Cancel)
                 OutlinedButton(
                     onClick = {
+                        focusManager.clearFocus()
                         if (state.isSynthesizing) onCancelSynthesis() else onPreviewClick()
                     },
                     shape = RoundedCornerShape(14.dp),
@@ -1134,7 +1248,10 @@ internal fun AiVoiceStickyBottomActionBar(
 
                 // Button 2: موافقة / اعتماد الصوت (Approve & Insert into Studio)
                 Button(
-                    onClick = onApproveClick,
+                    onClick = {
+                        focusManager.clearFocus()
+                        onApproveClick()
+                    },
                     enabled = !state.isSynthesizing,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (hasOutput) StudioColors.Emerald else StudioColors.Cyan,

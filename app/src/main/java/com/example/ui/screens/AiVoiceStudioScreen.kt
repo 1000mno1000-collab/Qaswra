@@ -92,7 +92,14 @@ fun AiVoiceStudioScreen(
             append(state.emotionIntensity).append('|')
             append(state.voiceDescriptionPrompt).append('|')
             append(state.scriptText).append('|')
-            append(state.referenceAudioPath.orEmpty())
+            append(state.referenceAudioPath.orEmpty()).append('|')
+            append(state.referenceTranscript).append('|')
+            append(state.referenceRightsConfirmed).append('|')
+            append(
+                state.dialogueTurns.joinToString(";") { turn ->
+                    "${turn.id}:${turn.characterId}:${turn.text}:${turn.emotion.id}:${turn.emotionIntensity}:${turn.pace.id}:${turn.pauseAfterMs}"
+                },
+            )
         }
     }
 
@@ -117,7 +124,12 @@ fun AiVoiceStudioScreen(
         onSaveWav = viewModel::saveAiVoiceOutputToDevice,
         onShare = viewModel::shareAiVoiceOutput,
         onInsertIntoStudio = { viewModel.insertAiVoiceOutputIntoMainStudio(false) },
-        onScriptChange = viewModel::setAiVoiceScriptText,
+        onScriptChange = { nextText ->
+            if (nextText.isBlank()) {
+                synthesizedSignature = null
+            }
+            viewModel.setAiVoiceScriptText(nextText)
+        },
         onSelectEngine = viewModel::setAiVoiceEngine,
         onSelectLanguage = viewModel::setAiVoiceLanguage,
         onSelectDialect = viewModel::setAiVoiceDialect,
@@ -171,7 +183,15 @@ fun AiVoiceStudioScreen(
         },
         onCancelSynthesis = viewModel::cancelAiVoiceSynthesis,
         onApproveClick = {
-            if (!state.lastOutputWavPath.isNullOrBlank()) {
+            val hasValidText = if (state.activeTab == 1) {
+                state.dialogueTurns.any { it.text.isNotBlank() }
+            } else {
+                state.scriptText.isNotBlank()
+            }
+            val hasFreshOutput = hasValidText &&
+                !state.lastOutputWavPath.isNullOrBlank() &&
+                synthesizedSignature == currentInputSignature
+            if (hasFreshOutput) {
                 viewModel.insertAiVoiceOutputIntoMainStudio(false)
             } else {
                 synthesizedSignature = currentInputSignature
@@ -180,13 +200,15 @@ fun AiVoiceStudioScreen(
                 } else {
                     viewModel.synthesizeAiVoiceSingle()
                 }
-                viewModel.showStatusBanner(
-                    if (isEnglish) {
-                        "Generating voice first — tap Approve once ready to insert into studio."
-                    } else {
-                        "جاري توليد الصوت للمعاينة أولاً — اضغط اعتماد بعد الجاهزية لإدراجه بالاستوديو."
-                    },
-                )
+                if (hasValidText) {
+                    viewModel.showStatusBanner(
+                        if (isEnglish) {
+                            "Generating voice for current text — tap Approve once ready to insert."
+                        } else {
+                            "جاري توليد الصوت للنص الحالي — اضغط اعتماد بعد الجاهزية لإدراجه بالاستوديو."
+                        },
+                    )
+                }
             }
         },
         bottomHelpSlot = {
@@ -325,25 +347,26 @@ fun AiVoiceStudioContentLayout(
             ) {
                 StudioFocusTopBar(
                     title = if (isEnglish) "AI VOICE STUDIO" else "AI VOICE STUDIO – استوديو الصوت",
-                    subtitle = "VoxCPM2 • Audar-Flash • Edge Neural",
+                    subtitle = "VoxCPM2 • Local Offline Studio",
                     language = language,
                     onBack = onBack,
                 )
 
                 val tabs = if (isEnglish) {
-                    listOf("Studio", "Dialogue", "Voices", "Server")
+                    listOf("Studio", "Dialogue", "Voices")
                 } else {
-                    listOf("استوديو الصوت", "حوار متعدد", "الشخصيات", "السيرفر")
+                    listOf("استوديو الصوت", "حوار متعدد", "الشخصيات")
                 }
+                val safeActiveTab = state.activeTab.coerceIn(0, tabs.lastIndex)
 
                 TabRow(
-                    selectedTabIndex = state.activeTab,
+                    selectedTabIndex = safeActiveTab,
                     containerColor = StudioColors.CardSurface,
                     contentColor = StudioColors.Cyan,
                     indicator = { tabPositions ->
-                        if (state.activeTab in tabPositions.indices) {
+                        if (safeActiveTab in tabPositions.indices) {
                             TabRowDefaults.SecondaryIndicator(
-                                modifier = Modifier.tabIndicatorOffset(tabPositions[state.activeTab]),
+                                modifier = Modifier.tabIndicatorOffset(tabPositions[safeActiveTab]),
                                 color = StudioColors.Cyan,
                             )
                         }
@@ -355,14 +378,14 @@ fun AiVoiceStudioContentLayout(
                 ) {
                     tabs.forEachIndexed { idx, label ->
                         Tab(
-                            selected = state.activeTab == idx,
+                            selected = safeActiveTab == idx,
                             onClick = { onSelectTab(idx) },
                             text = {
                                 Text(
                                     text = label,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    fontWeight = if (state.activeTab == idx) FontWeight.Bold else FontWeight.Medium,
+                                    fontWeight = if (safeActiveTab == idx) FontWeight.Bold else FontWeight.Medium,
                                 )
                             },
                             modifier = Modifier.testTag("ai_voice_tab_$idx"),
@@ -406,7 +429,7 @@ fun AiVoiceStudioContentLayout(
                         }
                     }
 
-                    when (state.activeTab) {
+                    when (safeActiveTab) {
                         0 -> {
                             item(key = "group_1_text") {
                                 AiVoiceGroup1TextCard(
@@ -455,7 +478,6 @@ fun AiVoiceStudioContentLayout(
                                     onRightsConfirmedChange = onRightsConfirmedChange,
                                     onOpenSaveCharacterDialog = onOpenSaveCharacterDialog,
                                     onOpenDialogueTab = { onSelectTab(1) },
-                                    onOpenServerTab = { onSelectTab(3) },
                                     onSaveOutputWav = onSaveWav,
                                     onShareOutput = onShare,
                                 )
@@ -476,7 +498,7 @@ fun AiVoiceStudioContentLayout(
                                 onCancelSynthesis = onCancelSynthesis,
                             )
                         }
-                        2 -> item(key = "characters_library") {
+                        else -> item(key = "characters_library") {
                             AiVoiceCharactersTab(
                                 state = state,
                                 isEnglish = isEnglish,
@@ -484,15 +506,6 @@ fun AiVoiceStudioContentLayout(
                                 onAddCharacterToDialogue = onAddCharacterToDialogue,
                                 onSaveCurrentAsCharacter = onSaveCustomCharacter,
                                 onDeleteSavedCharacter = onDeleteSavedCharacter,
-                            )
-                        }
-                        else -> item(key = "server_setup") {
-                            AiVoiceServerSetupTab(
-                                state = state,
-                                isEnglish = isEnglish,
-                                onSaveBackendUrl = onSaveBackendUrl,
-                                onSaveBackendToken = onSaveBackendToken,
-                                onCheckHealth = onCheckBackendHealth,
                             )
                         }
                     }

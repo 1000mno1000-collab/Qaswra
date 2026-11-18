@@ -106,6 +106,9 @@ enum class AiVoiceEngineKind(
 
     fun supportedLanguages(): List<AiVoiceLanguage> =
         AiVoiceLanguage.entries.filter { supportsLanguage(it) }
+
+    val isUserSelectable: Boolean
+        get() = this != AUDAR_TTS_V1_TURBO
 }
 
 @Serializable
@@ -480,6 +483,66 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         defaultEmotionIntensity = 0.60f,
         defaultPace = AiDeliveryPace.NORMAL,
         pitchOffsetSemitones = 1.6f,
+        isBuiltIn = true,
+    ),
+    AiVoiceCharacter(
+        id = "saudi_anchor_male",
+        nameAr = "إعلامي سعودي فصيح",
+        nameEn = "Saudi Broadcast Presenter (Male)",
+        category = AiVoiceCategory.MALE,
+        language = AiVoiceLanguage.AR,
+        dialect = AiArabicDialect.SAUDI,
+        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        voiceDescriptionPrompt = "رجل سعودي بصوت إذاعي واضح ومتزن ومقنع، إلقاء إخباري وبودكاست احترافي.",
+        defaultEmotion = AiVoiceEmotion.NEUTRAL,
+        defaultEmotionIntensity = 0.60f,
+        defaultPace = AiDeliveryPace.NORMAL,
+        pitchOffsetSemitones = -1.2f,
+        isBuiltIn = true,
+    ),
+    AiVoiceCharacter(
+        id = "egyptian_actress_drama",
+        nameAr = "ممثلة مصرية درامية",
+        nameEn = "Egyptian Drama Actress",
+        category = AiVoiceCategory.FEMALE,
+        language = AiVoiceLanguage.AR,
+        dialect = AiArabicDialect.EGYPTIAN,
+        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        voiceDescriptionPrompt = "امرأة مصرية بصوت معبر دافئ ومفعم بالعاطفة والانفعال الدرامي المتقن.",
+        defaultEmotion = AiVoiceEmotion.SAD,
+        defaultEmotionIntensity = 0.72f,
+        defaultPace = AiDeliveryPace.DRAMATIC_PAUSES,
+        pitchOffsetSemitones = 1.4f,
+        isBuiltIn = true,
+    ),
+    AiVoiceCharacter(
+        id = "global_english_narrator",
+        nameAr = "راوي عالمي (English Male)",
+        nameEn = "Global English Storyteller",
+        category = AiVoiceCategory.NARRATOR,
+        language = AiVoiceLanguage.EN,
+        dialect = AiArabicDialect.MSA,
+        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        voiceDescriptionPrompt = "Rich, cinematic English male baritone storyteller with crisp articulation and calm authority.",
+        defaultEmotion = AiVoiceEmotion.CALM,
+        defaultEmotionIntensity = 0.60f,
+        defaultPace = AiDeliveryPace.SLOW,
+        pitchOffsetSemitones = -2.0f,
+        isBuiltIn = true,
+    ),
+    AiVoiceCharacter(
+        id = "global_english_female",
+        nameAr = "مقدمة عالمية (English Female)",
+        nameEn = "Global English Studio Host",
+        category = AiVoiceCategory.FEMALE,
+        language = AiVoiceLanguage.EN,
+        dialect = AiArabicDialect.MSA,
+        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        voiceDescriptionPrompt = "Warm, expressive English female host with bright smiling resonance and natural studio intimacy.",
+        defaultEmotion = AiVoiceEmotion.JOY,
+        defaultEmotionIntensity = 0.65f,
+        defaultPace = AiDeliveryPace.NORMAL,
+        pitchOffsetSemitones = 1.8f,
         isBuiltIn = true,
     ),
 )

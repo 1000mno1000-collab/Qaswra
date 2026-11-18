@@ -69,4 +69,30 @@ class FirebaseAndAuthTest {
             logEntries.any { it.msg.contains("CONFIRMED: Firebase ready") },
         )
     }
+
+    @Test
+    fun firestoreRepositoryRejectsBlankInputsWithFailureResult() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SonixCrashGuard.ensureFirebaseInitialized(context)
+        val repo = com.example.data.remote.FirestoreStudioRepository(context)
+
+        val presetRes = repo.saveCustomPreset(
+            userId = "test-user",
+            name = "   ",
+            description = "desc",
+            config = com.example.model.DspConfig(),
+        )
+        assertTrue("Blank preset name must return Result.failure", presetRes.isFailure)
+
+        val draftRes = repo.saveDraft(
+            userId = "test-user",
+            existingDraftId = null,
+            name = "   ",
+            selectedPresetName = "Studio",
+            durationMs = 1000L,
+            sampleRate = 48000,
+            config = com.example.model.DspConfig(),
+        )
+        assertTrue("Blank draft name must return Result.failure", draftRes.isFailure)
+    }
 }

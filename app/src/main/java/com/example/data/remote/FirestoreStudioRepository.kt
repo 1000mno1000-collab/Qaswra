@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
+import java.net.SocketTimeoutException
 import kotlin.math.abs
 
 enum class OperationType {
@@ -423,8 +424,14 @@ class FirestoreStudioRepository(context: Context) {
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp(),
             )
-            withTimeoutOrNull(4500L) {
+            val completed = withTimeoutOrNull(4500L) {
                 docRef.set(payload).await()
+                true
+            }
+            if (completed != true) {
+                val timeoutEx = SocketTimeoutException("Firestore write timed out after 4500ms at $path")
+                handleFirestoreError(timeoutEx, OperationType.CREATE, path)
+                return Result.failure(timeoutEx)
             }
             Result.success(docRef.id)
         } catch (e: Exception) {
@@ -439,13 +446,19 @@ class FirestoreStudioRepository(context: Context) {
             ?: return Result.failure(IllegalStateException("Firebase is not initialized"))
         val path = "users/$userId/custom_presets/$docId"
         return try {
-            withTimeoutOrNull(4500L) {
+            val completed = withTimeoutOrNull(4500L) {
                 db.collection("users")
                     .document(userId)
                     .collection("custom_presets")
                     .document(docId)
                     .delete()
                     .await()
+                true
+            }
+            if (completed != true) {
+                val timeoutEx = SocketTimeoutException("Firestore delete timed out after 4500ms at $path")
+                handleFirestoreError(timeoutEx, OperationType.DELETE, path)
+                return Result.failure(timeoutEx)
             }
             Result.success(Unit)
         } catch (e: Exception) {
@@ -527,7 +540,8 @@ class FirestoreStudioRepository(context: Context) {
         val targetRef = if (!existingDraftId.isNullOrBlank()) col.document(existingDraftId) else col.document()
         val path = "users/$userId/drafts/${targetRef.id}"
         return try {
-            if (!existingDraftId.isNullOrBlank()) {
+            val opType = if (existingDraftId.isNullOrBlank()) OperationType.CREATE else OperationType.UPDATE
+            val completed = if (!existingDraftId.isNullOrBlank()) {
                 val updates = hashMapOf<String, Any>(
                     "name" to cleanName,
                     "selectedPresetName" to cleanPreset,
@@ -538,6 +552,7 @@ class FirestoreStudioRepository(context: Context) {
                 )
                 withTimeoutOrNull(4500L) {
                     targetRef.update(updates).await()
+                    true
                 }
             } else {
                 val payload = hashMapOf<String, Any>(
@@ -552,7 +567,13 @@ class FirestoreStudioRepository(context: Context) {
                 )
                 withTimeoutOrNull(4500L) {
                     targetRef.set(payload).await()
+                    true
                 }
+            }
+            if (completed != true) {
+                val timeoutEx = SocketTimeoutException("Firestore draft write timed out after 4500ms at $path")
+                handleFirestoreError(timeoutEx, opType, path)
+                return Result.failure(timeoutEx)
             }
             Result.success(targetRef.id)
         } catch (e: Exception) {
@@ -571,13 +592,19 @@ class FirestoreStudioRepository(context: Context) {
             ?: return Result.failure(IllegalStateException("Firebase is not initialized"))
         val path = "users/$userId/drafts/$draftId"
         return try {
-            withTimeoutOrNull(4500L) {
+            val completed = withTimeoutOrNull(4500L) {
                 db.collection("users")
                     .document(userId)
                     .collection("drafts")
                     .document(draftId)
                     .delete()
                     .await()
+                true
+            }
+            if (completed != true) {
+                val timeoutEx = SocketTimeoutException("Firestore draft delete timed out after 4500ms at $path")
+                handleFirestoreError(timeoutEx, OperationType.DELETE, path)
+                return Result.failure(timeoutEx)
             }
             Result.success(Unit)
         } catch (e: Exception) {
