@@ -92,8 +92,8 @@ if (!sherpaAarFile.exists() || sherpaAarFile.length() < 100_000L) {
     sherpaLibsDir.mkdirs()
     val tmpFile = file("libs/sherpa-onnx-1.12.35.aar.part")
     val urls = listOf(
-        "https://huggingface.co/csukuangfj2/sherpa-onnx-libs/resolve/main/android/aar/1.12.35/sherpa-onnx-1.12.35.aar",
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.35/sherpa-onnx-1.12.35.aar"
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.35/sherpa-onnx-1.12.35.aar",
+        "https://huggingface.co/csukuangfj2/sherpa-onnx-libs/resolve/main/android/aar/1.12.35/sherpa-onnx-1.12.35.aar"
     )
     var downloaded = false
     for (startUrl in urls) {
