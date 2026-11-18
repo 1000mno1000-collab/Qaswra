@@ -237,6 +237,8 @@ class StudioAudioPlayer(
         }
     }
 
+    fun isCurrentlyPlaying(): Boolean = isPlaying.get()
+
     fun setLoop(enabled: Boolean, startFrac: Float = 0f, endFrac: Float = 1f) {
         loopEnabled = enabled
         loopStartFrac = clamp(startFrac, 0f, 0.99f)
@@ -304,6 +306,7 @@ class StudioAudioPlayer(
     }
 
     fun play(): Boolean {
+        AudioPlaybackController.onBeforeStudioPlayerPlay(this)
         val buf = buffer
         val diskFile = sourceFile
         if (buf == null) {
@@ -738,6 +741,7 @@ class StudioAudioPlayer(
     }
 
     fun dispose() {
+        AudioPlaybackController.unregisterStudioPlayer(this)
         stop()
     }
 

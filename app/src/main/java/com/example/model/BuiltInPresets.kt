@@ -33,7 +33,7 @@ val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
             id = GlobalProPresetId.AUTOTUNE_SYNTH,
             titleKey = "pro_preset_autotune",
             descKey = "pro_preset_autotune_desc",
-            ffmpegFilter = "asetrate=44100*0.97,aresample=44100,aecho=0.8:0.88:40:0.3,treble=g=4",
+            ffmpegFilter = "asetrate=44100*0.97,aresample=44100,aecho=0.8:0.85:40:0.30,treble=g=4,alimiter=limit=0.95",
             dspConfig = def
                 .withSlotEnabled(EffectType.PITCH_SHIFT, true)
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
@@ -71,7 +71,7 @@ val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
             id = GlobalProPresetId.EPIC_CINEMATIC,
             titleKey = "pro_preset_cinematic",
             descKey = "pro_preset_cinematic_desc",
-            ffmpegFilter = "asetrate=44100*0.86,aresample=44100,bass=g=7,aecho=0.8:0.9:80:0.45",
+            ffmpegFilter = "asetrate=44100*0.86,aresample=44100,bass=g=7,aecho=0.8:0.85:80:0.42,alimiter=limit=0.95",
             dspConfig = def
                 .withSlotEnabled(EffectType.PITCH_SHIFT, true)
                 .withSlotEnabled(EffectType.BASS_BOOST, true)
@@ -113,7 +113,7 @@ val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
             id = GlobalProPresetId.SURROUND_8D_CINEMA,
             titleKey = "pro_preset_8d",
             descKey = "pro_preset_8d_desc",
-            ffmpegFilter = "apulsator=hz=0.125,aecho=0.8:0.88:60:0.4",
+            ffmpegFilter = "apulsator=hz=0.125,aecho=0.8:0.85:60:0.38,alimiter=limit=0.95",
             dspConfig = def
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
                 .withSlotEnabled(EffectType.CHORUS, true)

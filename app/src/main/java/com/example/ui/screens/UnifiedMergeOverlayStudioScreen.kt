@@ -55,6 +55,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -455,44 +459,70 @@ fun UnifiedMergeOverlayStudioScreen(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Row(
+                val selectedMergeTab = if (params.mode == MergeStudioMode.OVERLAY) 1 else 0
+                TabRow(
+                    selectedTabIndex = selectedMergeTab,
+                    containerColor = StudioColors.BgMid,
+                    contentColor = StudioColors.Cyan,
+                    indicator = { tabPositions ->
+                        if (selectedMergeTab in tabPositions.indices) {
+                            TabRowDefaults.SecondaryIndicator(
+                                modifier = Modifier.tabIndicatorOffset(tabPositions[selectedMergeTab]),
+                                color = StudioColors.Cyan,
+                            )
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        .clip(RoundedCornerShape(12.dp))
+                        .testTag("merge_studio_tabs"),
                 ) {
-                    val modes = listOf(
-                        MergeStudioMode.SEQUENTIAL to t(lang, "merge_mode_sequential"),
-                        MergeStudioMode.CROSSFADE to t(lang, "merge_mode_crossfade"),
-                        MergeStudioMode.OVERLAY to t(lang, "merge_mode_overlay"),
+                    Tab(
+                        selected = selectedMergeTab == 0,
+                        onClick = {
+                            val nextMode = if (params.mode == MergeStudioMode.CROSSFADE) MergeStudioMode.CROSSFADE else MergeStudioMode.SEQUENTIAL
+                            updateParams { it.copy(mode = nextMode) }
+                        },
+                        text = {
+                            Text(
+                                text = t(lang, "merge_tab_sequential"),
+                                fontWeight = if (selectedMergeTab == 0) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        modifier = Modifier.testTag("merge_tab_sequential"),
                     )
-                    modes.forEach { (mode, label) ->
-                        val selected = params.mode == mode
-                        val chipInteraction = remember { MutableInteractionSource() }
-                        FilterChip(
-                            selected = selected,
-                            onClick = { updateParams { it.copy(mode = mode) } },
-                            interactionSource = chipInteraction,
-                            label = {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    Tab(
+                        selected = selectedMergeTab == 1,
+                        onClick = {
+                            expandDucking = true
+                            updateParams { cur ->
+                                cur.copy(
+                                    mode = MergeStudioMode.OVERLAY,
+                                    autoDuckingEnabled = true,
+                                    duckingStrengthPct = if (cur.duckingStrengthPct < 10f) 65f else cur.duckingStrengthPct,
                                 )
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.2f),
-                                selectedLabelColor = StudioColors.Cyan,
-                            ),
-                            modifier = Modifier
-                                .defaultMinSize(minHeight = 48.dp)
-                                .lit(chipInteraction, StudioColors.Cyan, selected = selected, cornerRadius = 10.dp)
-                                .testTag("merge_mode_${mode.name.lowercase()}"),
-                        )
-                    }
+                            }
+                        },
+                        text = {
+                            Text(
+                                text = t(lang, "merge_tab_smart_mix"),
+                                fontWeight = if (selectedMergeTab == 1) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        modifier = Modifier.testTag("merge_tab_smart_mix"),
+                    )
                 }
 
                 StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Primary Clip Balance" else "توازن المقطع الأول",
+                    label = if (params.mode == MergeStudioMode.OVERLAY) {
+                        if (lang == AppLanguage.EN) "Primary Voice Level" else "مستوى الصوت الأساسي"
+                    } else {
+                        if (lang == AppLanguage.EN) "Primary Clip Balance" else "توازن المقطع الأول"
+                    },
                     value = params.primaryLevelPct,
                     min = -60f,
                     max = 60f,
@@ -503,7 +533,11 @@ fun UnifiedMergeOverlayStudioScreen(
                 )
 
                 StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Secondary Clip Balance" else "توازن المقطع الثاني",
+                    label = if (params.mode == MergeStudioMode.OVERLAY) {
+                        if (lang == AppLanguage.EN) "Background Music Volume" else "مستوى صوت الخلفية"
+                    } else {
+                        if (lang == AppLanguage.EN) "Secondary Clip Balance" else "توازن المقطع الثاني"
+                    },
                     value = params.secondaryLevelPct,
                     min = -60f,
                     max = 60f,
@@ -513,20 +547,96 @@ fun UnifiedMergeOverlayStudioScreen(
                     onValueChange = { v -> updateParams(300L) { it.copy(secondaryLevelPct = v) } },
                 )
 
-                if (params.mode == MergeStudioMode.CROSSFADE) {
-                    StudioParamSlider(
-                        label = t(lang, "merge_crossfade_duration"),
-                        value = params.crossfadeSec,
-                        min = 0.1f,
-                        max = 15.0f,
-                        formattedValue = "${"%.2f".format(params.crossfadeSec)} s",
-                        accentColor = StudioColors.Emerald,
-                        testTag = "merge_crossfade_slider",
-                        onValueChange = { v -> updateParams(300L) { it.copy(crossfadeSec = v) } },
+                if (selectedMergeTab == 0) {
+                    val xfadeInteraction = remember { MutableInteractionSource() }
+                    FilterChip(
+                        selected = params.mode == MergeStudioMode.CROSSFADE,
+                        onClick = {
+                            val nextMode = if (params.mode == MergeStudioMode.CROSSFADE) {
+                                MergeStudioMode.SEQUENTIAL
+                            } else {
+                                MergeStudioMode.CROSSFADE
+                            }
+                            updateParams { it.copy(mode = nextMode) }
+                        },
+                        interactionSource = xfadeInteraction,
+                        label = { Text(t(lang, "merge_mode_crossfade")) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = StudioColors.Emerald.copy(alpha = 0.2f),
+                            selectedLabelColor = StudioColors.Emerald,
+                        ),
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(xfadeInteraction, StudioColors.Emerald, selected = params.mode == MergeStudioMode.CROSSFADE, cornerRadius = 10.dp)
+                            .testTag("merge_mode_crossfade"),
                     )
+
+                    if (params.mode == MergeStudioMode.CROSSFADE) {
+                        StudioParamSlider(
+                            label = t(lang, "merge_crossfade_duration"),
+                            value = params.crossfadeSec,
+                            min = 0.1f,
+                            max = 15.0f,
+                            formattedValue = "${"%.2f".format(params.crossfadeSec)} s",
+                            accentColor = StudioColors.Emerald,
+                            testTag = "merge_crossfade_slider",
+                            onValueChange = { v -> updateParams(300L) { it.copy(crossfadeSec = v) } },
+                        )
+                    }
                 }
 
                 if (params.mode == MergeStudioMode.OVERLAY) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = StudioColors.ElevatedSurface,
+                        border = BorderStroke(
+                            1.dp,
+                            if (params.autoDuckingEnabled) StudioColors.Emerald.copy(alpha = 0.6f) else StudioColors.Border,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    text = t(lang, "merge_service_ducking"),
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = StudioColors.Emerald,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Switch(
+                                    checked = params.autoDuckingEnabled,
+                                    onCheckedChange = { on -> updateParams { it.copy(autoDuckingEnabled = on) } },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = StudioColors.BgTop,
+                                        checkedTrackColor = StudioColors.Emerald,
+                                    ),
+                                    modifier = Modifier.testTag("merge_smart_ducking_switch"),
+                                )
+                            }
+                            if (params.autoDuckingEnabled) {
+                                StudioParamSlider(
+                                    label = if (lang == AppLanguage.EN) "Auto-Ducking Depth (During Speech)" else "قوة خفض الخلفية التلقائي أثناء الكلام",
+                                    value = params.duckingStrengthPct,
+                                    min = 0f,
+                                    max = 100f,
+                                    formattedValue = "${params.duckingStrengthPct.roundToInt()}%",
+                                    accentColor = StudioColors.Emerald,
+                                    testTag = "merge_ducking_strength_slider",
+                                    onValueChange = { v -> updateParams(300L) { it.copy(duckingStrengthPct = v, autoDuckingEnabled = true) } },
+                                )
+                            }
+                        }
+                    }
+
                     StudioParamSlider(
                         label = t(lang, "merge_fade_in"),
                         value = params.overlayFadeInSec,
@@ -561,29 +671,31 @@ fun UnifiedMergeOverlayStudioScreen(
             }
         }
 
-        // 4 Collapsible Pro Services
-        CollapsibleServiceCard(
-            title = t(lang, "merge_service_ducking"),
-            expanded = expandDucking,
-            enabled = params.autoDuckingEnabled,
-            accent = StudioColors.Emerald,
-            tagPrefix = "merge_service_ducking",
-            onToggleExpand = { expandDucking = !expandDucking },
-            onToggleEnabled = { on ->
-                if (on) expandDucking = true
-                updateParams { it.copy(autoDuckingEnabled = on) }
-            },
-        ) {
-            StudioParamSlider(
-                label = if (lang == AppLanguage.EN) "Ducking Attenuation Depth" else "عمق خفض الخلفية عند التحدث",
-                value = params.duckingStrengthPct,
-                min = 0f,
-                max = 100f,
-                formattedValue = "${params.duckingStrengthPct.roundToInt()}%",
-                accentColor = StudioColors.Emerald,
-                testTag = "merge_ducking_strength_slider",
-                onValueChange = { v -> updateParams(300L) { it.copy(duckingStrengthPct = v, autoDuckingEnabled = true) } },
-            )
+        // Collapsible Pro Services (Auto-Ducking is elevated inline when Smart Background Mix tab is active)
+        if (params.mode != MergeStudioMode.OVERLAY) {
+            CollapsibleServiceCard(
+                title = t(lang, "merge_service_ducking"),
+                expanded = expandDucking,
+                enabled = params.autoDuckingEnabled,
+                accent = StudioColors.Emerald,
+                tagPrefix = "merge_service_ducking",
+                onToggleExpand = { expandDucking = !expandDucking },
+                onToggleEnabled = { on ->
+                    if (on) expandDucking = true
+                    updateParams { it.copy(autoDuckingEnabled = on) }
+                },
+            ) {
+                StudioParamSlider(
+                    label = if (lang == AppLanguage.EN) "Ducking Attenuation Depth" else "عمق خفض الخلفية عند التحدث",
+                    value = params.duckingStrengthPct,
+                    min = 0f,
+                    max = 100f,
+                    formattedValue = "${params.duckingStrengthPct.roundToInt()}%",
+                    accentColor = StudioColors.Emerald,
+                    testTag = "merge_ducking_strength_slider",
+                    onValueChange = { v -> updateParams(300L) { it.copy(duckingStrengthPct = v, autoDuckingEnabled = true) } },
+                )
+            }
         }
 
         CollapsibleServiceCard(

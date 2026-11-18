@@ -5,14 +5,17 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
@@ -22,6 +25,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -104,12 +109,14 @@ import com.example.ui.components.PreviewAndApplyActionRow
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
-import com.example.ui.components.StudioScrollColumn
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.hypot
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 @Composable
@@ -126,6 +133,7 @@ fun AudioEditorScreen(
     val selLenMs = (endMs - startMs).coerceAtLeast(0L)
 
     var zoomLevel by remember { mutableFloatStateOf(1.0f) }
+    var panFraction by remember { mutableFloatStateOf(0f) }
     var autoFadeEdges by remember { mutableStateOf(true) }
     var fadeInSec by remember { mutableFloatStateOf(0.0f) }
     var fadeOutSec by remember { mutableFloatStateOf(0.0f) }
@@ -158,7 +166,8 @@ fun AudioEditorScreen(
         val restored = viewModel.consumeRestoredToolSession("editor")
         if (restored != null) {
             val fp = restored.floatParams
-            zoomLevel = (fp["zoomLevel"] ?: 1.0f).coerceIn(1f, 8f)
+            zoomLevel = (fp["zoomLevel"] ?: 1.0f).coerceIn(1f, 10f)
+            panFraction = panFraction.coerceIn(0f, (1f - 1f / zoomLevel).coerceAtLeast(0f))
             autoFadeEdges = (fp["autoFadeEdges"] ?: 1f) >= 0.5f
             fadeInSec = (fp["fadeInSec"] ?: 0f).coerceIn(0f, 10f)
             fadeOutSec = (fp["fadeOutSec"] ?: 0f).coerceIn(0f, 10f)
@@ -210,108 +219,123 @@ fun AudioEditorScreen(
         }
     }
 
-    StudioScrollColumn {
-        StudioFocusTopBar(
-            title = t(lang, "section_editor_title"),
-            subtitle = "${formatDurationCentisMs(startMs)} → ${formatDurationCentisMs(endMs)} (${formatDurationCentisMs(selLenMs)})",
-            language = lang,
-            onBack = {
-                viewModel.discardUnapprovedClipGainSession()
-                onBack()
-            },
-            trailing = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    val undoInteraction = remember { MutableInteractionSource() }
-                    IconButton(
-                        onClick = { viewModel.undoLastEdit() },
-                        enabled = uiState.canUndoEdit,
-                        interactionSource = undoInteraction,
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = StudioColors.ElevatedSurface,
-                            contentColor = StudioColors.Cyan,
-                            disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
-                        ),
-                        modifier = Modifier
-                            .size(48.dp)
-                            .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                            .testTag("editor_undo_button"),
-                    ) {
-                        Icon(Icons.AutoMirrored.Rounded.Undo, contentDescription = t(lang, "undo_edit"))
-                    }
-                    val redoInteraction = remember { MutableInteractionSource() }
-                    IconButton(
-                        onClick = { viewModel.redoLastEdit() },
-                        enabled = uiState.canRedoEdit,
-                        interactionSource = redoInteraction,
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = StudioColors.ElevatedSurface,
-                            contentColor = StudioColors.Cyan,
-                            disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
-                        ),
-                        modifier = Modifier
-                            .size(48.dp)
-                            .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                            .testTag("editor_redo_button"),
-                    ) {
-                        Icon(Icons.AutoMirrored.Rounded.Redo, contentDescription = t(lang, "redo_edit"))
-                    }
-                }
-            },
-        )
-
-        uiState.importProgress?.let { prog ->
-            val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = StudioColors.CardSurface,
-                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.6f)),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        val phaseText = if (prog >= 0.50f && !uiState.importLabel.isNullOrBlank()) {
-                            uiState.importLabel
-                        } else {
-                            t(lang, "uploading_to_cache_label")
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 640.dp)
+                .testTag("editor_lazy_list"),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            item(key = "editor_top_bar") {
+                StudioFocusTopBar(
+                    title = t(lang, "section_editor_title"),
+                    subtitle = "${formatDurationCentisMs(startMs)} → ${formatDurationCentisMs(endMs)} (${formatDurationCentisMs(selLenMs)})",
+                    language = lang,
+                    onBack = {
+                        viewModel.discardUnapprovedClipGainSession()
+                        onBack()
+                    },
+                    trailing = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            val undoInteraction = remember { MutableInteractionSource() }
+                            IconButton(
+                                onClick = { viewModel.undoLastEdit() },
+                                enabled = uiState.canUndoEdit,
+                                interactionSource = undoInteraction,
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    containerColor = StudioColors.ElevatedSurface,
+                                    contentColor = StudioColors.Cyan,
+                                    disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
+                                ),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                                    .testTag("editor_undo_button"),
+                            ) {
+                                Icon(Icons.AutoMirrored.Rounded.Undo, contentDescription = t(lang, "undo_edit"))
+                            }
+                            val redoInteraction = remember { MutableInteractionSource() }
+                            IconButton(
+                                onClick = { viewModel.redoLastEdit() },
+                                enabled = uiState.canRedoEdit,
+                                interactionSource = redoInteraction,
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    containerColor = StudioColors.ElevatedSurface,
+                                    contentColor = StudioColors.Cyan,
+                                    disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
+                                ),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                                    .testTag("editor_redo_button"),
+                            ) {
+                                Icon(Icons.AutoMirrored.Rounded.Redo, contentDescription = t(lang, "redo_edit"))
+                            }
                         }
-                        Text(
-                            text = "$phaseText $pct%",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = StudioColors.Cyan,
-                            modifier = Modifier.weight(1f),
-                        )
-                        uiState.importBytesLabel?.let { bytes ->
-                            Text(
-                                text = bytes,
-                                style = TelemetryTextStyle.copy(fontSize = 11.sp),
-                                color = StudioColors.TextSecondary,
+                    },
+                )
+            }
+
+            uiState.importProgress?.let { prog ->
+                item(key = "editor_import_progress") {
+                    val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = StudioColors.CardSurface,
+                        border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.6f)),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                val phaseText = if (prog >= 0.50f && !uiState.importLabel.isNullOrBlank()) {
+                                    uiState.importLabel
+                                } else {
+                                    t(lang, "uploading_to_cache_label")
+                                }
+                                Text(
+                                    text = "$phaseText $pct%",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = StudioColors.Cyan,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                uiState.importBytesLabel?.let { bytes ->
+                                    Text(
+                                        text = bytes,
+                                        style = TelemetryTextStyle.copy(fontSize = 11.sp),
+                                        color = StudioColors.TextSecondary,
+                                    )
+                                }
+                            }
+                            LinearProgressIndicator(
+                                progress = { prog.coerceIn(0f, 1f) },
+                                color = StudioColors.Cyan,
+                                trackColor = StudioColors.BgTop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(7.dp)
+                                    .clip(CircleShape)
+                                    .testTag("editor_import_progress_bar"),
                             )
                         }
                     }
-                    LinearProgressIndicator(
-                        progress = { prog.coerceIn(0f, 1f) },
-                        color = StudioColors.Cyan,
-                        trackColor = StudioColors.BgTop,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(7.dp)
-                            .clip(CircleShape)
-                            .testTag("editor_import_progress_bar"),
-                    )
                 }
             }
-        }
 
-        // Interactive Waveform Trim & Selection Canvas
+            item(key = "editor_waveform_card") {
         Card(
             shape = RoundedCornerShape(22.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -369,14 +393,21 @@ fun AudioEditorScreen(
                     }
                 }
 
-                // Zoom Bar (1.0x .. 8.0x)
+                // Zoom Bar (1.0x .. 10.0x)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     IconButton(
-                        onClick = { zoomLevel = (zoomLevel - 0.5f).coerceAtLeast(1f) },
+                        onClick = {
+                            val nextZoom = (zoomLevel - 0.5f).coerceAtLeast(1f)
+                            val oldSpan = 1f / zoomLevel
+                            val newSpan = 1f / nextZoom
+                            val center = panFraction + oldSpan * 0.5f
+                            zoomLevel = nextZoom
+                            panFraction = (center - newSpan * 0.5f).coerceIn(0f, (1f - newSpan).coerceAtLeast(0f))
+                        },
                         enabled = zoomLevel > 1f,
                         modifier = Modifier
                             .size(48.dp)
@@ -406,8 +437,15 @@ fun AudioEditorScreen(
                         }
                         Slider(
                             value = zoomLevel,
-                            onValueChange = { zoomLevel = it.coerceIn(1f, 8f) },
-                            valueRange = 1f..8f,
+                            onValueChange = { next ->
+                                val clamped = next.coerceIn(1f, 10f)
+                                val oldSpan = 1f / zoomLevel
+                                val newSpan = 1f / clamped
+                                val center = panFraction + oldSpan * 0.5f
+                                zoomLevel = clamped
+                                panFraction = (center - newSpan * 0.5f).coerceIn(0f, (1f - newSpan).coerceAtLeast(0f))
+                            },
+                            valueRange = 1f..10f,
                             colors = SliderDefaults.colors(
                                 thumbColor = StudioColors.Cyan,
                                 activeTrackColor = StudioColors.Cyan,
@@ -419,8 +457,15 @@ fun AudioEditorScreen(
                         )
                     }
                     IconButton(
-                        onClick = { zoomLevel = (zoomLevel + 0.5f).coerceAtMost(8f) },
-                        enabled = zoomLevel < 8f,
+                        onClick = {
+                            val nextZoom = (zoomLevel + 0.5f).coerceAtMost(10f)
+                            val oldSpan = 1f / zoomLevel
+                            val newSpan = 1f / nextZoom
+                            val center = panFraction + oldSpan * 0.5f
+                            zoomLevel = nextZoom
+                            panFraction = (center - newSpan * 0.5f).coerceIn(0f, (1f - newSpan).coerceAtLeast(0f))
+                        },
+                        enabled = zoomLevel < 10f,
                         modifier = Modifier
                             .size(48.dp)
                             .testTag("editor_zoom_in_button"),
@@ -433,179 +478,242 @@ fun AudioEditorScreen(
                     }
                 }
 
-                // Zoomable Horizontally Scrollable Waveform Canvas
+                // Interactive Pinch-to-Zoom + Horizontal Pan + Viewport-Culled Waveform Canvas
                 val density = LocalDensity.current
                 val edgePadPx = remember(density) { with(density) { 10.dp.toPx() } }
                 val handleRadiusPx = remember(density) { with(density) { 8.dp.toPx() } }
                 val handleHitRadiusPx = remember(density) { with(density) { 28.dp.toPx() } }
                 val topHandleYPx = remember(density) { with(density) { 14.dp.toPx() } }
-                BoxWithConstraints(
+                val latestPan by rememberUpdatedState(panFraction)
+
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(154.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(StudioColors.BgTop)
-                        .border(1.dp, StudioColors.BorderBright.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
-                ) {
-                    val baseWidth = maxWidth
-                    val zoomedWidth = (baseWidth * zoomLevel).coerceAtLeast(baseWidth)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .width(zoomedWidth)
-                                .height(154.dp)
-                                .pointerInput(uiState.hasAudio) {
-                                    if (!uiState.hasAudio) return@pointerInput
-                                    detectTapGestures { offset ->
-                                        val w = size.width.toFloat().coerceAtLeast(1f)
-                                        val nx = (offset.x / w).coerceIn(0f, 1f)
-                                        viewModel.seekToFraction(nx)
+                        .border(1.dp, StudioColors.BorderBright.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                        .pointerInput(uiState.hasAudio) {
+                            if (!uiState.hasAudio) return@pointerInput
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                val downPos = down.position
+                                val w = size.width.toFloat().coerceAtLeast(1f)
+                                val h = size.height.toFloat().coerceAtLeast(1f)
+                                val usableW = (w - 2f * edgePadPx).coerceAtLeast(1f)
+
+                                val curZoom = latestZoom.coerceIn(1f, 10f)
+                                val curSpan = 1f / curZoom
+                                val curStart = latestPan.coerceIn(0f, (1f - curSpan).coerceAtLeast(0f))
+
+                                fun fracToPx(f: Float): Float =
+                                    edgePadPx + ((f - curStart) / curSpan) * usableW
+
+                                fun pxToFrac(x: Float): Float {
+                                    val z = latestZoom.coerceIn(1f, 10f)
+                                    val s = 1f / z
+                                    val p = latestPan.coerceIn(0f, (1f - s).coerceAtLeast(0f))
+                                    return (p + ((x - edgePadPx) / usableW) * s).coerceIn(0f, 1f)
+                                }
+
+                                val st0 = viewModel.uiState.value
+                                val sx0 = fracToPx(st0.trimStart)
+                                val ex0 = fracToPx(st0.trimEnd)
+                                val distStart = (downPos - Offset(sx0, topHandleYPx)).getDistance()
+                                val distEnd = (downPos - Offset(ex0, h - topHandleYPx)).getDistance()
+
+                                // mode: 0 = UNDECIDED, 1 = HANDLE_START, 2 = HANDLE_END, 3 = PAN, 4 = SCRUB, 5 = PINCH
+                                var gestureMode = when {
+                                    distStart <= handleHitRadiusPx && distStart <= distEnd -> 1
+                                    distEnd <= handleHitRadiusPx -> 2
+                                    else -> 0
+                                }
+                                var movedPastSlop = false
+
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressed = event.changes.filter { it.pressed }
+                                    if (pressed.isEmpty()) {
+                                        if (!movedPastSlop && gestureMode == 0) {
+                                            viewModel.seekToFraction(pxToFrac(downPos.x))
+                                        }
+                                        break
+                                    }
+                                    if (pressed.size >= 2) {
+                                        gestureMode = 5
+                                        movedPastSlop = true
+                                        val zFactor = event.calculateZoom()
+                                        val panVec = event.calculatePan()
+                                        val centroid = event.calculateCentroid(useCurrent = true)
+                                        val oldZ = latestZoom.coerceIn(1f, 10f)
+                                        val oldSpan = 1f / oldZ
+                                        val oldPan = latestPan.coerceIn(0f, (1f - oldSpan).coerceAtLeast(0f))
+                                        val centroidNormX = ((centroid.x - edgePadPx) / usableW).coerceIn(0f, 1f)
+                                        val anchorFrac = (oldPan + centroidNormX * oldSpan).coerceIn(0f, 1f)
+
+                                        val newZ = (oldZ * zFactor).coerceIn(1f, 10f)
+                                        val newSpan = 1f / newZ
+                                        val maxP = (1f - newSpan).coerceAtLeast(0f)
+                                        var nextPan = anchorFrac - centroidNormX * newSpan
+                                        nextPan -= (panVec.x / usableW) * newSpan
+                                        zoomLevel = newZ
+                                        panFraction = nextPan.coerceIn(0f, maxP)
+                                        event.changes.forEach { it.consume() }
+                                        continue
+                                    }
+
+                                    val change = pressed.first()
+                                    if (gestureMode == 0) {
+                                        val dx = change.position.x - downPos.x
+                                        val dy = change.position.y - downPos.y
+                                        if (hypot(dx, dy) > viewConfiguration.touchSlop) {
+                                            movedPastSlop = true
+                                            if (abs(dy) > abs(dx) * 1.15f) {
+                                                // Yield vertical scrolling to LazyColumn cleanly
+                                                break
+                                            }
+                                            gestureMode = if (latestZoom > 1.02f) 3 else 4
+                                        }
+                                    }
+
+                                    when (gestureMode) {
+                                        1 -> {
+                                            change.consume()
+                                            val st = viewModel.uiState.value
+                                            viewModel.updateTrimRange(pxToFrac(change.position.x), st.trimEnd)
+                                        }
+                                        2 -> {
+                                            change.consume()
+                                            val st = viewModel.uiState.value
+                                            viewModel.updateTrimRange(st.trimStart, pxToFrac(change.position.x))
+                                        }
+                                        3 -> {
+                                            change.consume()
+                                            val dx = change.position.x - change.previousPosition.x
+                                            val z = latestZoom.coerceIn(1f, 10f)
+                                            val span = 1f / z
+                                            val maxP = (1f - span).coerceAtLeast(0f)
+                                            panFraction = (latestPan - (dx / usableW) * span).coerceIn(0f, maxP)
+                                        }
+                                        4 -> {
+                                            change.consume()
+                                            viewModel.seekToFraction(pxToFrac(change.position.x))
+                                        }
                                     }
                                 }
-                                .pointerInput(uiState.hasAudio) {
-                                    if (!uiState.hasAudio) return@pointerInput
-                                    var dragTarget = 0 // 0 = PLAYHEAD, 1 = START, 2 = END
-                                    detectDragGestures(
-                                        onDragStart = { startOffset ->
-                                            val w = size.width.toFloat().coerceAtLeast(1f)
-                                            val h = size.height.toFloat().coerceAtLeast(1f)
-                                            val usableW = (w - 2f * edgePadPx).coerceAtLeast(1f)
-                                            val st = viewModel.uiState.value
-                                            val sx = (edgePadPx + st.trimStart * usableW)
-                                                .coerceIn(edgePadPx, (w - edgePadPx).coerceAtLeast(edgePadPx))
-                                            val ex = (edgePadPx + st.trimEnd * usableW)
-                                                .coerceIn(edgePadPx, (w - edgePadPx).coerceAtLeast(edgePadPx))
-                                            val distStartCircle = (startOffset - Offset(sx, topHandleYPx)).getDistance()
-                                            val distEndCircle = (startOffset - Offset(ex, h - topHandleYPx)).getDistance()
-                                            dragTarget = when {
-                                                distStartCircle <= handleHitRadiusPx && distStartCircle <= distEndCircle -> 1
-                                                distEndCircle <= handleHitRadiusPx -> 2
-                                                else -> 0
-                                            }
-                                        },
-                                        onDrag = { change, _ ->
-                                            change.consume()
-                                            val w = size.width.toFloat().coerceAtLeast(1f)
-                                            val usableW = (w - 2f * edgePadPx).coerceAtLeast(1f)
-                                            val st = viewModel.uiState.value
-                                            when (dragTarget) {
-                                                1 -> {
-                                                    val clampedX = change.position.x
-                                                        .coerceIn(edgePadPx, (w - edgePadPx).coerceAtLeast(edgePadPx))
-                                                    val nx = ((clampedX - edgePadPx) / usableW).coerceIn(0f, 1f)
-                                                    viewModel.updateTrimRange(nx, st.trimEnd)
-                                                }
-                                                2 -> {
-                                                    val clampedX = change.position.x
-                                                        .coerceIn(edgePadPx, (w - edgePadPx).coerceAtLeast(edgePadPx))
-                                                    val nx = ((clampedX - edgePadPx) / usableW).coerceIn(0f, 1f)
-                                                    viewModel.updateTrimRange(st.trimStart, nx)
-                                                }
-                                                else -> {
-                                                    val nx = (change.position.x / w).coerceIn(0f, 1f)
-                                                    viewModel.seekToFraction(nx)
-                                                }
-                                            }
-                                        },
-                                    )
-                                }
-                                .testTag("editor_waveform_canvas"),
-                        ) {
-                            val peaks = if (uiState.waveformPeaks.isNotEmpty()) {
-                                uiState.waveformPeaks
-                            } else {
-                                List(80) { 0.08f }
                             }
-                            val playbackState = viewModel.playbackTelemetry.collectAsStateWithLifecycle()
+                        }
+                        .testTag("editor_waveform_canvas"),
+                ) {
+                    val peaks = if (uiState.waveformPeaks.isNotEmpty()) {
+                        uiState.waveformPeaks
+                    } else {
+                        List(120) { 0.08f }
+                    }
+                    val playbackState = viewModel.playbackTelemetry.collectAsStateWithLifecycle()
 
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                val maxSafeX = (size.width - edgePadPx).coerceAtLeast(edgePadPx)
-                                val usableW = (size.width - 2f * edgePadPx).coerceAtLeast(1f)
-                                val sx = (edgePadPx + uiState.trimStart * usableW).coerceIn(edgePadPx, maxSafeX)
-                                val ex = (edgePadPx + uiState.trimEnd * usableW).coerceIn(edgePadPx, maxSafeX)
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val usableW = (size.width - 2f * edgePadPx).coerceAtLeast(1f)
+                        val visSpan = 1f / zoomLevel.coerceIn(1f, 10f)
+                        val visStart = panFraction.coerceIn(0f, (1f - visSpan).coerceAtLeast(0f))
+                        val visEnd = (visStart + visSpan).coerceAtMost(1f)
 
-                                drawRect(
-                                    color = StudioColors.Cyan.copy(alpha = 0.12f),
-                                    topLeft = Offset(sx, 0f),
-                                    size = Size((ex - sx).coerceAtLeast(1f), size.height),
-                                )
+                        fun fracToX(f: Float): Float =
+                            edgePadPx + ((f - visStart) / visSpan) * usableW
 
-                                val count = peaks.size
-                                val stepW = size.width / count
-                                val barW = (stepW * 0.6f).coerceAtLeast(2.dp.toPx())
-                                val cy = size.height / 2f
+                        val sxRaw = fracToX(uiState.trimStart)
+                        val exRaw = fracToX(uiState.trimEnd)
+                        val sxClip = sxRaw.coerceIn(0f, size.width)
+                        val exClip = exRaw.coerceIn(0f, size.width)
 
-                                for (i in 0 until count) {
-                                    val barFrac = (i + 0.5f) / count
-                                    val inSelection = barFrac in uiState.trimStart..uiState.trimEnd
-                                    val h = peaks[i].coerceIn(0.06f, 1f) * size.height * 0.84f
-                                    val x = i * stepW + (stepW - barW) / 2f
-                                    drawRoundRect(
-                                        color = if (inSelection) StudioColors.Cyan else StudioColors.WaveformInactive.copy(alpha = 0.5f),
-                                        topLeft = Offset(x, cy - h / 2f),
-                                        size = Size(barW, h),
-                                        cornerRadius = CornerRadius(barW / 2f, barW / 2f),
-                                    )
-                                }
+                        if (exClip > sxClip) {
+                            drawRect(
+                                color = StudioColors.Cyan.copy(alpha = 0.12f),
+                                topLeft = Offset(sxClip, 0f),
+                                size = Size((exClip - sxClip).coerceAtLeast(1f), size.height),
+                            )
+                        }
 
-                                val playFrac = if (durationMs > 0L) {
-                                    (playbackState.value.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                                } else {
-                                    0f
-                                }
-                                val pxMin = 2.dp.toPx()
-                                val pxMax = (size.width - pxMin).coerceAtLeast(pxMin)
-                                val px = (playFrac * size.width).coerceIn(pxMin, pxMax)
-                                drawLine(
-                                    color = StudioColors.RoseBright,
-                                    start = Offset(px, 0f),
-                                    end = Offset(px, size.height),
-                                    strokeWidth = 2.5.dp.toPx(),
-                                )
-                                drawCircle(
-                                    color = StudioColors.RoseBright,
-                                    radius = 4.5.dp.toPx(),
-                                    center = Offset(px, 6.dp.toPx()),
-                                )
+                        // Viewport-culled waveform bars for steady 60fps rendering
+                        val count = peaks.size
+                        val startIdx = (visStart * count).toInt().coerceIn(0, max(0, count - 1))
+                        val endIdx = ceil((visEnd * count).toDouble()).toInt().coerceIn(startIdx + 1, count)
+                        val visibleBars = (endIdx - startIdx).coerceAtLeast(1)
+                        val slotW = usableW / visibleBars
+                        val barW = (slotW * 0.62f).coerceIn(1.5.dp.toPx(), 6.dp.toPx())
+                        val cy = size.height / 2f
 
-                                drawLine(
-                                    color = StudioColors.Emerald,
-                                    start = Offset(sx, 0f),
-                                    end = Offset(sx, size.height),
-                                    strokeWidth = 2.5.dp.toPx(),
-                                )
-                                drawCircle(
-                                    color = StudioColors.Emerald,
-                                    radius = handleRadiusPx,
-                                    center = Offset(sx, topHandleYPx),
-                                )
-                                drawCircle(
-                                    color = StudioColors.BgTop,
-                                    radius = 2.5.dp.toPx(),
-                                    center = Offset(sx, topHandleYPx),
-                                )
+                        for (i in startIdx until endIdx) {
+                            val barFrac = (i + 0.5f) / count
+                            val inSelection = barFrac in uiState.trimStart..uiState.trimEnd
+                            val h = peaks[i].coerceIn(0.06f, 1f) * size.height * 0.84f
+                            val x = fracToX(barFrac) - barW / 2f
+                            drawRoundRect(
+                                color = if (inSelection) StudioColors.Cyan else StudioColors.WaveformInactive.copy(alpha = 0.5f),
+                                topLeft = Offset(x, cy - h / 2f),
+                                size = Size(barW, h),
+                                cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+                            )
+                        }
 
-                                drawLine(
-                                    color = StudioColors.Amber,
-                                    start = Offset(ex, 0f),
-                                    end = Offset(ex, size.height),
-                                    strokeWidth = 2.5.dp.toPx(),
-                                )
-                                drawCircle(
-                                    color = StudioColors.Amber,
-                                    radius = handleRadiusPx,
-                                    center = Offset(ex, size.height - topHandleYPx),
-                                )
-                                drawCircle(
-                                    color = StudioColors.BgTop,
-                                    radius = 2.5.dp.toPx(),
-                                    center = Offset(ex, size.height - topHandleYPx),
-                                )
-                            }
+                        val playFrac = if (durationMs > 0L) {
+                            (playbackState.value.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
+                        if (playFrac in visStart..visEnd) {
+                            val px = fracToX(playFrac).coerceIn(2.dp.toPx(), (size.width - 2.dp.toPx()).coerceAtLeast(2.dp.toPx()))
+                            drawLine(
+                                color = StudioColors.RoseBright,
+                                start = Offset(px, 0f),
+                                end = Offset(px, size.height),
+                                strokeWidth = 2.5.dp.toPx(),
+                            )
+                            drawCircle(
+                                color = StudioColors.RoseBright,
+                                radius = 4.5.dp.toPx(),
+                                center = Offset(px, 6.dp.toPx()),
+                            )
+                        }
+
+                        if (sxRaw in -handleRadiusPx..(size.width + handleRadiusPx)) {
+                            val sxDraw = sxRaw.coerceIn(edgePadPx, (size.width - edgePadPx).coerceAtLeast(edgePadPx))
+                            drawLine(
+                                color = StudioColors.Emerald,
+                                start = Offset(sxDraw, 0f),
+                                end = Offset(sxDraw, size.height),
+                                strokeWidth = 2.5.dp.toPx(),
+                            )
+                            drawCircle(
+                                color = StudioColors.Emerald,
+                                radius = handleRadiusPx,
+                                center = Offset(sxDraw, topHandleYPx),
+                            )
+                            drawCircle(
+                                color = StudioColors.BgTop,
+                                radius = 2.5.dp.toPx(),
+                                center = Offset(sxDraw, topHandleYPx),
+                            )
+                        }
+
+                        if (exRaw in -handleRadiusPx..(size.width + handleRadiusPx)) {
+                            val exDraw = exRaw.coerceIn(edgePadPx, (size.width - edgePadPx).coerceAtLeast(edgePadPx))
+                            drawLine(
+                                color = StudioColors.Amber,
+                                start = Offset(exDraw, 0f),
+                                end = Offset(exDraw, size.height),
+                                strokeWidth = 2.5.dp.toPx(),
+                            )
+                            drawCircle(
+                                color = StudioColors.Amber,
+                                radius = handleRadiusPx,
+                                center = Offset(exDraw, size.height - topHandleYPx),
+                            )
+                            drawCircle(
+                                color = StudioColors.BgTop,
+                                radius = 2.5.dp.toPx(),
+                                center = Offset(exDraw, size.height - topHandleYPx),
+                            )
                         }
                     }
                 }
@@ -832,7 +940,9 @@ fun AudioEditorScreen(
                 }
             }
         }
+        } // end item(key = "editor_waveform_card")
 
+        item(key = "editor_clip_gain_card") {
         // Clip Gain Card (Instant real-time feedback + Math-based true clipping warning)
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -898,7 +1008,9 @@ fun AudioEditorScreen(
                 }
             }
         }
+        } // end item(key = "editor_clip_gain_card")
 
+        item(key = "editor_fade_card") {
         // Fade In & Fade Out Card (starts at 0.0s, Preview FIRST, preserves sliders)
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -1003,7 +1115,9 @@ fun AudioEditorScreen(
                 }
             }
         }
+        } // end item(key = "editor_fade_card")
 
+        item(key = "editor_dual_mix_card") {
         // Dual-Track Mix Card
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -1106,7 +1220,9 @@ fun AudioEditorScreen(
                 }
             }
         }
+        } // end item(key = "editor_dual_mix_card")
 
+        item(key = "editor_voice_card") {
         // Expandable Inline Voice Character Transformer Card
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -1238,7 +1354,9 @@ fun AudioEditorScreen(
                 }
             }
         }
+        } // end item(key = "editor_voice_card")
 
+        item(key = "editor_tts_card") {
         // Expandable Inline 10-Dialect TTS Card
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -1378,7 +1496,9 @@ fun AudioEditorScreen(
                 }
             }
         }
+        } // end item(key = "editor_tts_card")
 
+        item(key = "editor_export_card") {
         // Append File + Append Saved Projects + Export
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -1490,7 +1610,13 @@ fun AudioEditorScreen(
                 }
             }
         }
-    }
+        } // end item(key = "editor_export_card")
+
+        item(key = "editor_bottom_spacer") {
+            Spacer(Modifier.height(12.dp))
+        }
+        } // end LazyColumn
+    } // end Box
 
     SaveDraftDialog(
         open = saveDraftDialogOpen,

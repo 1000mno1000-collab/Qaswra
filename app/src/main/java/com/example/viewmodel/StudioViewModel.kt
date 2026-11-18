@@ -18,6 +18,7 @@ import com.example.BuildConfig
 import com.example.audio.AudioDecodeOutcome
 import com.example.audio.AudioDecoder
 import com.example.audio.AudioFileUploader
+import com.example.audio.AudioPlaybackController
 import com.example.audio.AudioPlayerManager
 import com.example.audio.AudioSignalAnalyzer
 import com.example.audio.AudioUploadOutcome
@@ -525,6 +526,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     @Volatile private var defaultSaveTreeUriString: String? = null
     @Volatile private var lastNotifSyncMs: Long = 0L
     @Volatile private var lastNotifPlaying: Boolean = false
+    @Volatile private var lastLivePreviewRequestMs: Long = 0L
 
     val qaScanState: StateFlow<QaScanState> = SmartQaBotEngine.state
 
@@ -601,6 +603,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
+        AudioPlaybackController.registerStudioPlayer(player)
         StudioPlaybackBridge.onTogglePlayPause = { togglePlayPause() }
         StudioPlaybackBridge.onStopPlayback = { stopPlayback() }
         AudioPlayerManager.onBeforeStartExclusive = {
@@ -1016,7 +1019,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         recordUndo: Boolean = false,
         appliedToolLabel: String? = null,
     ) {
-        val meta = AudioDecoder.inspectLargeAudioStreaming(newFile, buckets = 120) {}
+        val meta = AudioDecoder.inspectLargeAudioStreaming(newFile, buckets = 800) {}
         if (meta == null) {
             runCatching { newFile.delete() }
             postBanner("تعذر قراءة الملف المعالج")
@@ -1109,7 +1112,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch(Dispatchers.Default) {
             val peakDbfs = AudioSignalAnalyzer.analyzeBufferPeakDbfs(buf)
-            val peaks = computeWaveformPeaksAsync(buf, 120)
+            val peaks = computeWaveformPeaksAsync(buf, 800)
             val nrWarn = computePurifierWarning(buf, evalCfg)
             val eqWarn = computeEqWarning(buf, evalCfg)
             if (activeBuffer === buf) {
@@ -1224,13 +1227,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun ensureLivePreviewPlaying() {
-        if (hasLoadedAudio() && !_playbackTelemetry.value.isPlaying) {
-            stopToolPreview()
-            stopMixPreviewPlayer()
-            AudioPlayerManager.releaseAll()
-            livePreviewStartedPlayback = true
-            player.play()
-        }
+        if (!hasLoadedAudio() || _playbackTelemetry.value.isPlaying) return
+        val now = System.currentTimeMillis()
+        if (now - lastLivePreviewRequestMs < 260L) return
+        lastLivePreviewRequestMs = now
+        stopToolPreview()
+        stopMixPreviewPlayer()
+        AudioPlaybackController.onBeforeStudioPlayerPlay(player)
+        livePreviewStartedPlayback = true
+        player.play()
     }
 
     fun beginLiveToolSession(toolKey: String) {
@@ -1498,7 +1503,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             if (_playbackTelemetry.value.isPlaying) {
                 player.pause()
             } else {
-                AudioPlayerManager.releaseAll()
+                AudioPlaybackController.onBeforeStudioPlayerPlay(player)
                 val started = player.play()
                 if (!started) {
                     val msg = if (_uiState.value.language == AppLanguage.EN) {
@@ -1521,6 +1526,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun stopPlayback() {
+        AudioPlaybackController.stopAllExclusive()
         player.stop()
         stopMixPreviewPlayer()
         SonixMediaPlaybackService.stopService(getApplication())
@@ -1672,7 +1678,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     // inspect <1s via 8192-byte streaming & pass file.absolutePath to player/FFmpegKit.
                     val stagedFile = stageLargeFileToCleanAsciiCache(app, uploaded.file, prefix = "main")
                     tempCachedFile = null // Ownership transferred to staged activeSourceFile
-                    val meta = AudioDecoder.inspectLargeAudioStreaming(stagedFile, buckets = 120) { frac ->
+                    val meta = AudioDecoder.inspectLargeAudioStreaming(stagedFile, buckets = 800) { frac ->
                         _uiState.update {
                             it.copy(importProgress = (0.50f + frac * 0.46f).coerceIn(0.50f, 0.96f))
                         }
@@ -2776,7 +2782,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         if (bufferChanged && cachedPeaks.isEmpty()) {
             val nonNullBuf = targetBuf!!
             viewModelScope.launch(Dispatchers.Default) {
-                val asyncPeaks = computeWaveformPeaksAsync(nonNullBuf, 120)
+                val asyncPeaks = computeWaveformPeaksAsync(nonNullBuf, 800)
                 if (activeBuffer === nonNullBuf) {
                     _uiState.update { it.copy(waveformPeaks = asyncPeaks) }
                 }
@@ -2820,7 +2826,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         if (bufferChanged && cachedPeaks.isEmpty()) {
             val nonNullBuf = targetBuf!!
             viewModelScope.launch(Dispatchers.Default) {
-                val asyncPeaks = computeWaveformPeaksAsync(nonNullBuf, 120)
+                val asyncPeaks = computeWaveformPeaksAsync(nonNullBuf, 800)
                 if (activeBuffer === nonNullBuf) {
                     _uiState.update { it.copy(waveformPeaks = asyncPeaks) }
                 }
@@ -4330,7 +4336,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 if (withContext(Dispatchers.IO) { AudioDecoder.shouldStreamOnDisk(file) }) {
                     val staged = stageLargeFileToCleanAsciiCache(getApplication(), file, prefix = "recent")
-                    val meta = AudioDecoder.inspectLargeAudioStreaming(staged, buckets = 120) {}
+                    val meta = AudioDecoder.inspectLargeAudioStreaming(staged, buckets = 800) {}
                     if (meta == null) {
                         runCatching { staged.delete() }
                         postBanner("تعذر استرجاع الملف المؤقت")
@@ -6543,7 +6549,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     // =========================================================================
 
     fun setAiVoiceTab(tab: Int) {
-        _aiVoiceUiState.update { it.copy(activeTab = tab.coerceIn(0, 2)) }
+        _aiVoiceUiState.update { it.copy(activeTab = tab.coerceIn(0, 1)) }
     }
 
     fun setAiVoiceEngine(engine: AiVoiceEngineKind) {
@@ -7374,6 +7380,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         replaceActiveSourceFile(null)
         replaceMixBgSourceFile(null)
         voiceProcessor.stop()
+        AudioPlaybackController.stopAllExclusive()
         player.dispose()
         recorder.discard()
         stopToolPreview()

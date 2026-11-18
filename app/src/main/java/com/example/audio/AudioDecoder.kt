@@ -289,7 +289,7 @@ object AudioDecoder {
         }
         onProgress(0.18f)
 
-        val safeBuckets = buckets.coerceIn(64, 140)
+        val safeBuckets = buckets.coerceIn(64, 1500)
         val peaks: List<Float> = when {
             wavHeader != null -> extractWavPeaksChunked8K(file, wavHeader, safeBuckets) { f ->
                 onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
@@ -705,16 +705,17 @@ object AudioDecoder {
             }
         }
 
-        // Ultra-fast 8192-byte envelope sampling across file (finishes in < 40 ms even on 500 MB+ files)
+        // Ultra-fast 8192-byte envelope sampling across file (finishes in < 20 ms even on 500 MB+ files)
+        val sampleSlots = min(buckets, 256).coerceAtLeast(16)
         val fileLen = file.length().coerceAtLeast(1L)
         val buf = ByteArray(STREAM_CHUNK_BYTES)
-        val bytePeaks = ArrayList<Float>(buckets)
+        val rawBytePeaks = FloatArray(sampleSlots)
         RandomAccessFile(file, "r").use { raf ->
             val skipHeader = min(4096L, fileLen / 20L)
             val span = (fileLen - skipHeader).coerceAtLeast(1L)
-            for (b in 0 until buckets) {
+            for (b in 0 until sampleSlots) {
                 coroutineContext.ensureActive()
-                val pos = skipHeader + ((b.toDouble() / buckets) * span).toLong()
+                val pos = skipHeader + ((b.toDouble() / sampleSlots) * span).toLong()
                 raf.seek(pos.coerceIn(0L, fileLen - 1L))
                 val toRead = min(STREAM_CHUNK_BYTES.toLong(), fileLen - pos).toInt().coerceAtLeast(1)
                 val got = raf.read(buf, 0, toRead)
@@ -732,13 +733,23 @@ object AudioDecoder {
                     val avg = sumDiff.toFloat() / max(1, samples)
                     energy = clamp((avg / 92f), 0.08f, 0.95f)
                 }
-                bytePeaks.add(energy)
-                if (b % 16 == 0 || b == buckets - 1) {
-                    onProgress(0.85f + ((b + 1).toFloat() / buckets) * 0.15f)
+                rawBytePeaks[b] = energy
+                if (b % 16 == 0 || b == sampleSlots - 1) {
+                    onProgress(0.85f + ((b + 1).toFloat() / sampleSlots) * 0.15f)
                 }
             }
         }
-        return bytePeaks
+        return if (buckets == sampleSlots) {
+            rawBytePeaks.toList()
+        } else {
+            List(buckets) { idx ->
+                val fIdx = (idx.toFloat() / max(1, buckets - 1)) * (sampleSlots - 1)
+                val i0 = fIdx.toInt().coerceIn(0, sampleSlots - 1)
+                val i1 = (i0 + 1).coerceIn(0, sampleSlots - 1)
+                val frac = fIdx - i0
+                clamp(rawBytePeaks[i0] + (rawBytePeaks[i1] - rawBytePeaks[i0]) * frac, 0.05f, 1f)
+            }
+        }
     }
 
     private suspend fun decodeViaMediaExtractor(

@@ -252,10 +252,10 @@ class DeveloperPanelRepository(context: Context) {
             )
 
             val flashSnap = EngineTelemetrySnapshot(
-                engineId = "audar_tts_flash",
-                displayName = "Audar-TTS-V1-Flash (المحرك العربي المتخصص)",
-                repoId = flash.optString("repo_id", "audarai/Audar-TTS-V1-Flash"),
-                licenseLabel = flash.optString("license", "AudarAI Open License v1.0"),
+                engineId = "sonix_local_studio",
+                displayName = "محرك الاستوديو المحلي (Sonix Local)",
+                repoId = flash.optString("repo_id", "local/sonix-studio"),
+                licenseLabel = flash.optString("license", "Sonix Studio"),
                 clientIntegrated = true,
                 backendConnected = true,
                 backendPackageReady = flash.optBoolean("package_installed", false),

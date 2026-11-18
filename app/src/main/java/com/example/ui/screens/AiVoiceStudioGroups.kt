@@ -318,7 +318,7 @@ internal fun AiVoiceGroup1TextCard(
 }
 
 // =========================================================================
-// Card 1: المحرك الصوتي (Two Clean Direct Buttons — NO Dropdown, NO Audar/Edge)
+// Card 1: المحرك الصوتي (محرك أساسي عالمي + محرك الاستوديو المحلي)
 // =========================================================================
 @Composable
 internal fun AiVoiceEngineSelectionCard(
@@ -427,7 +427,7 @@ internal fun AiVoiceEngineSelectionCard(
 }
 
 // =========================================================================
-// Card 2: اختيار الصوت (رجالي / نسائي / المفضلة — 6 Fixed Professional Roles)
+// Card 2: اختيار الصوت (رجالي / نسائي — 3 أصوات احترافية ثابتة لكل تبويب)
 // =========================================================================
 @Composable
 internal fun AiVoiceGroup2VoiceSelectionCard(
@@ -441,9 +441,7 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
     val focusManager = LocalFocusManager.current
 
     LaunchedEffect(state.selectedCharacterId, state.selectedCategory) {
-        if (activeFilter != AiVoiceGroupFilter.FAVORITES) {
-            activeFilter = state.selectedCategory.toGroupFilter()
-        }
+        activeFilter = state.selectedCategory.toGroupFilter()
     }
 
     Card(
@@ -519,7 +517,7 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                 }
             }
 
-            // Clean Tabs: رجالي / نسائي (+ المفضلة) — NO "شخصيات" tab!
+            // Clean 2 Tabs: رجالي / نسائي
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -560,32 +558,11 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                 }
             }
 
-            val matchingCharacters = remember(state.allCharacters, state.favoriteCharacterIds, activeFilter) {
-                when (activeFilter) {
-                    AiVoiceGroupFilter.FAVORITES -> state.allCharacters.filter { state.isCharacterFavorite(it.id) }
-                    else -> state.allCharacters.filter { it.category.toGroupFilter() == activeFilter }
-                }
+            val matchingCharacters = remember(state.allCharacters, activeFilter) {
+                state.allCharacters.filter { it.category.toGroupFilter() == activeFilter }
             }
 
-            if (matchingCharacters.isEmpty()) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = StudioColors.ElevatedSurface,
-                    border = BorderStroke(1.dp, StudioColors.Border),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = if (isEnglish) {
-                            "Tap ★ next to any voice to save it in Favorites."
-                        } else {
-                            "اضغط على أيقونة النجمة ☆ بجانب أي صوت لإضافته إلى المفضلة."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = StudioColors.TextSecondary,
-                        modifier = Modifier.padding(12.dp),
-                    )
-                }
-            } else {
+            run {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth(),

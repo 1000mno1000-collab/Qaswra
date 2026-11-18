@@ -3,11 +3,14 @@ package com.example.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -17,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
@@ -24,6 +28,7 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -42,6 +47,7 @@ import com.example.audio.aivoice.AiVoiceEmotion
 import com.example.audio.aivoice.AiVoiceEngineKind
 import com.example.audio.aivoice.AiVoiceLanguage
 import com.example.audio.aivoice.AiVoiceStudioUiState
+import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.theme.StudioColors
@@ -69,6 +75,8 @@ fun AiVoiceStudioScreen(
     }
 
     var synthesizedSignature by rememberSaveable { mutableStateOf<String?>(null) }
+    var advancedSubTab by rememberSaveable { mutableIntStateOf(0) } // 0=Dialogue, 1=Clone & Save
+    val isDialogueMode = state.activeTab == 1 && advancedSubTab == 0
 
     val currentInputSignature = remember(state) {
         buildString {
@@ -97,11 +105,13 @@ fun AiVoiceStudioScreen(
         state = state,
         language = lang,
         hasStudioAudio = uiState.hasAudio,
+        advancedSubTab = advancedSubTab,
+        onSelectAdvancedSubTab = { advancedSubTab = it.coerceIn(0, 2) },
         onBack = onBack,
         onSelectTab = viewModel::setAiVoiceTab,
         onDismissError = viewModel::dismissAiVoiceError,
         onUseLocalFallback = {
-            if (state.activeTab == 1) {
+            if (isDialogueMode) {
                 viewModel.synthesizeAiVoiceDialogue(AiVoiceEngineKind.SONIX_LOCAL_STUDIO)
             } else {
                 viewModel.synthesizeAiVoiceSingle(AiVoiceEngineKind.SONIX_LOCAL_STUDIO)
@@ -144,17 +154,21 @@ fun AiVoiceStudioScreen(
         },
         onAddCharacterToDialogue = { ch ->
             viewModel.addDialogueTurn(ch.id)
+            advancedSubTab = 0
             viewModel.setAiVoiceTab(1)
         },
         onSaveCustomCharacter = viewModel::saveCustomAiVoiceCharacter,
         onDeleteSavedCharacter = viewModel::deleteSavedAiVoiceCharacter,
+        onSaveBackendUrl = viewModel::saveAiVoiceBackendUrl,
+        onSaveBackendToken = viewModel::saveAiVoiceBackendBearer,
+        onCheckHealth = viewModel::checkAiVoiceBackendHealth,
         onPreviewClick = {
             val outputExists = !state.lastOutputWavPath.isNullOrBlank()
             if (outputExists && synthesizedSignature == currentInputSignature) {
                 viewModel.playOrPauseAiVoiceOutput()
             } else {
                 synthesizedSignature = currentInputSignature
-                if (state.activeTab == 1) {
+                if (isDialogueMode) {
                     viewModel.synthesizeAiVoiceDialogue()
                 } else {
                     viewModel.synthesizeAiVoiceSingle()
@@ -163,7 +177,7 @@ fun AiVoiceStudioScreen(
         },
         onCancelSynthesis = viewModel::cancelAiVoiceSynthesis,
         onApproveClick = {
-            val hasValidText = if (state.activeTab == 1) {
+            val hasValidText = if (isDialogueMode) {
                 state.dialogueTurns.any { it.text.isNotBlank() }
             } else {
                 state.scriptText.isNotBlank()
@@ -175,7 +189,7 @@ fun AiVoiceStudioScreen(
                 viewModel.insertAiVoiceOutputIntoMainStudio(false)
             } else {
                 synthesizedSignature = currentInputSignature
-                if (state.activeTab == 1) {
+                if (isDialogueMode) {
                     viewModel.synthesizeAiVoiceDialogue()
                 } else {
                     viewModel.synthesizeAiVoiceSingle()
@@ -208,6 +222,8 @@ fun AiVoiceStudioContentLayout(
     state: AiVoiceStudioUiState,
     language: AppLanguage,
     hasStudioAudio: Boolean,
+    advancedSubTab: Int = 0,
+    onSelectAdvancedSubTab: (Int) -> Unit = {},
     onBack: () -> Unit,
     onSelectTab: (Int) -> Unit,
     onDismissError: () -> Unit,
@@ -242,6 +258,9 @@ fun AiVoiceStudioContentLayout(
     onAddCharacterToDialogue: (AiVoiceCharacter) -> Unit,
     onSaveCustomCharacter: (String, String) -> Unit,
     onDeleteSavedCharacter: (String) -> Unit,
+    onSaveBackendUrl: (String) -> Unit = {},
+    onSaveBackendToken: (String) -> Unit = {},
+    onCheckHealth: (String, String) -> Unit = { _, _ -> },
     onPreviewClick: () -> Unit,
     onCancelSynthesis: () -> Unit,
     onApproveClick: () -> Unit,
@@ -249,12 +268,13 @@ fun AiVoiceStudioContentLayout(
     listState: LazyListState = rememberLazyListState(),
 ) {
     val isEnglish = language == AppLanguage.EN
+    val showSynthesisBottomBar = state.activeTab == 0 || (state.activeTab == 1 && advancedSubTab == 0)
 
     Scaffold(
         containerColor = StudioColors.BgTop,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            if (state.activeTab in 0..1) {
+            if (showSynthesisBottomBar) {
                 AiVoiceStickyBottomActionBar(
                     state = state,
                     hasStudioAudio = hasStudioAudio,
@@ -286,11 +306,10 @@ fun AiVoiceStudioContentLayout(
                     onBack = onBack,
                 )
 
-                val tabs = if (isEnglish) {
-                    listOf("Studio", "Dialogue", "Clone & Save")
-                } else {
-                    listOf("استوديو الصوت", "حوار متعدد", "الاستنساخ والحفظ")
-                }
+                val tabs = listOf(
+                    t(language, "ai_voice_tab_studio"),
+                    t(language, "ai_voice_tab_advanced"),
+                )
                 val safeActiveTab = state.activeTab.coerceIn(0, tabs.lastIndex)
 
                 TabRow(
@@ -346,7 +365,7 @@ fun AiVoiceStudioContentLayout(
                         }
                     }
 
-                    if (!state.lastOutputWavPath.isNullOrBlank() && state.activeTab in 0..1) {
+                    if (!state.lastOutputWavPath.isNullOrBlank() && showSynthesisBottomBar) {
                         item(key = "output_player") {
                             AiVoiceOutputPlayerCard(
                                 state = state,
@@ -407,35 +426,95 @@ fun AiVoiceStudioContentLayout(
                                 bottomHelpSlot()
                             }
                         }
-                        1 -> item(key = "dialogue_studio") {
-                            AiVoiceDialogueTab(
-                                state = state,
-                                isEnglish = isEnglish,
-                                onAddTurn = onAddDialogueTurn,
-                                onRemoveTurn = onRemoveDialogueTurn,
-                                onMoveTurn = onMoveDialogueTurn,
-                                onUpdateTurn = onUpdateDialogueTurn,
-                                onSynthesizeDialogue = onSynthesizeDialogue,
-                                onCancelSynthesis = onCancelSynthesis,
-                            )
-                        }
-                        else -> item(key = "characters_and_cloning") {
-                            AiVoiceCharactersTab(
-                                state = state,
-                                hasStudioAudio = hasStudioAudio,
-                                isEnglish = isEnglish,
-                                onApplyCharacterToStudio = onApplyCharacterToStudio,
-                                onAddCharacterToDialogue = onAddCharacterToDialogue,
-                                onSaveCurrentAsCharacter = onSaveCustomCharacter,
-                                onDeleteSavedCharacter = onDeleteSavedCharacter,
-                                onPickReferenceFile = onPickReferenceFile,
-                                onUseStudioBufferAsReference = onUseStudioBufferAsReference,
-                                onClearReference = onClearReference,
-                                onReferenceTranscriptChange = onReferenceTranscriptChange,
-                                onRightsConfirmedChange = onRightsConfirmedChange,
-                                onSaveOutputWav = onSaveWav,
-                                onShareOutput = onShare,
-                            )
+                        else -> {
+                            item(key = "advanced_sub_switcher") {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    val subItems = listOf(
+                                        0 to (if (isEnglish) "Dialogue" else "الحوار المتعدد"),
+                                        1 to (if (isEnglish) "Clone & Save" else "استنساخ الصوت"),
+                                        2 to (if (isEnglish) "Server" else "الخادم"),
+                                    )
+                                    subItems.forEach { (idx, title) ->
+                                        val selected = advancedSubTab == idx
+                                        Surface(
+                                            onClick = { onSelectAdvancedSubTab(idx) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = if (selected) StudioColors.Cyan.copy(alpha = 0.16f) else StudioColors.CardSurface,
+                                            border = BorderStroke(
+                                                width = if (selected) 1.5.dp else 1.dp,
+                                                color = if (selected) StudioColors.Cyan else StudioColors.Border,
+                                            ),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .defaultMinSize(minHeight = 48.dp)
+                                                .testTag("ai_voice_advanced_sub_$idx"),
+                                        ) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                            ) {
+                                                Text(
+                                                    text = title,
+                                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                                    color = if (selected) StudioColors.Cyan else StudioColors.TextPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            when (advancedSubTab) {
+                                0 -> {
+                                    item(key = "dialogue_studio") {
+                                        AiVoiceDialogueTab(
+                                            state = state,
+                                            isEnglish = isEnglish,
+                                            onAddTurn = onAddDialogueTurn,
+                                            onRemoveTurn = onRemoveDialogueTurn,
+                                            onMoveTurn = onMoveDialogueTurn,
+                                            onUpdateTurn = onUpdateDialogueTurn,
+                                            onSynthesizeDialogue = onSynthesizeDialogue,
+                                            onCancelSynthesis = onCancelSynthesis,
+                                        )
+                                    }
+                                }
+                                1 -> {
+                                    item(key = "characters_and_cloning") {
+                                        AiVoiceCharactersTab(
+                                            state = state,
+                                            hasStudioAudio = hasStudioAudio,
+                                            isEnglish = isEnglish,
+                                            onApplyCharacterToStudio = onApplyCharacterToStudio,
+                                            onAddCharacterToDialogue = onAddCharacterToDialogue,
+                                            onSaveCurrentAsCharacter = onSaveCustomCharacter,
+                                            onDeleteSavedCharacter = onDeleteSavedCharacter,
+                                            onPickReferenceFile = onPickReferenceFile,
+                                            onUseStudioBufferAsReference = onUseStudioBufferAsReference,
+                                            onClearReference = onClearReference,
+                                            onReferenceTranscriptChange = onReferenceTranscriptChange,
+                                            onRightsConfirmedChange = onRightsConfirmedChange,
+                                            onSaveOutputWav = onSaveWav,
+                                            onShareOutput = onShare,
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    item(key = "server_setup") {
+                                        AiVoiceServerSetupTab(
+                                            state = state,
+                                            isEnglish = isEnglish,
+                                            onSaveBackendUrl = onSaveBackendUrl,
+                                            onSaveBackendToken = onSaveBackendToken,
+                                            onCheckHealth = onCheckHealth,
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

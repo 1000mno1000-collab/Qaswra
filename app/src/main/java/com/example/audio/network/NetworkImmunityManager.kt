@@ -1,6 +1,8 @@
 package com.example.audio.network
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import com.example.audio.OnlineGuard
 import com.example.diagnostics.AppDiagnosticLog
@@ -14,8 +16,6 @@ import kotlinx.coroutines.withTimeout
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.net.URL
 import java.util.Locale
 import javax.net.ssl.HttpsURLConnection
@@ -99,27 +99,45 @@ object NetworkImmunityManager {
     }
 
     /**
-     * Layer 1: Lightweight real Ping / TCP reachability check (1.5s timeout).
-     * Verifies both system NetworkCapabilities AND actual socket connectivity so captive/dead Wi-Fi fails fast.
+     * Layer 1: Standard Android ConnectivityManager + NetworkCapabilities.NET_CAPABILITY_VALIDATED
+     * reachability check, falling back to trusted HTTPS HEAD probes when no Context is supplied.
      */
     suspend fun pingReachable(
         context: Context? = null,
         timeoutMs: Int = PING_TIMEOUT_MS,
     ): Boolean = withContext(Dispatchers.IO) {
-        if (context != null && !OnlineGuard.isOnline(context)) {
-            return@withContext false
+        if (context != null) {
+            val validated = runCatching {
+                val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                    ?: return@runCatching false
+                val activeNetwork = cm.activeNetwork ?: return@runCatching false
+                val caps = cm.getNetworkCapabilities(activeNetwork) ?: return@runCatching false
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            }.getOrDefault(false)
+            return@withContext validated && OnlineGuard.isOnline(context)
         }
-        val probes = listOf(
-            "1.1.1.1" to 443,
-            "8.8.8.8" to 53,
+
+        val trustedEndpoints = listOf(
+            "https://www.google.com/generate_204",
+            "https://www.google.com",
         )
-        for ((host, port) in probes) {
+        for (endpoint in trustedEndpoints) {
             coroutineContext.ensureActive()
             val ok = runCatching {
-                Socket().use { sock ->
-                    sock.connect(InetSocketAddress(host, port), timeoutMs)
+                var conn: HttpsURLConnection? = null
+                try {
+                    conn = (URL(endpoint).openConnection() as HttpsURLConnection).apply {
+                        enforceTls12Plus(this)
+                        requestMethod = "HEAD"
+                        instanceFollowRedirects = false
+                        connectTimeout = timeoutMs
+                        readTimeout = timeoutMs
+                    }
+                    conn.responseCode in 200..399
+                } finally {
+                    runCatching { conn?.disconnect() }
                 }
-                true
             }.getOrDefault(false)
             if (ok) return@withContext true
         }

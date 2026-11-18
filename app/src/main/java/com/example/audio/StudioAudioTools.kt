@@ -1145,7 +1145,7 @@ private fun batchFilterToFfmpegStages(preset: BatchFilterPreset): String = when 
     BatchFilterPreset.STUDIO_RADIO ->
         "highpass=f=75,acompressor=threshold=-18dB:ratio=4:attack=5:release=60,bass=g=4.5,treble=g=3.0,alimiter=limit=0.95"
     BatchFilterPreset.ECHO_SPACE ->
-        "aecho=0.8:0.86:55:0.32,treble=g=2.0"
+        "aecho=0.8:0.85:55:0.30,treble=g=2.0,alimiter=limit=0.95"
     BatchFilterPreset.BRIGHT_AIR ->
         "highpass=f=70,equalizer=f=5500:t=q:w=1.1:g=4.0,treble=g=4.0,alimiter=limit=0.95"
     BatchFilterPreset.ACTIVE_STUDIO_DSP -> ""

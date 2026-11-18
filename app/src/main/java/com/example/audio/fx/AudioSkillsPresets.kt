@@ -38,7 +38,7 @@ object AudioSkillsPresets {
 
     // 4. مهارة كيان الظلام المزدوج (صوتان في نفس اللحظة)
     const val SHADOW_LEGION_DUAL =
-        "asplit=2[a][b];[a]asetrate=44100*0.75,aresample=44100,atempo=1.25[low];[b]asetrate=44100*0.92,aresample=44100,atempo=1.08[mid];[low][mid]amix=inputs=2:duration=first,aecho=0.8:0.88:90:0.4"
+        "asplit=2[a][b];[a]asetrate=44100*0.75,aresample=44100,atempo=1.25[low];[b]asetrate=44100*0.92,aresample=44100,atempo=1.08[mid];[low][mid]amix=inputs=2:duration=first,aecho=0.8:0.85:90:0.36,alimiter=limit=0.95"
 
     // 5. مهارة عزل الضوضاء وتنقية المايكروفون
     const val CLEAN_PODCAST_MIC =

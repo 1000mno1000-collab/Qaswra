@@ -528,6 +528,12 @@ private val AR_STRINGS = mapOf(
     "report_problem_title" to "الإبلاغ عن مشكلة",
     "contact_support_title" to "التواصل مع الدعم",
     "studio_utilities_title" to "أدوات وإعدادات الاستوديو",
+    "tool_merge_music_audio" to "دمج الصوت والموسيقى",
+    "tool_merge_music_audio_info" to "ادمج مقاطعك الصوتية بالتتابع (concat) أو اخلط صوتك مع خلفية موسيقية مع خفض تلقائي ذكي لصوت الخلفية أثناء الكلام.",
+    "merge_tab_sequential" to "دمج متتالي",
+    "merge_tab_smart_mix" to "خلط مع خلفية ذكية",
+    "ai_voice_tab_studio" to "استوديو الصوت",
+    "ai_voice_tab_advanced" to "ميزات متقدمة",
 )
 
 private val EN_STRINGS = mapOf(
@@ -1056,6 +1062,12 @@ private val EN_STRINGS = mapOf(
     "report_problem_title" to "Report a Problem",
     "contact_support_title" to "Contact Support",
     "studio_utilities_title" to "Studio Utilities & Settings",
+    "tool_merge_music_audio" to "Merge Audio & Music",
+    "tool_merge_music_audio_info" to "Merge clips sequentially or mix your voice with background music using smart auto-ducking.",
+    "merge_tab_sequential" to "Sequential Merge",
+    "merge_tab_smart_mix" to "Smart Background Mix",
+    "ai_voice_tab_studio" to "Voice Studio",
+    "ai_voice_tab_advanced" to "Advanced",
 )
 
 private val FA_STRINGS = mapOf(
@@ -1584,6 +1596,12 @@ private val FA_STRINGS = mapOf(
     "report_problem_title" to "گزارش مشکل",
     "contact_support_title" to "ارتباط با پشتیبانی",
     "studio_utilities_title" to "ابزارها و تنظیمات استودیو",
+    "tool_merge_music_audio" to "ادغام صدا و موسیقی",
+    "tool_merge_music_audio_info" to "فایل‌های صوتی را پشت‌سرهم ادغام کنید یا صدا را با موسیقی پس‌زمینه و کاهش خودکار ترکیب نمایید.",
+    "merge_tab_sequential" to "ادغام متوالی",
+    "merge_tab_smart_mix" to "میکس با پس‌زمینه هوشمند",
+    "ai_voice_tab_studio" to "استودیو صدا",
+    "ai_voice_tab_advanced" to "امکانات پیشرفته",
 )
 
 fun t(lang: AppLanguage, key: String): String {

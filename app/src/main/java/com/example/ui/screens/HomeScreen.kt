@@ -257,19 +257,12 @@ fun HomeScreen(
                         route = StudioRoute.Editor,
                     ),
                     HomeToolTile(
-                        id = "smart_music_mixer",
-                        titleKey = "tool_smart_music_mixer",
-                        icon = Icons.Rounded.MusicNote,
-                        accent = StudioColors.Amber,
-                        route = StudioRoute.SmartMusicMixer,
-                        infoKey = "smart_mixer_info",
-                    ),
-                    HomeToolTile(
-                        id = "merge_audio",
-                        titleKey = "tool_merge_audio",
+                        id = "merge_music_audio",
+                        titleKey = "tool_merge_music_audio",
                         icon = Icons.Rounded.Layers,
                         accent = StudioColors.Cyan,
                         route = StudioRoute.AudioMerge,
+                        infoKey = "tool_merge_music_audio_info",
                     ),
                     HomeToolTile(
                         id = "split_tracks",
@@ -685,152 +678,7 @@ fun HomeScreen(
                 }
             }
 
-            item(key = "featured_ai_voice_studio", contentType = "featured_ai_voice_studio") {
-                val aiVoiceCardInteraction = remember { MutableInteractionSource() }
-                Card(
-                    onClick = { onNavigate(StudioRoute.AiVoiceStudio) },
-                    interactionSource = aiVoiceCardInteraction,
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-                    border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.65f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .lit(aiVoiceCardInteraction, StudioColors.Violet, cornerRadius = 20.dp)
-                        .testTag("home_ai_voice_studio_card"),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = StudioColors.Violet.copy(alpha = 0.18f),
-                            border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.50f)),
-                            modifier = Modifier.size(46.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.RecordVoiceOver,
-                                    contentDescription = t(lang, "tool_ai_voice_studio"),
-                                    tint = StudioColors.Cyan,
-                                    modifier = Modifier.size(24.dp),
-                                )
-                            }
-                        }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
-                        ) {
-                            Text(
-                                text = t(lang, "tool_ai_voice_studio"),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = StudioColors.TextPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = t(lang, "tool_ai_voice_studio_subtitle"),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = StudioColors.TextSecondary,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(999.dp),
-                            color = StudioColors.Violet.copy(alpha = 0.18f),
-                            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
-                        ) {
-                            Text(
-                                text = t(lang, "tool_ai_voice_studio_badge"),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
-                                color = StudioColors.Cyan,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (uiState.recentEdits.isNotEmpty()) {
-                item(key = "recent_edits_strip", contentType = "recent_edits_strip") {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.padding(horizontal = 2.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.History,
-                                contentDescription = null,
-                                tint = StudioColors.Cyan,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(
-                                text = t(lang, "recent_edits_title"),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = StudioColors.TextPrimary,
-                            )
-                        }
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            contentPadding = PaddingValues(horizontal = 2.dp),
-                        ) {
-                            items(
-                                items = uiState.recentEdits,
-                                key = { it.id },
-                            ) { entry ->
-                                val recentInteraction = remember { MutableInteractionSource() }
-                                Surface(
-                                    onClick = { onRestoreRecentEdit(entry) },
-                                    interactionSource = recentInteraction,
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = StudioColors.CardSurface,
-                                    border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.4f)),
-                                    modifier = Modifier
-                                        .widthIn(min = 168.dp, max = 232.dp)
-                                        .lit(recentInteraction, StudioColors.Cyan, cornerRadius = 14.dp)
-                                        .testTag("recent_edit_${entry.id}"),
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(3.dp),
-                                    ) {
-                                        Text(
-                                            text = if (lang == AppLanguage.EN) entry.titleEn else entry.titleAr,
-                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                            color = StudioColors.Cyan,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Text(
-                                            text = entry.audioName,
-                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                            color = StudioColors.TextPrimary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Text(
-                                            text = "${if (lang == AppLanguage.EN) entry.summaryEn else entry.summaryAr} • ${AppDiagnosticLog.formatTimestamp(entry.timestampMs).takeLast(8)}",
-                                            style = TelemetryTextStyle.copy(fontSize = 10.sp),
-                                            color = StudioColors.TextMuted,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
+            // 2) المشروع النشط (استيراد وتسجيل)
             item(key = "active_project_summary", contentType = "active_project_summary") {
                 Card(
                     shape = RoundedCornerShape(18.dp),
@@ -941,9 +789,366 @@ fun HomeScreen(
                 }
             }
 
-            // 4 Clear Independent Group Cards ("مجموعات واضحة داخل بطاقات مستقلة")
-            families.forEach { family ->
-                val columns = if (family.id == "ai_voice") 2 else 3
+            if (uiState.recentEdits.isNotEmpty()) {
+                item(key = "recent_edits_strip", contentType = "recent_edits_strip") {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(horizontal = 2.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.History,
+                                contentDescription = null,
+                                tint = StudioColors.Cyan,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = t(lang, "recent_edits_title"),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.TextPrimary,
+                            )
+                        }
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(horizontal = 2.dp),
+                        ) {
+                            items(
+                                items = uiState.recentEdits,
+                                key = { it.id },
+                            ) { entry ->
+                                val recentInteraction = remember { MutableInteractionSource() }
+                                Surface(
+                                    onClick = { onRestoreRecentEdit(entry) },
+                                    interactionSource = recentInteraction,
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = StudioColors.CardSurface,
+                                    border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.4f)),
+                                    modifier = Modifier
+                                        .widthIn(min = 168.dp, max = 232.dp)
+                                        .lit(recentInteraction, StudioColors.Cyan, cornerRadius = 14.dp)
+                                        .testTag("recent_edit_${entry.id}"),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                                    ) {
+                                        Text(
+                                            text = if (lang == AppLanguage.EN) entry.titleEn else entry.titleAr,
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = StudioColors.Cyan,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = entry.audioName,
+                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = StudioColors.TextPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = "${if (lang == AppLanguage.EN) entry.summaryEn else entry.summaryAr} • ${AppDiagnosticLog.formatTimestamp(entry.timestampMs).takeLast(8)}",
+                                            style = TelemetryTextStyle.copy(fontSize = 10.sp),
+                                            color = StudioColors.TextMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3) الذكاء الاصطناعي والصوت البشري
+            item(key = "featured_ai_voice_studio", contentType = "featured_ai_voice_studio") {
+                val aiVoiceCardInteraction = remember { MutableInteractionSource() }
+                Card(
+                    onClick = { onNavigate(StudioRoute.AiVoiceStudio) },
+                    interactionSource = aiVoiceCardInteraction,
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                    border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.65f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .lit(aiVoiceCardInteraction, StudioColors.Violet, cornerRadius = 20.dp)
+                        .testTag("home_ai_voice_studio_card"),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = StudioColors.Violet.copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.50f)),
+                            modifier = Modifier.size(46.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Rounded.RecordVoiceOver,
+                                    contentDescription = t(lang, "tool_ai_voice_studio"),
+                                    tint = StudioColors.Cyan,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text(
+                                text = t(lang, "tool_ai_voice_studio"),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = t(lang, "tool_ai_voice_studio_subtitle"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioColors.TextSecondary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = StudioColors.Violet.copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
+                        ) {
+                            Text(
+                                text = t(lang, "tool_ai_voice_studio_badge"),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
+                                color = StudioColors.Cyan,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            val aiVoiceFamily = families.first { it.id == "ai_voice" }
+            item(key = "family_card_ai_voice", contentType = "family_card") {
+                val columns = 2
+                val rows = aiVoiceFamily.tools.chunked(columns)
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                    border = BorderStroke(1.dp, aiVoiceFamily.accent.copy(alpha = 0.28f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("home_family_card_${aiVoiceFamily.id}"),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        FamilyParentHeader(
+                            title = t(lang, aiVoiceFamily.titleKey),
+                            icon = aiVoiceFamily.icon,
+                            accent = aiVoiceFamily.accent,
+                            toolCount = aiVoiceFamily.tools.size,
+                        )
+                        rows.forEach { rowTools ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                rowTools.forEach { tile ->
+                                    ToolSquareTile(
+                                        title = t(lang, tile.titleKey),
+                                        icon = tile.icon,
+                                        accent = tile.accent,
+                                        testTag = "home_tile_${tile.id}",
+                                        hasInfo = tile.infoKey != null,
+                                        aspectRatio = 1.52f,
+                                        onInfoClick = {
+                                            tile.infoKey?.let { key ->
+                                                activeToolInfo = t(lang, tile.titleKey) to t(lang, key)
+                                            }
+                                        },
+                                        onClick = { onNavigate(tile.route) },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                repeat(columns - rowTools.size) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4) أدوات وإعدادات الاستوديو (الصدى والعمق وسلسلة المؤثرات)
+            item(key = "studio_extras_strip", contentType = "extras_strip") {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                    border = BorderStroke(1.dp, StudioColors.BorderBright),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("home_studio_utilities_card"),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        FamilyParentHeader(
+                            title = t(lang, "studio_utilities_title"),
+                            icon = Icons.Rounded.Settings,
+                            accent = StudioColors.Cyan,
+                            toolCount = if (showDeveloperPanelEntry) 6 else 5,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            ExtraQuickChip(
+                                label = t(lang, "section_ai_title"),
+                                icon = Icons.Rounded.AutoAwesome,
+                                accent = StudioColors.Violet,
+                                testTag = "home_card_ai",
+                                onClick = { onNavigate(StudioRoute.AiStudio) },
+                                modifier = Modifier.weight(1f),
+                            )
+                            ExtraQuickChip(
+                                label = t(lang, "section_echo_title"),
+                                icon = Icons.Rounded.Waves,
+                                accent = StudioColors.Cyan,
+                                testTag = "home_card_echo",
+                                onClick = { onNavigate(StudioRoute.EchoSpace) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            ExtraQuickChip(
+                                label = t(lang, "section_chain_title"),
+                                icon = Icons.Rounded.Tune,
+                                accent = StudioColors.Emerald,
+                                testTag = "home_card_chain",
+                                onClick = { onNavigate(StudioRoute.EffectsChain) },
+                                modifier = Modifier.weight(1f),
+                            )
+                            ExtraQuickChip(
+                                label = t(lang, "section_settings_title"),
+                                icon = Icons.Rounded.Settings,
+                                accent = StudioColors.Amber,
+                                testTag = "home_card_settings",
+                                onClick = { onNavigate(StudioRoute.Settings) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (showDeveloperPanelEntry) {
+                            ExtraQuickChip(
+                                label = t(lang, "developer_panel_button"),
+                                icon = Icons.Rounded.AdminPanelSettings,
+                                accent = StudioColors.Violet,
+                                testTag = "home_card_developer_panel",
+                                onClick = { onNavigate(StudioRoute.DeveloperPanel) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        val batchInteraction = remember { MutableInteractionSource() }
+                        val batchState = uiState.batchQueueState
+                        Card(
+                            onClick = { onNavigate(StudioRoute.BatchQueue) },
+                            interactionSource = batchInteraction,
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = StudioColors.ElevatedSurface),
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (batchState.isRunning) StudioColors.Cyan else StudioColors.Violet.copy(alpha = 0.45f),
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 56.dp)
+                                .lit(batchInteraction, StudioColors.Cyan, cornerRadius = 16.dp)
+                                .testTag("home_card_batch_queue"),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = StudioColors.Cyan.copy(alpha = 0.16f),
+                                    modifier = Modifier.size(40.dp),
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.QueueMusic,
+                                            contentDescription = t(lang, "tool_batch_queue"),
+                                            tint = StudioColors.Cyan,
+                                            modifier = Modifier.size(22.dp),
+                                        )
+                                    }
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        text = t(lang, "tool_batch_queue"),
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = StudioColors.TextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = if (batchState.isRunning) {
+                                            val pct = (batchState.overallProgress * 100f).toInt()
+                                            if (lang == AppLanguage.EN) "Running in background ($pct%)" else "قيد المعالجة بالخلفية ($pct%)"
+                                        } else {
+                                            t(lang, "batch_queue_subtitle")
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (batchState.isRunning) StudioColors.Cyan else StudioColors.TextSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                if (batchState.items.isNotEmpty()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = StudioColors.Cyan.copy(alpha = 0.18f),
+                                    ) {
+                                        Text(
+                                            text = "${batchState.items.size}",
+                                            style = TelemetryTextStyle,
+                                            color = StudioColors.Cyan,
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 5) استوديو التحرير والمونتاج، 6) المؤثرات والهندسة الصوتية، 7) الأدوات السريعة والتحويل
+            families.filter { it.id != "ai_voice" }.forEach { family ->
+                val columns = 3
                 val rows = family.tools.chunked(columns)
                 item(key = "family_card_${family.id}", contentType = "family_card") {
                     Card(
@@ -978,7 +1183,7 @@ fun HomeScreen(
                                             accent = tile.accent,
                                             testTag = "home_tile_${tile.id}",
                                             hasInfo = tile.infoKey != null,
-                                            aspectRatio = if (columns == 2) 1.52f else 1.05f,
+                                            aspectRatio = 1.05f,
                                             onInfoClick = {
                                                 tile.infoKey?.let { key ->
                                                     activeToolInfo = t(lang, tile.titleKey) to t(lang, key)
@@ -994,161 +1199,6 @@ fun HomeScreen(
                                 }
                             }
                         }
-                    }
-                }
-            }
-
-            // Secondary studio utilities grouped inside an independent Card
-            item(key = "studio_extras_strip", contentType = "extras_strip") {
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-                    border = BorderStroke(1.dp, StudioColors.BorderBright),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("home_studio_utilities_card"),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        FamilyParentHeader(
-                            title = t(lang, "studio_utilities_title"),
-                            icon = Icons.Rounded.Settings,
-                            accent = StudioColors.Cyan,
-                            toolCount = if (showDeveloperPanelEntry) 6 else 5,
-                        )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        ExtraQuickChip(
-                            label = t(lang, "section_ai_title"),
-                            icon = Icons.Rounded.AutoAwesome,
-                            accent = StudioColors.Violet,
-                            testTag = "home_card_ai",
-                            onClick = { onNavigate(StudioRoute.AiStudio) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        ExtraQuickChip(
-                            label = t(lang, "section_echo_title"),
-                            icon = Icons.Rounded.Waves,
-                            accent = StudioColors.Cyan,
-                            testTag = "home_card_echo",
-                            onClick = { onNavigate(StudioRoute.EchoSpace) },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        ExtraQuickChip(
-                            label = t(lang, "section_chain_title"),
-                            icon = Icons.Rounded.Tune,
-                            accent = StudioColors.Emerald,
-                            testTag = "home_card_chain",
-                            onClick = { onNavigate(StudioRoute.EffectsChain) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        ExtraQuickChip(
-                            label = t(lang, "section_settings_title"),
-                            icon = Icons.Rounded.Settings,
-                            accent = StudioColors.Amber,
-                            testTag = "home_card_settings",
-                            onClick = { onNavigate(StudioRoute.Settings) },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                    if (showDeveloperPanelEntry) {
-                        ExtraQuickChip(
-                            label = t(lang, "developer_panel_button"),
-                            icon = Icons.Rounded.AdminPanelSettings,
-                            accent = StudioColors.Violet,
-                            testTag = "home_card_developer_panel",
-                            onClick = { onNavigate(StudioRoute.DeveloperPanel) },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    val batchInteraction = remember { MutableInteractionSource() }
-                    val batchState = uiState.batchQueueState
-                    Card(
-                        onClick = { onNavigate(StudioRoute.BatchQueue) },
-                        interactionSource = batchInteraction,
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = StudioColors.ElevatedSurface),
-                        border = BorderStroke(
-                            width = 1.dp,
-                            color = if (batchState.isRunning) StudioColors.Cyan else StudioColors.Violet.copy(alpha = 0.45f),
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 56.dp)
-                            .lit(batchInteraction, StudioColors.Cyan, cornerRadius = 16.dp)
-                            .testTag("home_card_batch_queue"),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = StudioColors.Cyan.copy(alpha = 0.16f),
-                                modifier = Modifier.size(40.dp),
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.QueueMusic,
-                                        contentDescription = t(lang, "tool_batch_queue"),
-                                        tint = StudioColors.Cyan,
-                                        modifier = Modifier.size(22.dp),
-                                    )
-                                }
-                            }
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                            ) {
-                                Text(
-                                    text = t(lang, "tool_batch_queue"),
-                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = StudioColors.TextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    text = if (batchState.isRunning) {
-                                        val pct = (batchState.overallProgress * 100f).toInt()
-                                        if (lang == AppLanguage.EN) "Running in background ($pct%)" else "قيد المعالجة بالخلفية ($pct%)"
-                                    } else {
-                                        t(lang, "batch_queue_subtitle")
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (batchState.isRunning) StudioColors.Cyan else StudioColors.TextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            if (batchState.items.isNotEmpty()) {
-                                Surface(
-                                    shape = RoundedCornerShape(999.dp),
-                                    color = StudioColors.Cyan.copy(alpha = 0.18f),
-                                ) {
-                                    Text(
-                                        text = "${batchState.items.size}",
-                                        style = TelemetryTextStyle,
-                                        color = StudioColors.Cyan,
-                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
-                                    )
-                                }
-                            }
-                        }
-                    }
                     }
                 }
             }

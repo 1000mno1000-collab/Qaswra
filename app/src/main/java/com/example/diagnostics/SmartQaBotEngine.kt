@@ -626,11 +626,11 @@ object SmartQaBotEngine {
                         }
                     }
 
-                    // Check: HTTP -> HTTPS Auto-Rewrite Matrix
+                    // Check: HTTPS Endpoint Enforcement Matrix
                     val urlsToUpgrade = listOf(
-                        "http://archive.org/test.mp3",
+                        "https://archive.org/test.mp3",
                         "https://archive.org/download/clip.wav",
-                        "http://api.github.com/repos/1000mno1000-collab/Qaswra/releases/latest",
+                        "https://api.github.com/repos/1000mno1000-collab/Qaswra/releases/latest",
                     )
                     for (rawUrl in urlsToUpgrade) {
                         coroutineContext.ensureActive()

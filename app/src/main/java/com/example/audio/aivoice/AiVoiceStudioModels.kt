@@ -219,7 +219,6 @@ enum class AiVoiceGroupFilter(
 ) {
     MALE("male", "رجالي", "Male"),
     FEMALE("female", "نسائي", "Female"),
-    FAVORITES("favorites", "المفضلة", "Favorites"),
 }
 
 fun countScriptWords(text: String): Int =
@@ -347,7 +346,7 @@ data class AiVoiceBackendHealth(
 
 @Immutable
 data class AiVoiceStudioUiState(
-    val activeTab: Int = 0, // 0=Single Studio, 1=Dialogue, 2=Voices & Cloning
+    val activeTab: Int = 0, // 0=Studio, 1=Advanced (Dialogue & Cloning)
     val selectedEngine: AiVoiceEngineKind = AiVoiceEngineKind.VOXCPM_2,
     val selectedLanguage: AiVoiceLanguage = AiVoiceLanguage.AR,
     val selectedDialect: AiArabicDialect = AiArabicDialect.MSA,

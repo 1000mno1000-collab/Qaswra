@@ -51,14 +51,15 @@ fun computeWaveformPeaks(
  */
 suspend fun computeWaveformPeaksAsync(
     buf: StereoAudioBuffer,
-    buckets: Int = 120,
-): List<Float> = withContext(Dispatchers.Default) {
+    buckets: Int = 800,
+): List<Float> = withContext(Dispatchers.IO) {
     val total = buf.frameCount
-    if (total == 0 || buckets <= 0) return@withContext emptyList()
-    val result = ArrayList<Float>(buckets)
-    val step = total.toDouble() / buckets
-    for (i in 0 until buckets) {
-        if (i % 16 == 0) kotlin.coroutines.coroutineContext.ensureActive()
+    val safeBuckets = buckets.coerceIn(0, 1500)
+    if (total == 0 || safeBuckets <= 0) return@withContext emptyList()
+    val result = ArrayList<Float>(safeBuckets)
+    val step = total.toDouble() / safeBuckets
+    for (i in 0 until safeBuckets) {
+        if (i % 32 == 0) kotlin.coroutines.coroutineContext.ensureActive()
         val start = clamp(floor(i * step).toInt(), 0, total - 1)
         val end = clamp(floor((i + 1) * step).toInt(), start + 1, total)
         var peak = 0f
@@ -302,13 +303,22 @@ suspend fun mergeClipsStreamingOnDisk(
         val safeFrac = maxCrossfadeFraction.coerceIn(0.05f, 0.95f)
         val maxAllowedSec = min(normFirst.durationMs, normSecond.durationMs) / 1000f * safeFrac
         val xfadeSec = min(crossfadeMs / 1000f, maxAllowedSec).coerceAtLeast(0.01f)
-        val ffmpegOk = if (crossfadeMs >= 50 && xfadeSec >= 0.04f) {
-            val cmd = "-y -i \"${wav1.absolutePath}\" -i \"${wav2.absolutePath}\" " +
-                "-filter_complex \"[0:a]aresample=44100,aformat=channel_layouts=stereo[a0];" +
-                "[1:a]aresample=44100,aformat=channel_layouts=stereo[a1];" +
-                "[a0][a1]acrossfade=d=${"%.2f".format(java.util.Locale.US, xfadeSec)}:c1=tri:c2=tri\" " +
-                "-ar $sr -ac 2 \"${outWav.absolutePath}\""
-            FfmpegKitBridge.execute(cmd, toolName = "MergeClipsStreaming", logNonZeroFailure = false)
+        val ffmpegOk = if (FfmpegKitBridge.isAvailable()) {
+            if (crossfadeMs >= 50 && xfadeSec >= 0.04f) {
+                val cmd = "-y -i \"${wav1.absolutePath}\" -i \"${wav2.absolutePath}\" " +
+                    "-filter_complex \"[0:a]aresample=44100,aformat=channel_layouts=stereo[a0];" +
+                    "[1:a]aresample=44100,aformat=channel_layouts=stereo[a1];" +
+                    "[a0][a1]acrossfade=d=${"%.2f".format(java.util.Locale.US, xfadeSec)}:c1=tri:c2=tri\" " +
+                    "-ar $sr -ac 2 \"${outWav.absolutePath}\""
+                FfmpegKitBridge.execute(cmd, toolName = "MergeClipsStreaming", logNonZeroFailure = false)
+            } else {
+                val cmd = "-y -i \"${wav1.absolutePath}\" -i \"${wav2.absolutePath}\" " +
+                    "-filter_complex \"[0:a]aresample=44100,aformat=channel_layouts=stereo[a0];" +
+                    "[1:a]aresample=44100,aformat=channel_layouts=stereo[a1];" +
+                    "[a0][a1]concat=n=2:v=0:a=1\" " +
+                    "-ar $sr -ac 2 \"${outWav.absolutePath}\""
+                FfmpegKitBridge.execute(cmd, toolName = "MergeClipsConcat", logNonZeroFailure = false)
+            }
         } else {
             false
         }

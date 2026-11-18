@@ -148,7 +148,7 @@ private fun isTechnicalAuthRejection(detail: String?): Boolean {
         lower.contains("internal error")
 }
 
-private fun getAppSigningSha1(context: Context): String? = runCatching {
+private fun getAppSigningSha256(context: Context): String? = runCatching {
     val pm = context.packageManager
     val pkgName = context.packageName
     val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -164,7 +164,7 @@ private fun getAppSigningSha1(context: Context): String? = runCatching {
         pm.getPackageInfo(pkgName, PackageManager.GET_SIGNATURES).signatures
     }
     val certBytes = signatures?.firstOrNull()?.toByteArray() ?: return@runCatching null
-    val digest = MessageDigest.getInstance("SHA-1").digest(certBytes)
+    val digest = MessageDigest.getInstance("SHA-256").digest(certBytes)
     digest.joinToString(":") { "%02X".format(it) }
 }.getOrNull()
 
@@ -445,12 +445,12 @@ fun AuthScreen(
                     }
 
                     if (result == null) {
-                        val sha1 = getAppSigningSha1(activity)
+                        val sha256 = getAppSigningSha256(activity)
                         val causeText = buildString {
                             append("Google Credential Manager timed out without a response from Google Play Services.")
-                            if (!sha1.isNullOrBlank()) {
-                                append(" | App SHA-1: ")
-                                append(sha1)
+                            if (!sha256.isNullOrBlank()) {
+                                append(" | App SHA-256: ")
+                                append(sha256)
                             }
                         }
                         AppDiagnosticLog.logRecoverable(
@@ -518,12 +518,12 @@ fun AuthScreen(
                     val cancelDetail = (e.errorMessage?.toString() ?: e.localizedMessage ?: e.message)
                         ?.takeIf { it.isNotBlank() }
                     val technicalRejection = isTechnicalAuthRejection(cancelDetail)
-                    val sha1 = if (technicalRejection) getAppSigningSha1(activity) else null
+                    val sha256 = if (technicalRejection) getAppSigningSha256(activity) else null
                     val causeText = buildString {
                         append(cancelDetail ?: e.javaClass.simpleName)
-                        if (!sha1.isNullOrBlank()) {
-                            append(" | App SHA-1: ")
-                            append(sha1)
+                        if (!sha256.isNullOrBlank()) {
+                            append(" | App SHA-256: ")
+                            append(sha256)
                         }
                     }
                     Log.w("Auth", "Google Sign-In stopped: $causeText", e)
@@ -547,11 +547,11 @@ fun AuthScreen(
                     errorMsg = if (technicalRejection) {
                         if (isEn) {
                             "Google Play failed account verification ($cancelDetail)." +
-                                (sha1?.let { "\nAdd this app SHA-1 in Firebase Console (${activity.packageName}):\n$it" } ?: "") +
+                                (sha256?.let { "\nAdd this app SHA-256 in Firebase Console (${activity.packageName}):\n$it" } ?: "") +
                                 "\nAlso ensure device screen lock is enabled and Google Play Services is updated."
                         } else {
                             "فشل التحقق من الحساب في Google Play ($cancelDetail)." +
-                                (sha1?.let { "\nتأكد من إضافة بصمة SHA-1 التالية في Firebase Console لحزمة ${activity.packageName}:\n$it" } ?: "") +
+                                (sha256?.let { "\nتأكد من إضافة بصمة SHA-256 التالية في Firebase Console لحزمة ${activity.packageName}:\n$it" } ?: "") +
                                 "\nوتأكد أيضاً من تفعيل قفل شاشة الجهاز وتحديث خدمات Google Play."
                         }
                     } else if (isEn) {
