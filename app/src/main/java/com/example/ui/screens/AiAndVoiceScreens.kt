@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Clear
@@ -83,6 +84,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
 import com.example.audio.OnlineGuard
 import com.example.audio.fx.VoiceEffect
 import com.example.i18n.t
@@ -2826,11 +2829,14 @@ fun SettingsScreen(
     uiState: StudioUiState,
     viewModel: StudioViewModel,
     onChangeDefaultSaveFolder: () -> Unit = {},
+    onOpenDeveloperPanel: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
     var langDialogOpen by remember { mutableStateOf(false) }
     var privacyDialogOpen by rememberSaveable { mutableStateOf(false) }
+    val devPanelState by viewModel.developerPanelUiState.collectAsStateWithLifecycle()
+    val showDeveloperEntry = BuildConfig.DEVELOPER_PANEL_ENABLED && devPanelState.ownerVerification.isAuthorized
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -2979,6 +2985,52 @@ fun SettingsScreen(
                     )
                 }
                 Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = StudioColors.TextMuted)
+            }
+        }
+
+        if (showDeveloperEntry) {
+            val devInteraction = remember { MutableInteractionSource() }
+            Card(
+                onClick = onOpenDeveloperPanel,
+                interactionSource = devInteraction,
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.65f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .lit(devInteraction, StudioColors.Violet, cornerRadius = 20.dp)
+                    .testTag("settings_developer_panel_card"),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 64.dp)
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AdminPanelSettings,
+                        contentDescription = t(lang, "developer_panel_button"),
+                        tint = StudioColors.Violet,
+                        modifier = Modifier.size(26.dp),
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = t(lang, "developer_panel_button"),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = StudioColors.TextPrimary,
+                        )
+                        Text(
+                            text = t(lang, "developer_panel_subtitle"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioColors.VioletBright,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = StudioColors.TextMuted)
+                }
             }
         }
 

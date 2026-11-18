@@ -52,6 +52,9 @@ sealed interface StudioRoute {
     data object TtsStudio : StudioRoute
 
     @Serializable
+    data object AiVoiceStudio : StudioRoute
+
+    @Serializable
     data object VoiceTransformer : StudioRoute
 
     @Serializable
@@ -122,4 +125,7 @@ sealed interface StudioRoute {
 
     @Serializable
     data object BatchQueue : StudioRoute
+
+    @Serializable
+    data object DeveloperPanel : StudioRoute
 }

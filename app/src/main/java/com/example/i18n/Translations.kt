@@ -119,6 +119,9 @@ private val AR_STRINGS = mapOf(
     "language_direction_hint" to "يتم تبديل الترجمة واتجاه الواجهة تلقائياً وحفظ اختيارك",
     "section_settings_title" to "الإعدادات واللغة",
     "section_settings_subtitle" to "تغيير لغة التطبيق (عربي، إنجليزي، فارسي) وتفضيلات الاستوديو",
+    "developer_panel_button" to "لوحة المطوّر",
+    "developer_panel_title" to "لوحة المطوّر والإدارة",
+    "developer_panel_subtitle" to "قسم خاص بالمالك: حالة المحركات، الخادم، الأرصدة، المدفوعات، والاختبارات",
     "settings_badge" to "عربي / EN",
     "settings_playback_section" to "تفضيلات التشغيل والتصدير",
     "section_tts_title" to "تحويل النص إلى صوت (TTS)",
@@ -515,6 +518,10 @@ private val AR_STRINGS = mapOf(
     "batch_filter_echo" to "صدى وعمق مكاني",
     "batch_filter_air" to "إشراق الترددات العليا",
     "batch_filter_active_dsp" to "سلسلة الاستوديو النشطة",
+    "tool_ai_voice_studio" to "AI VOICE STUDIO – استوديو الأصوات الذكي",
+    "tool_ai_voice_studio_short" to "استوديو الأصوات الذكي",
+    "tool_ai_voice_studio_subtitle" to "VoxCPM2 + Audar-TTS • تصميم شخصيات، مشاعر، استنساخ، وحوار متعدد الشخصيات",
+    "tool_ai_voice_studio_badge" to "VoxCPM2 • Audar",
 )
 
 private val EN_STRINGS = mapOf(
@@ -634,6 +641,9 @@ private val EN_STRINGS = mapOf(
     "language_direction_hint" to "Translations and RTL/LTR layout switch immediately and persist across sessions",
     "section_settings_title" to "Settings & Language",
     "section_settings_subtitle" to "Switch app language (Arabic, English, Persian) & studio preferences",
+    "developer_panel_button" to "Developer Panel",
+    "developer_panel_title" to "Developer & Admin Panel",
+    "developer_panel_subtitle" to "Owner-only telemetry, credits ledger, payments & live test runner",
     "settings_badge" to "AR / EN / FA",
     "settings_playback_section" to "Playback & Export Preferences",
     "section_tts_title" to "Text-to-Speech Studio",
@@ -1030,6 +1040,10 @@ private val EN_STRINGS = mapOf(
     "batch_filter_echo" to "Echo & Space",
     "batch_filter_air" to "Bright Treble Air",
     "batch_filter_active_dsp" to "Active Studio DSP Chain",
+    "tool_ai_voice_studio" to "AI VOICE STUDIO – Smart Voice Lab",
+    "tool_ai_voice_studio_short" to "AI Voice Studio",
+    "tool_ai_voice_studio_subtitle" to "VoxCPM2 + Audar-TTS • Voice design, 11 emotions, cloning & multi-speaker dialogue",
+    "tool_ai_voice_studio_badge" to "VoxCPM2 • Audar",
 )
 
 private val FA_STRINGS = mapOf(
@@ -1149,6 +1163,9 @@ private val FA_STRINGS = mapOf(
     "language_direction_hint" to "ترجمه و جهت راست‌به‌چپ یا چپ‌به‌راست به صورت خودکار تغییر و ذخیره می‌شود",
     "section_settings_title" to "تنظیمات و زبان",
     "section_settings_subtitle" to "تغییر زبان برنامه (عربی، انگلیسی، فارسی) و تنظیمات استودیو",
+    "developer_panel_button" to "پنل توسعه‌دهنده",
+    "developer_panel_title" to "پنل توسعه‌دهنده و مدیریت",
+    "developer_panel_subtitle" to "بخش ویژه مالک: موتورها، سرور، اعتبارها، پرداخت‌ها و تست‌ها",
     "settings_badge" to "عربي / EN / فارسی",
     "settings_playback_section" to "تنظیمات پخش و خروجی",
     "section_tts_title" to "تبدیل متن به گفتار (TTS)",
@@ -1545,6 +1562,10 @@ private val FA_STRINGS = mapOf(
     "batch_filter_echo" to "اکو و فضای سه‌بعدی",
     "batch_filter_air" to "شفافیت فرکانس‌های بالا",
     "batch_filter_active_dsp" to "زنجیره افکت‌های فعال استودیو",
+    "tool_ai_voice_studio" to "AI VOICE STUDIO – استودیو صداهای هوشمند",
+    "tool_ai_voice_studio_short" to "استودیو صداهای هوشمند",
+    "tool_ai_voice_studio_subtitle" to "VoxCPM2 + Audar-TTS • طراحی صدا، احساسات، کلونینگ و گفت‌وگوی چندشخصیتی",
+    "tool_ai_voice_studio_badge" to "VoxCPM2 • Audar",
 )
 
 fun t(lang: AppLanguage, key: String): String {

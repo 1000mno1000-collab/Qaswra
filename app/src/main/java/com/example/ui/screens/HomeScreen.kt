@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.CallSplit
 import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.ClosedCaption
@@ -113,6 +114,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
 import com.example.R
 import com.example.model.PlaybackTelemetry
 import com.example.model.RecorderTelemetry
@@ -176,6 +178,8 @@ fun HomeScreen(
 ) {
     val lang = uiState.language
     val context = LocalContext.current
+    val devPanelState by viewModel.developerPanelUiState.collectAsStateWithLifecycle()
+    val showDeveloperPanelEntry = BuildConfig.DEVELOPER_PANEL_ENABLED && devPanelState.ownerVerification.isAuthorized
     var langDialogOpen by remember { mutableStateOf(false) }
     var accountSheetOpen by remember { mutableStateOf(false) }
     var activeToolInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -200,6 +204,13 @@ fun HomeScreen(
                 icon = Icons.Rounded.RecordVoiceOver,
                 accent = StudioColors.Cyan,
                 tools = listOf(
+                    HomeToolTile(
+                        id = "ai_voice_studio",
+                        titleKey = "tool_ai_voice_studio_short",
+                        icon = Icons.Rounded.RecordVoiceOver,
+                        accent = StudioColors.Cyan,
+                        route = StudioRoute.AiVoiceStudio,
+                    ),
                     HomeToolTile(
                         id = "tts_human",
                         titleKey = "tool_tts_human",
@@ -674,6 +685,76 @@ fun HomeScreen(
                 }
             }
 
+            item(key = "featured_ai_voice_studio", contentType = "featured_ai_voice_studio") {
+                val aiVoiceCardInteraction = remember { MutableInteractionSource() }
+                Card(
+                    onClick = { onNavigate(StudioRoute.AiVoiceStudio) },
+                    interactionSource = aiVoiceCardInteraction,
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                    border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.65f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .lit(aiVoiceCardInteraction, StudioColors.Violet, cornerRadius = 20.dp)
+                        .testTag("home_ai_voice_studio_card"),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = StudioColors.Violet.copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.50f)),
+                            modifier = Modifier.size(46.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Rounded.RecordVoiceOver,
+                                    contentDescription = t(lang, "tool_ai_voice_studio"),
+                                    tint = StudioColors.Cyan,
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text(
+                                text = t(lang, "tool_ai_voice_studio"),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = t(lang, "tool_ai_voice_studio_subtitle"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioColors.TextSecondary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = StudioColors.Violet.copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
+                        ) {
+                            Text(
+                                text = t(lang, "tool_ai_voice_studio_badge"),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
+                                color = StudioColors.Cyan,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
             if (uiState.recentEdits.isNotEmpty()) {
                 item(key = "recent_edits_strip", contentType = "recent_edits_strip") {
                     Column(
@@ -954,6 +1035,16 @@ fun HomeScreen(
                             modifier = Modifier.weight(1f),
                         )
                     }
+                    if (showDeveloperPanelEntry) {
+                        ExtraQuickChip(
+                            label = t(lang, "developer_panel_button"),
+                            icon = Icons.Rounded.AdminPanelSettings,
+                            accent = StudioColors.Violet,
+                            testTag = "home_card_developer_panel",
+                            onClick = { onNavigate(StudioRoute.DeveloperPanel) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                     val batchInteraction = remember { MutableInteractionSource() }
                     val batchState = uiState.batchQueueState
                     Card(
@@ -1091,6 +1182,11 @@ fun HomeScreen(
             onOpenSettings = {
                 accountSheetOpen = false
                 onNavigate(StudioRoute.Settings)
+            },
+            showDeveloperPanel = showDeveloperPanelEntry,
+            onOpenDeveloperPanel = {
+                accountSheetOpen = false
+                onNavigate(StudioRoute.DeveloperPanel)
             },
             onOpenLanguage = {
                 accountSheetOpen = false
@@ -1327,6 +1423,8 @@ private fun SonixAccountBottomSheet(
     onOpenBatchQueue: () -> Unit,
     onOpenProjects: () -> Unit,
     onOpenSettings: () -> Unit,
+    showDeveloperPanel: Boolean = false,
+    onOpenDeveloperPanel: () -> Unit = {},
     onOpenLanguage: () -> Unit,
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
@@ -1485,6 +1583,15 @@ private fun SonixAccountBottomSheet(
                     testTag = "sheet_settings_button",
                     onClick = onOpenSettings,
                 )
+                if (showDeveloperPanel) {
+                    AccountSheetShortcutRow(
+                        icon = Icons.Rounded.AdminPanelSettings,
+                        label = t(language, "developer_panel_button"),
+                        accent = StudioColors.Violet,
+                        testTag = "sheet_developer_panel_button",
+                        onClick = onOpenDeveloperPanel,
+                    )
+                }
                 AccountSheetShortcutRow(
                     icon = Icons.Rounded.Language,
                     label = if (isEn) "App Language" else "لغة التطبيق",

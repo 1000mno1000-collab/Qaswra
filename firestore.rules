@@ -8,11 +8,23 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && !id.matches('.*[/\\\\.].*');
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Strictly verified owner authorization:
+    // Checks server-provisioned /admins/{uid} OR Firebase-verified owner email (with email_verified == true).
+    function isOwnerAccount() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (
+          request.auth.token.email_verified == true &&
+          request.auth.token.email == '1000iraq1000@gmail.com'
+        )
+      );
     }
 
     function incoming() {
@@ -78,6 +90,143 @@ service cloud.firestore {
         data.updatedAt <= request.time;
     }
 
+    function isValidAdminFinanceSetting(data) {
+      return data.keys().hasAll([
+          'partnerSharePercent', 'partnerName', 'currencyCode', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'partnerSharePercent', 'partnerName', 'currencyCode', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.partnerSharePercent is number &&
+        data.partnerSharePercent >= 0 &&
+        data.partnerSharePercent <= 100 &&
+        isValidString(data.partnerName, 0, 80) &&
+        isValidString(data.currencyCode, 3, 8) &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.createdAt <= request.time &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
+    function isValidCreditAccount(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'email', 'freeCredits', 'paidCredits', 'totalSpentCredits', 'totalRefundedCredits', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'email', 'freeCredits', 'paidCredits', 'totalSpentCredits', 'totalRefundedCredits', 'createdAt', 'updatedAt'
+        ]) &&
+        data.userId == userId &&
+        isValidString(data.email, 0, 120) &&
+        data.freeCredits is int && data.freeCredits >= 0 && data.freeCredits <= 10000000 &&
+        data.paidCredits is int && data.paidCredits >= 0 && data.paidCredits <= 10000000 &&
+        data.totalSpentCredits is int && data.totalSpentCredits >= 0 &&
+        data.totalRefundedCredits is int && data.totalRefundedCredits >= 0 &&
+        data.createdAt is timestamp &&
+        data.createdAt <= request.time &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
+    function isValidCreditTransaction(data) {
+      return data.keys().hasAll([
+          'userId', 'creditType', 'operation', 'amount', 'status', 'reason', 'engineId', 'performedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'creditType', 'operation', 'amount', 'status', 'reason', 'engineId', 'performedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidString(data.userId, 1, 128) &&
+        data.creditType in ['FREE', 'PAID'] &&
+        data.operation in ['GRANT', 'DEDUCT', 'REFUND', 'FAILED_CHARGE'] &&
+        data.amount is int && data.amount > 0 && data.amount <= 1000000 &&
+        data.status in ['COMPLETED', 'FAILED', 'REFUNDED'] &&
+        isValidString(data.reason, 1, 200) &&
+        isValidString(data.engineId, 0, 64) &&
+        data.performedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.createdAt <= request.time &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
+    function isValidPaymentRecord(data) {
+      return data.keys().hasAll([
+          'userId', 'paymentType', 'productId', 'amountUsd', 'status', 'provider', 'recordedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'paymentType', 'productId', 'amountUsd', 'status', 'provider', 'recordedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidString(data.userId, 1, 128) &&
+        data.paymentType in ['PURCHASE', 'SUBSCRIPTION'] &&
+        isValidString(data.productId, 1, 80) &&
+        data.amountUsd is number && data.amountUsd >= 0 && data.amountUsd <= 100000 &&
+        data.status in ['SUCCEEDED', 'FAILED', 'ACTIVE', 'CANCELLED', 'REFUNDED'] &&
+        isValidString(data.provider, 1, 40) &&
+        data.recordedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.createdAt <= request.time &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
+    function isValidFinanceLedgerEntry(data) {
+      return data.keys().hasAll([
+          'entryType', 'source', 'amountUsd', 'periodLabel', 'notes', 'createdByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'entryType', 'source', 'amountUsd', 'periodLabel', 'notes', 'createdByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.entryType in ['AD_REVENUE', 'HOSTING_COST', 'ENGINE_COST'] &&
+        isValidString(data.source, 1, 80) &&
+        data.amountUsd is number && data.amountUsd >= 0 && data.amountUsd <= 1000000 &&
+        isValidString(data.periodLabel, 1, 40) &&
+        isValidString(data.notes, 0, 240) &&
+        data.createdByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.createdAt <= request.time &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
+    function isValidDevChangelogEntry(data) {
+      return data.keys().hasAll([
+          'title', 'category', 'status', 'details', 'changeDate', 'createdByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'title', 'category', 'status', 'details', 'changeDate', 'createdByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidString(data.title, 1, 120) &&
+        data.category in ['IMPLEMENTED', 'UNCOMPLETED', 'ISSUE', 'TEST_PASSED', 'TEST_FAILED'] &&
+        data.status in ['DONE', 'IN_PROGRESS', 'OPEN', 'BLOCKED'] &&
+        isValidString(data.details, 0, 500) &&
+        isValidString(data.changeDate, 1, 32) &&
+        data.createdByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.createdAt <= request.time &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
+    function isValidAdminTestRun(data) {
+      return data.keys().hasAll([
+          'testType', 'engineId', 'passed', 'latencyMs', 'summary', 'errorDetail', 'executedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'testType', 'engineId', 'passed', 'latencyMs', 'summary', 'errorDetail', 'executedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.testType in ['ARABIC_TTS', 'DIALECTS', 'EMOTIONS', 'MULTI_CHARACTER', 'EXPORT_WAV_MP3', 'SERVER_CONNECTION'] &&
+        isValidString(data.engineId, 1, 64) &&
+        data.passed is bool &&
+        data.latencyMs is int && data.latencyMs >= 0 && data.latencyMs <= 600000 &&
+        isValidString(data.summary, 1, 300) &&
+        isValidString(data.errorDetail, 0, 500) &&
+        data.executedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.createdAt <= request.time &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
     match /users/{userId}/custom_presets/{presetId} {
       allow get: if isOwner(userId) && isValidId(presetId);
       allow list: if isOwner(userId);
@@ -108,6 +257,109 @@ service cloud.firestore {
           'name', 'selectedPresetName', 'durationMs', 'sampleRate', 'dspConfig', 'updatedAt'
         ]);
       allow delete: if isOwner(userId) && isValidId(draftId);
+    }
+
+    // Trusted server-provisioned admin registry; never writable from client SDKs
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && request.auth.uid == adminUid && isValidId(adminUid);
+      allow list, create, update, delete: if false;
+    }
+
+    match /admin_settings/{settingId} {
+      allow get: if isOwnerAccount() && isValidId(settingId);
+      allow list: if isOwnerAccount();
+      allow create: if isOwnerAccount() && isValidId(settingId) && isValidAdminFinanceSetting(incoming());
+      allow update: if isOwnerAccount() &&
+        isValidId(settingId) &&
+        isValidAdminFinanceSetting(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'partnerSharePercent', 'partnerName', 'currencyCode', 'updatedByUid', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    match /credit_accounts/{userId} {
+      allow get: if isValidId(userId) && (isOwnerAccount() || isOwner(userId));
+      allow list: if isOwnerAccount();
+      allow create: if isOwnerAccount() && isValidId(userId) && isValidCreditAccount(incoming(), userId);
+      allow update: if isOwnerAccount() &&
+        isValidId(userId) &&
+        isValidCreditAccount(incoming(), userId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'email', 'freeCredits', 'paidCredits', 'totalSpentCredits', 'totalRefundedCredits', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    match /credit_transactions/{txId} {
+      allow get: if isValidId(txId) && (isOwnerAccount() || (isSignedIn() && resource.data.userId == request.auth.uid));
+      allow list: if isOwnerAccount() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isOwnerAccount() && isValidId(txId) && isValidCreditTransaction(incoming());
+      allow update: if isOwnerAccount() &&
+        isValidId(txId) &&
+        isValidCreditTransaction(incoming()) &&
+        existing().status == 'FAILED' &&
+        incoming().status == 'REFUNDED' &&
+        incoming().userId == existing().userId &&
+        incoming().amount == existing().amount &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reason', 'performedByUid', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && (isOwnerAccount() || (isSignedIn() && resource.data.userId == request.auth.uid));
+      allow list: if isOwnerAccount() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isOwnerAccount() && isValidId(paymentId) && isValidPaymentRecord(incoming());
+      allow update: if isOwnerAccount() &&
+        isValidId(paymentId) &&
+        isValidPaymentRecord(incoming()) &&
+        existing().status in ['SUCCEEDED', 'ACTIVE'] &&
+        incoming().userId == existing().userId &&
+        incoming().amountUsd == existing().amountUsd &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'recordedByUid', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /finance_ledger/{entryId} {
+      allow get: if isOwnerAccount() && isValidId(entryId);
+      allow list: if isOwnerAccount();
+      allow create: if isOwnerAccount() && isValidId(entryId) && isValidFinanceLedgerEntry(incoming());
+      allow update: if isOwnerAccount() &&
+        isValidId(entryId) &&
+        isValidFinanceLedgerEntry(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'source', 'amountUsd', 'periodLabel', 'notes', 'updatedAt'
+        ]);
+      allow delete: if isOwnerAccount() && isValidId(entryId);
+    }
+
+    match /dev_changelog/{entryId} {
+      allow get: if isOwnerAccount() && isValidId(entryId);
+      allow list: if isOwnerAccount();
+      allow create: if isOwnerAccount() && isValidId(entryId) && isValidDevChangelogEntry(incoming());
+      allow update: if isOwnerAccount() &&
+        isValidId(entryId) &&
+        isValidDevChangelogEntry(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'category', 'status', 'details', 'changeDate', 'updatedAt'
+        ]);
+      allow delete: if isOwnerAccount() && isValidId(entryId);
+    }
+
+    match /admin_test_runs/{runId} {
+      allow get: if isOwnerAccount() && isValidId(runId);
+      allow list: if isOwnerAccount();
+      allow create: if isOwnerAccount() && isValidId(runId) && isValidAdminTestRun(incoming());
+      allow update, delete: if false;
     }
 
     match /{document=**} {

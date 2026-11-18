@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.audio.ai.OnlineSoundHistoryItem
 import com.example.audio.ai.OnlineSoundItem
+import com.example.audio.aivoice.AiVoiceCharacter
 import com.example.model.AppLanguage
 import com.example.model.AuthSession
 import com.example.model.SavedAssistantChatSession
@@ -28,6 +29,7 @@ class PreferencesStore(private val context: Context) {
     private val chatSessionListSerializer = ListSerializer(SavedAssistantChatSession.serializer())
     private val soundItemListSerializer = ListSerializer(OnlineSoundItem.serializer())
     private val soundHistoryListSerializer = ListSerializer(OnlineSoundHistoryItem.serializer())
+    private val aiVoiceCharacterListSerializer = ListSerializer(AiVoiceCharacter.serializer())
 
     companion object {
         private val KEY_LANGUAGE = stringPreferencesKey("language")
@@ -39,6 +41,8 @@ class PreferencesStore(private val context: Context) {
         private val KEY_ASSISTANT_CHATS_JSON = stringPreferencesKey("assistant_chats_json")
         private val KEY_FAVORITE_ONLINE_SOUNDS_JSON = stringPreferencesKey("favorite_online_sounds_json")
         private val KEY_ONLINE_SOUND_HISTORY_JSON = stringPreferencesKey("online_sound_history_json")
+        private val KEY_AI_VOICE_CHARACTERS_JSON = stringPreferencesKey("ai_voice_characters_json")
+        private val KEY_AI_VOICE_BACKEND_URL = stringPreferencesKey("ai_voice_backend_url")
     }
 
     val languageFlow: Flow<AppLanguage> = context.studioPrefsDataStore.data.map { prefs ->
@@ -76,6 +80,15 @@ class PreferencesStore(private val context: Context) {
     val onlineListeningHistoryFlow: Flow<List<OnlineSoundHistoryItem>> = context.studioPrefsDataStore.data.map { prefs ->
         val raw = prefs[KEY_ONLINE_SOUND_HISTORY_JSON] ?: return@map emptyList()
         runCatching { json.decodeFromString(soundHistoryListSerializer, raw) }.getOrDefault(emptyList())
+    }
+
+    val savedAiVoiceCharactersFlow: Flow<List<AiVoiceCharacter>> = context.studioPrefsDataStore.data.map { prefs ->
+        val raw = prefs[KEY_AI_VOICE_CHARACTERS_JSON] ?: return@map emptyList()
+        runCatching { json.decodeFromString(aiVoiceCharacterListSerializer, raw) }.getOrDefault(emptyList())
+    }
+
+    val aiVoiceBackendUrlFlow: Flow<String> = context.studioPrefsDataStore.data.map { prefs ->
+        prefs[KEY_AI_VOICE_BACKEND_URL].orEmpty()
     }
 
     suspend fun saveLanguage(lang: AppLanguage) {
@@ -131,6 +144,18 @@ class PreferencesStore(private val context: Context) {
     suspend fun saveOnlineListeningHistory(history: List<OnlineSoundHistoryItem>) {
         context.studioPrefsDataStore.edit { prefs ->
             prefs[KEY_ONLINE_SOUND_HISTORY_JSON] = json.encodeToString(soundHistoryListSerializer, history)
+        }
+    }
+
+    suspend fun saveAiVoiceCharacters(characters: List<AiVoiceCharacter>) {
+        context.studioPrefsDataStore.edit { prefs ->
+            prefs[KEY_AI_VOICE_CHARACTERS_JSON] = json.encodeToString(aiVoiceCharacterListSerializer, characters)
+        }
+    }
+
+    suspend fun saveAiVoiceBackendUrl(url: String) {
+        context.studioPrefsDataStore.edit { prefs ->
+            prefs[KEY_AI_VOICE_BACKEND_URL] = url.trim()
         }
     }
 }

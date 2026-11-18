@@ -25,6 +25,10 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        val developerPanelEnabled = (project.findProperty("DEVELOPER_PANEL_ENABLED") as? String)
+            ?.trim()
+            ?.toBooleanStrictOrNull() ?: true
+        buildConfigField("boolean", "DEVELOPER_PANEL_ENABLED", developerPanelEnabled.toString())
     }
 
     signingConfigs {
@@ -166,6 +170,7 @@ dependencies {
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:8.1.9")
 
     debugImplementation(libs.androidx.ui.tooling)
+    testImplementation("junit:junit:4.13.2")
 }
 
 secrets {

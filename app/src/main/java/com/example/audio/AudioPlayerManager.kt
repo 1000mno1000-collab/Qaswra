@@ -33,6 +33,48 @@ object AudioPlayerManager {
         runCatching { activePlayer?.isPlaying == true }.getOrDefault(false)
     }
 
+    fun isTagActive(tag: String): Boolean = synchronized(lock) {
+        activeTag == tag && activePlayer != null
+    }
+
+    fun pause(tag: String): Boolean = synchronized(lock) {
+        if (activeTag != tag) return@synchronized false
+        val mp = activePlayer ?: return@synchronized false
+        runCatching {
+            if (mp.isPlaying) mp.pause()
+            true
+        }.getOrDefault(false)
+    }
+
+    fun resume(tag: String): Boolean = synchronized(lock) {
+        if (activeTag != tag) return@synchronized false
+        val mp = activePlayer ?: return@synchronized false
+        runCatching {
+            if (!mp.isPlaying) mp.start()
+            true
+        }.getOrDefault(false)
+    }
+
+    fun seekTo(tag: String, positionMs: Int): Boolean = synchronized(lock) {
+        if (activeTag != tag) return@synchronized false
+        val mp = activePlayer ?: return@synchronized false
+        runCatching {
+            val dur = mp.duration.coerceAtLeast(0)
+            mp.seekTo(positionMs.coerceIn(0, dur))
+            true
+        }.getOrDefault(false)
+    }
+
+    fun currentPositionMs(tag: String): Long = synchronized(lock) {
+        if (activeTag != tag) return@synchronized 0L
+        runCatching { activePlayer?.currentPosition?.toLong()?.coerceAtLeast(0L) ?: 0L }.getOrDefault(0L)
+    }
+
+    fun durationMs(tag: String): Long = synchronized(lock) {
+        if (activeTag != tag) return@synchronized 0L
+        runCatching { activePlayer?.duration?.toLong()?.coerceAtLeast(0L) ?: 0L }.getOrDefault(0L)
+    }
+
     fun currentTag(): String? = activeTag
 
     fun playFile(

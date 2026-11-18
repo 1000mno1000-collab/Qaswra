@@ -117,14 +117,17 @@ import com.example.studio.ui.lit
 import com.example.ui.components.PersistentTransportBar
 import com.example.ui.components.SleepTimerDialog
 import com.example.ui.components.SonixLuxuryLaunchOverlay
+import com.example.BuildConfig
 import com.example.ui.screens.AiStudioScreen
 import com.example.ui.screens.AiToolDetailScreen
+import com.example.ui.screens.AiVoiceStudioScreen
 import com.example.ui.screens.AudioEditorScreen
 import com.example.ui.screens.AudioMergeScreen
 import com.example.ui.screens.AudioSplitScreen
 import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.BatchQueueScreen
 import com.example.ui.screens.CompressAudioScreen
+import com.example.ui.screens.DeveloperPanelScreen
 import com.example.ui.screens.EchoDetailScreen
 import com.example.ui.screens.EchoReverbScreen
 import com.example.ui.screens.EffectDetailScreen
@@ -873,6 +876,13 @@ private fun SonixRootApp(
                                     onBack = returnToHome,
                                 )
                             }
+                            composable<StudioRoute.AiVoiceStudio> {
+                                AiVoiceStudioScreen(
+                                    uiState = uiState,
+                                    viewModel = viewModel,
+                                    onBack = returnToHome,
+                                )
+                            }
                             composable<StudioRoute.VoiceTransformer> {
                                 VoiceTransformerScreen(
                                     uiState = uiState,
@@ -886,6 +896,13 @@ private fun SonixRootApp(
                                     viewModel = viewModel,
                                     onChangeDefaultSaveFolder = {
                                         openDocumentTreeLauncher.launch(null)
+                                    },
+                                    onOpenDeveloperPanel = {
+                                        if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
+                                            navController.navigate(StudioRoute.DeveloperPanel) {
+                                                launchSingleTop = true
+                                            }
+                                        }
                                     },
                                     onBack = returnToHome,
                                 )
@@ -1057,6 +1074,17 @@ private fun SonixRootApp(
                                     },
                                     onBack = returnToHome,
                                 )
+                            }
+                            composable<StudioRoute.DeveloperPanel> {
+                                if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
+                                    DeveloperPanelScreen(
+                                        uiState = uiState,
+                                        viewModel = viewModel,
+                                        onBack = returnToHome,
+                                    )
+                                } else {
+                                    LaunchedEffect(Unit) { returnToHome() }
+                                }
                             }
                         }
                     }

@@ -14,6 +14,7 @@ import androidx.credentials.CredentialManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.aistudio.voicepro.sonixk.NabraOnnxDirectEngine
+import com.example.BuildConfig
 import com.example.audio.AudioDecodeOutcome
 import com.example.audio.AudioDecoder
 import com.example.audio.AudioFileUploader
@@ -34,6 +35,19 @@ import com.example.audio.ai.OnlineSoundItem
 import com.example.audio.ai.SmartAssistantAndSearch
 import com.example.audio.ai.SonixUnifiedAIEngine
 import com.example.audio.ai.ToolGuideResult
+import com.example.audio.aivoice.AiArabicDialect
+import com.example.audio.aivoice.AiDeliveryPace
+import com.example.audio.aivoice.AiDialogueTurn
+import com.example.audio.aivoice.AiVoiceAudioStitcher
+import com.example.audio.aivoice.AiVoiceCategory
+import com.example.audio.aivoice.AiVoiceCharacter
+import com.example.audio.aivoice.AiVoiceEmotion
+import com.example.audio.aivoice.AiVoiceEngineKind
+import com.example.audio.aivoice.AiVoiceLanguage
+import com.example.audio.aivoice.AiVoiceStudioCoordinator
+import com.example.audio.aivoice.AiVoiceStudioUiState
+import com.example.audio.aivoice.AiVoiceSynthOutcome
+import com.example.audio.aivoice.AiVoiceSynthRequest
 import com.example.audio.fx.StudioLuxuryAudioFilter
 import com.example.audio.fx.VoiceEffect
 import com.example.audio.fx.VoiceProcessor
@@ -105,6 +119,17 @@ import com.example.data.ai.AiRepository
 import com.example.data.ai.AiResponse
 import com.example.data.ai.SonixUnifiedAiRepository
 import com.example.data.remote.FirestoreStudioRepository
+import com.example.devpanel.AdminTestType
+import com.example.devpanel.CreditTransactionRecord
+import com.example.devpanel.CreditType
+import com.example.devpanel.DevChangelogCategory
+import com.example.devpanel.DevChangelogStatus
+import com.example.devpanel.DeveloperPanelController
+import com.example.devpanel.DeveloperPanelTab
+import com.example.devpanel.DeveloperPanelUiState
+import com.example.devpanel.FinanceEntryType
+import com.example.devpanel.PaymentStatus
+import com.example.devpanel.PaymentType
 import com.example.diagnostics.AppDiagnosticEntry
 import com.example.diagnostics.AppDiagnosticLog
 import com.example.diagnostics.QaScanState
@@ -356,6 +381,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _uiState = MutableStateFlow(StudioUiState())
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
 
+    private val aiVoiceCoordinator = AiVoiceStudioCoordinator()
+    private val _aiVoiceUiState = MutableStateFlow(AiVoiceStudioUiState())
+    val aiVoiceUiState: StateFlow<AiVoiceStudioUiState> = _aiVoiceUiState.asStateFlow()
+
+    private val developerPanelController = DeveloperPanelController(
+        app = application,
+        scope = viewModelScope,
+        coordinator = aiVoiceCoordinator,
+        getBackendUrl = { _aiVoiceUiState.value.backendServerUrl },
+    )
+    val developerPanelUiState: StateFlow<DeveloperPanelUiState> = developerPanelController.uiState
+
     // Dedicated high-frequency telemetry streams to isolate 60/120 FPS visualizers & playheads
     // from triggering full-screen StudioUiState recompositions every audio buffer frame.
     private val _playbackTelemetry = MutableStateFlow(PlaybackTelemetry())
@@ -478,6 +515,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private var batchProcessingJob: Job? = null
     private var cloudPresetsJob: Job? = null
     private var cloudDraftsJob: Job? = null
+    private var aiVoiceSynthJob: Job? = null
+    private var aiVoicePlaybackPollJob: Job? = null
     private var pendingExportResult: ExportedAudioResult? = null
     private var pendingSuggestedFileName: String? = null
     @Volatile private var defaultSaveTreeUriString: String? = null
@@ -493,6 +532,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
         val user = auth.currentUser
         attachCloudListeners(user?.uid)
+        if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
+            developerPanelController.onAuthSessionChanged()
+        }
         if (user != null) {
             viewModelScope.launch {
                 val currentSession = repository.authSessionFlow.first()
@@ -622,10 +664,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update { it.copy(onlineListeningHistory = hist) }
             }
         }
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.savedAiVoiceCharactersFlow.collect { chars ->
+                _aiVoiceUiState.update { it.copy(savedCharacters = chars) }
+            }
+        }
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.aiVoiceBackendUrlFlow.collect { url ->
+                _aiVoiceUiState.update { it.copy(backendServerUrl = url) }
+            }
+        }
 
         val firebaseAuth = runCatching { Firebase.auth }.getOrNull()
         firebaseAuth?.addAuthStateListener(authStateListener)
         attachCloudListeners(firebaseAuth?.currentUser?.uid)
+        if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
+            developerPanelController.onAuthSessionChanged()
+        }
 
         viewModelScope.launch {
             val baseFlow = combine(
@@ -800,6 +855,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         )
         _uiState.update { it.copy(authSession = session) }
         attachCloudListeners(uid)
+        if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
+            developerPanelController.onAuthSessionChanged()
+        }
         repository.saveAuthSession(session)
     }
 
@@ -814,6 +872,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         )
         _uiState.update { it.copy(authSession = session) }
         attachCloudListeners(uid)
+        if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
+            developerPanelController.onAuthSessionChanged()
+        }
         viewModelScope.launch {
             repository.saveAuthSession(session)
         }
@@ -824,6 +885,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             withContext(NonCancellable) {
                 // Stop active Firestore snapshot collectors BEFORE Firebase.auth.signOut()
                 // to avoid spurious PERMISSION_DENIED race conditions.
+                developerPanelController.stopCollectors()
                 attachCloudListeners(null)
                 _uiState.update {
                     it.copy(
@@ -840,6 +902,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     Firebase.auth.signOut()
                 }.onFailure { err ->
                     Log.w("Auth", "Firebase signOut warning: ${err.message}")
+                }
+                if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
+                    developerPanelController.onAuthSessionChanged()
                 }
                 repository.saveAuthSession(AuthSession.SignedOut)
             }
@@ -6430,11 +6495,685 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         importAudioUri(Uri.fromFile(file), onComplete)
     }
 
+    // =========================================================================
+    // AI VOICE STUDIO – استوديو الأصوات الذكي (VoxCPM2 + Audar-TTS-V1-Turbo)
+    // =========================================================================
+
+    fun setAiVoiceTab(tab: Int) {
+        _aiVoiceUiState.update { it.copy(activeTab = tab.coerceIn(0, 3)) }
+    }
+
+    fun setAiVoiceEngine(engine: AiVoiceEngineKind) {
+        _aiVoiceUiState.update {
+            it.copy(
+                selectedEngine = engine,
+                errorTitle = null,
+                errorDetail = null,
+                setupRequiredGuide = null,
+            )
+        }
+    }
+
+    fun setAiVoiceLanguage(language: AiVoiceLanguage) {
+        _aiVoiceUiState.update { it.copy(selectedLanguage = language) }
+    }
+
+    fun setAiVoiceDialect(dialect: AiArabicDialect) {
+        _aiVoiceUiState.update { it.copy(selectedDialect = dialect) }
+    }
+
+    fun setAiVoiceCategory(category: AiVoiceCategory) {
+        _aiVoiceUiState.update { it.copy(selectedCategory = category) }
+    }
+
+    fun setAiVoiceEmotion(emotion: AiVoiceEmotion) {
+        _aiVoiceUiState.update { it.copy(selectedEmotion = emotion) }
+    }
+
+    fun setAiVoiceEmotionIntensity(intensity: Float) {
+        _aiVoiceUiState.update { it.copy(emotionIntensity = intensity.coerceIn(0.1f, 1.0f)) }
+    }
+
+    fun setAiVoicePace(pace: AiDeliveryPace) {
+        _aiVoiceUiState.update { it.copy(selectedPace = pace) }
+    }
+
+    fun setAiVoicePitchOffset(semitones: Float) {
+        _aiVoiceUiState.update { it.copy(pitchOffsetSemitones = semitones.coerceIn(-8f, 8f)) }
+    }
+
+    fun setAiVoiceDescriptionPrompt(prompt: String) {
+        _aiVoiceUiState.update { it.copy(voiceDescriptionPrompt = prompt) }
+    }
+
+    fun setAiVoiceScriptText(text: String) {
+        _aiVoiceUiState.update { it.copy(scriptText = text) }
+    }
+
+    fun setAiVoiceReferenceTranscript(text: String) {
+        _aiVoiceUiState.update { it.copy(referenceTranscript = text) }
+    }
+
+    fun setAiVoiceReferenceRightsConfirmed(confirmed: Boolean) {
+        _aiVoiceUiState.update { it.copy(referenceRightsConfirmed = confirmed) }
+    }
+
+    fun dismissAiVoiceError() {
+        _aiVoiceUiState.update { it.copy(errorTitle = null, errorDetail = null, setupRequiredGuide = null) }
+    }
+
+    fun selectAiVoiceCharacter(character: AiVoiceCharacter) {
+        _aiVoiceUiState.update { cur ->
+            cur.copy(
+                selectedCharacterId = character.id,
+                selectedEngine = character.preferredEngine,
+                selectedLanguage = character.language,
+                selectedDialect = character.dialect,
+                selectedCategory = character.category,
+                selectedEmotion = character.defaultEmotion,
+                emotionIntensity = character.defaultEmotionIntensity,
+                selectedPace = character.defaultPace,
+                pitchOffsetSemitones = character.pitchOffsetSemitones,
+                voiceDescriptionPrompt = character.voiceDescriptionPrompt,
+                referenceAudioPath = character.referenceAudioPath ?: cur.referenceAudioPath,
+                referenceAudioName = character.referenceAudioName ?: cur.referenceAudioName,
+                referenceTranscript = character.referenceTranscript.ifBlank { cur.referenceTranscript },
+                errorTitle = null,
+                errorDetail = null,
+                setupRequiredGuide = null,
+            )
+        }
+    }
+
+    fun importAiVoiceReferenceFromUri(uri: Uri) {
+        viewModelScope.launch(safeCoroutineHandler) {
+            val app = getApplication<Application>()
+            val refDir = File(app.filesDir, "ai_voice_refs").apply { mkdirs() }
+            val outWav = File(refDir, "ref_${System.currentTimeMillis()}.wav")
+            val displayName = resolveFileName(uri) ?: "reference_voice.wav"
+            val prepared = AiVoiceAudioStitcher.prepareReferenceWavFromUri(app, uri, outWav)
+            if (prepared == null) {
+                postBanner("تعذر قراءة الملف المرجعي للاستنساخ الصوتي")
+                return@launch
+            }
+            _aiVoiceUiState.update {
+                it.copy(
+                    referenceAudioPath = prepared.wavFile.absolutePath,
+                    referenceAudioName = displayName,
+                    referenceAudioDurationMs = prepared.durationMs,
+                )
+            }
+            postBanner("تم تجهيز العينة المرجعية ($displayName) للاستنساخ الصوتي")
+        }
+    }
+
+    fun importAiVoiceReferenceFromCurrentBuffer() {
+        val buf = activeBuffer
+        if (buf == null || buf.frameCount <= 0) {
+            postBanner("لا يوجد تسجيل أو ملف صوتي حالي في الاستوديو لاستخدامه كمرجع")
+            return
+        }
+        viewModelScope.launch(safeCoroutineHandler) {
+            val app = getApplication<Application>()
+            val refDir = File(app.filesDir, "ai_voice_refs").apply { mkdirs() }
+            val outWav = File(refDir, "studio_ref_${System.currentTimeMillis()}.wav")
+            val prepared = AiVoiceAudioStitcher.prepareReferenceWavFromBuffer(buf, outWav)
+            if (prepared == null) {
+                postBanner("تعذر تجهيز صوت الاستوديو كعينة مرجعية")
+                return@launch
+            }
+            val label = _uiState.value.activeProjectName.ifBlank { "تسجيل الاستوديو الحالي" }
+            _aiVoiceUiState.update {
+                it.copy(
+                    referenceAudioPath = prepared.wavFile.absolutePath,
+                    referenceAudioName = label,
+                    referenceAudioDurationMs = prepared.durationMs,
+                )
+            }
+            postBanner("تم استخدام صوت الاستوديو كعينة مرجعية (${formatDurationMs(prepared.durationMs)})")
+        }
+    }
+
+    fun clearAiVoiceReference() {
+        val oldPath = _aiVoiceUiState.value.referenceAudioPath
+        if (!oldPath.isNullOrBlank()) {
+            val isUsedBySavedChar = _aiVoiceUiState.value.savedCharacters.any { it.referenceAudioPath == oldPath }
+            if (!isUsedBySavedChar) {
+                runCatching { File(oldPath).delete() }
+            }
+        }
+        _aiVoiceUiState.update {
+            it.copy(
+                referenceAudioPath = null,
+                referenceAudioName = null,
+                referenceAudioDurationMs = 0L,
+                referenceTranscript = "",
+            )
+        }
+    }
+
+    fun saveCustomAiVoiceCharacter(nameAr: String, nameEn: String = "") {
+        val cur = _aiVoiceUiState.value
+        val cleanName = nameAr.trim()
+        if (cleanName.isEmpty()) {
+            postBanner("يرجى إدخال اسم الشخصية الصوتية أولاً")
+            return
+        }
+        val charObj = AiVoiceCharacter(
+            id = "custom_${UUID.randomUUID()}",
+            nameAr = cleanName,
+            nameEn = nameEn.trim().ifBlank { cleanName },
+            category = cur.selectedCategory,
+            language = cur.selectedLanguage,
+            dialect = cur.selectedDialect,
+            preferredEngine = cur.selectedEngine,
+            voiceDescriptionPrompt = cur.voiceDescriptionPrompt.trim(),
+            defaultEmotion = cur.selectedEmotion,
+            defaultEmotionIntensity = cur.emotionIntensity,
+            defaultPace = cur.selectedPace,
+            pitchOffsetSemitones = cur.pitchOffsetSemitones,
+            referenceAudioPath = cur.referenceAudioPath,
+            referenceAudioName = cur.referenceAudioName,
+            referenceTranscript = cur.referenceTranscript.trim(),
+            isBuiltIn = false,
+            createdAtMs = System.currentTimeMillis(),
+        )
+        val updated = listOf(charObj) + cur.savedCharacters
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.saveAiVoiceCharacters(updated)
+            _aiVoiceUiState.update { it.copy(selectedCharacterId = charObj.id) }
+            postBanner("تم حفظ الشخصية \"$cleanName\" في مكتبة الشخصيات")
+        }
+    }
+
+    fun deleteSavedAiVoiceCharacter(characterId: String) {
+        val cur = _aiVoiceUiState.value
+        val updated = cur.savedCharacters.filterNot { it.id == characterId }
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.saveAiVoiceCharacters(updated)
+            postBanner("تم حذف الشخصية المحفوظة")
+        }
+    }
+
+    fun addDialogueTurn(characterId: String? = null) {
+        _aiVoiceUiState.update { cur ->
+            val targetChar = characterId ?: cur.selectedCharacterId
+            val newTurn = AiDialogueTurn(
+                id = "turn_${UUID.randomUUID()}",
+                characterId = targetChar,
+                text = "",
+                emotion = cur.selectedEmotion,
+                emotionIntensity = cur.emotionIntensity,
+                pace = cur.selectedPace,
+                pauseAfterMs = 450,
+            )
+            cur.copy(dialogueTurns = cur.dialogueTurns + newTurn)
+        }
+    }
+
+    fun removeDialogueTurn(turnId: String) {
+        _aiVoiceUiState.update { cur ->
+            if (cur.dialogueTurns.size <= 1) return@update cur
+            cur.copy(dialogueTurns = cur.dialogueTurns.filterNot { it.id == turnId })
+        }
+    }
+
+    fun updateDialogueTurn(turnId: String, transform: (AiDialogueTurn) -> AiDialogueTurn) {
+        _aiVoiceUiState.update { cur ->
+            cur.copy(
+                dialogueTurns = cur.dialogueTurns.map { turn ->
+                    if (turn.id == turnId) transform(turn) else turn
+                },
+            )
+        }
+    }
+
+    fun moveDialogueTurn(turnId: String, delta: Int) {
+        _aiVoiceUiState.update { cur ->
+            val list = cur.dialogueTurns.toMutableList()
+            val idx = list.indexOfFirst { it.id == turnId }
+            val nextIdx = idx + delta
+            if (idx !in list.indices || nextIdx !in list.indices) return@update cur
+            val item = list.removeAt(idx)
+            list.add(nextIdx, item)
+            cur.copy(dialogueTurns = list)
+        }
+    }
+
+    fun saveAiVoiceBackendUrl(url: String) {
+        val clean = url.trim().trimEnd('/')
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.saveAiVoiceBackendUrl(clean)
+            _aiVoiceUiState.update { it.copy(backendServerUrl = clean) }
+            postBanner(if (clean.isEmpty()) "تم مسح رابط السيرفر" else "تم حفظ رابط سيرفر GPU بنجاح")
+        }
+    }
+
+    fun checkAiVoiceBackendHealth() {
+        viewModelScope.launch(safeCoroutineHandler) {
+            _aiVoiceUiState.update {
+                it.copy(
+                    backendHealth = it.backendHealth.copy(isChecking = true),
+                )
+            }
+            val url = _aiVoiceUiState.value.backendServerUrl
+            val health = aiVoiceCoordinator.checkBackendHealth(getApplication(), url)
+            _aiVoiceUiState.update { it.copy(backendHealth = health) }
+        }
+    }
+
+    fun synthesizeAiVoiceSingle(overrideEngine: AiVoiceEngineKind? = null) {
+        val cur = _aiVoiceUiState.value
+        val engine = overrideEngine ?: cur.selectedEngine
+        if (cur.scriptText.isBlank()) {
+            _aiVoiceUiState.update {
+                it.copy(
+                    errorTitle = "النص مطلوب",
+                    errorDetail = "يرجى كتابة النص المراد تحويله إلى صوت أولاً.",
+                )
+            }
+            return
+        }
+        if (!cur.referenceAudioPath.isNullOrBlank() && !cur.referenceRightsConfirmed) {
+            _aiVoiceUiState.update {
+                it.copy(
+                    errorTitle = "تأكيد حقوق العينة المرجعية مطلوب",
+                    errorDetail = "يرجى تأكيد أنك تملك حق استخدام العينة المرجعية قبل الاستنساخ الصوتي.",
+                )
+            }
+            return
+        }
+
+        stopAiVoiceOutput()
+        aiVoiceSynthJob?.cancel()
+        aiVoiceSynthJob = viewModelScope.launch(safeCoroutineHandler) {
+            _aiVoiceUiState.update {
+                it.copy(
+                    selectedEngine = engine,
+                    isSynthesizing = true,
+                    synthesisProgress = 0.04f,
+                    synthesisStatusLabel = "جاري تحضير طلب ${engine.titleAr}...",
+                    errorTitle = null,
+                    errorDetail = null,
+                    setupRequiredGuide = null,
+                )
+            }
+            val app = getApplication<Application>()
+            val outDir = File(app.cacheDir, "ai_voice_outputs").apply { mkdirs() }
+            val req = AiVoiceSynthRequest(
+                engine = engine,
+                text = cur.scriptText.trim(),
+                language = cur.selectedLanguage,
+                dialect = cur.selectedDialect,
+                category = cur.selectedCategory,
+                voiceDescriptionPrompt = cur.voiceDescriptionPrompt.trim(),
+                emotion = cur.selectedEmotion,
+                emotionIntensity = cur.emotionIntensity,
+                pace = cur.selectedPace,
+                pitchOffsetSemitones = cur.pitchOffsetSemitones,
+                referenceAudioPath = cur.referenceAudioPath,
+                referenceTranscript = cur.referenceTranscript.trim(),
+            )
+            val outcome = aiVoiceCoordinator.synthesizeSingle(
+                context = app,
+                request = req,
+                backendUrl = cur.backendServerUrl,
+                outputDir = outDir,
+            ) { progress, label ->
+                _aiVoiceUiState.update {
+                    it.copy(synthesisProgress = progress, synthesisStatusLabel = label)
+                }
+            }
+            handleAiVoiceOutcome(outcome)
+        }
+    }
+
+    fun synthesizeAiVoiceDialogue(overrideEngine: AiVoiceEngineKind? = null) {
+        val cur = _aiVoiceUiState.value
+        val activeTurns = cur.dialogueTurns.filter { it.text.trim().isNotEmpty() }
+        if (activeTurns.isEmpty()) {
+            _aiVoiceUiState.update {
+                it.copy(
+                    errorTitle = "الحوار فارغ",
+                    errorDetail = "أضف جملة واحدة على الأقل في سيناريو الحوار قبل التوليد.",
+                )
+            }
+            return
+        }
+        stopAiVoiceOutput()
+        aiVoiceSynthJob?.cancel()
+        aiVoiceSynthJob = viewModelScope.launch(safeCoroutineHandler) {
+            _aiVoiceUiState.update {
+                it.copy(
+                    isSynthesizing = true,
+                    synthesisProgress = 0.03f,
+                    synthesisStatusLabel = "بدء توليد حوار متعدد الشخصيات (${activeTurns.size} جمل)...",
+                    errorTitle = null,
+                    errorDetail = null,
+                    setupRequiredGuide = null,
+                )
+            }
+            val app = getApplication<Application>()
+            val outDir = File(app.cacheDir, "ai_voice_outputs").apply { mkdirs() }
+            val outcome = aiVoiceCoordinator.synthesizeMultiCharacterDialogue(
+                context = app,
+                turns = cur.dialogueTurns,
+                characters = cur.allCharacters,
+                selectedEngineOverride = overrideEngine ?: if (cur.selectedEngine == AiVoiceEngineKind.SONIX_LOCAL_STUDIO) AiVoiceEngineKind.SONIX_LOCAL_STUDIO else null,
+                backendUrl = cur.backendServerUrl,
+                outputDir = outDir,
+            ) { progress, label ->
+                _aiVoiceUiState.update {
+                    it.copy(synthesisProgress = progress, synthesisStatusLabel = label)
+                }
+            }
+            handleAiVoiceOutcome(outcome)
+        }
+    }
+
+    fun cancelAiVoiceSynthesis() {
+        aiVoiceSynthJob?.cancel()
+        aiVoiceSynthJob = null
+        _aiVoiceUiState.update {
+            it.copy(
+                isSynthesizing = false,
+                synthesisProgress = 0f,
+                synthesisStatusLabel = "",
+            )
+        }
+    }
+
+    private fun handleAiVoiceOutcome(outcome: AiVoiceSynthOutcome) {
+        val isEn = _uiState.value.language == AppLanguage.EN
+        when (outcome) {
+            is AiVoiceSynthOutcome.Success -> {
+                val oldPath = _aiVoiceUiState.value.lastOutputWavPath
+                if (!oldPath.isNullOrBlank() && oldPath != outcome.audioFilePath) {
+                    runCatching { File(oldPath).delete() }
+                }
+                _aiVoiceUiState.update {
+                    it.copy(
+                        isSynthesizing = false,
+                        synthesisProgress = 1f,
+                        synthesisStatusLabel = "جاهز للاستماع والحفظ",
+                        lastOutputWavPath = outcome.audioFilePath,
+                        lastOutputDurationMs = outcome.durationMs,
+                        lastOutputSampleRate = outcome.sampleRate,
+                        lastOutputEngine = outcome.engineUsed,
+                        lastOutputAppliedPrompt = outcome.appliedPromptSummary,
+                        playbackPositionMs = 0L,
+                        isPlayingOutput = false,
+                        errorTitle = null,
+                        errorDetail = null,
+                        setupRequiredGuide = null,
+                    )
+                }
+                postBanner("تم توليد المقطع الصوتي بنجاح (${formatDurationMs(outcome.durationMs)})")
+            }
+            is AiVoiceSynthOutcome.ConfigurationRequired -> {
+                _aiVoiceUiState.update {
+                    it.copy(
+                        isSynthesizing = false,
+                        synthesisProgress = 0f,
+                        synthesisStatusLabel = "",
+                        errorTitle = if (isEn) outcome.titleEn else outcome.titleAr,
+                        errorDetail = if (isEn) outcome.explanationEn else outcome.explanationAr,
+                        setupRequiredGuide = if (isEn) outcome.setupStepsEn else outcome.setupStepsAr,
+                    )
+                }
+            }
+            is AiVoiceSynthOutcome.Error -> {
+                val detail = buildString {
+                    append(if (isEn) outcome.messageEn else outcome.messageAr)
+                    if (!outcome.technicalDetail.isNullOrBlank()) {
+                        append("\n\n")
+                        append(outcome.technicalDetail)
+                    }
+                }
+                _aiVoiceUiState.update {
+                    it.copy(
+                        isSynthesizing = false,
+                        synthesisProgress = 0f,
+                        synthesisStatusLabel = "",
+                        errorTitle = "تعذر إتمام التوليد (${outcome.engine.modelRepoId})",
+                        errorDetail = detail,
+                        setupRequiredGuide = null,
+                    )
+                }
+            }
+        }
+    }
+
+    fun playOrPauseAiVoiceOutput() {
+        val path = _aiVoiceUiState.value.lastOutputWavPath
+        if (path.isNullOrBlank() || !File(path).exists()) {
+            postBanner("لا يوجد ملف صوتي مولّد للتشغيل بعد")
+            return
+        }
+        val tag = "ai_voice_preview"
+        if (AudioPlayerManager.isPlaying(tag)) {
+            AudioPlayerManager.pause(tag)
+            aiVoicePlaybackPollJob?.cancel()
+            _aiVoiceUiState.update { it.copy(isPlayingOutput = false) }
+            return
+        }
+        if (AudioPlayerManager.isTagActive(tag)) {
+            if (AudioPlayerManager.resume(tag)) {
+                _aiVoiceUiState.update { it.copy(isPlayingOutput = true) }
+                startAiVoicePositionPolling()
+                return
+            }
+        }
+        startAiVoicePlaybackFromStart(File(path))
+    }
+
+    fun replayAiVoiceOutput() {
+        val path = _aiVoiceUiState.value.lastOutputWavPath ?: return
+        val file = File(path)
+        if (!file.exists()) return
+        AudioPlayerManager.stop("ai_voice_preview")
+        _aiVoiceUiState.update { it.copy(playbackPositionMs = 0L) }
+        startAiVoicePlaybackFromStart(file)
+    }
+
+    fun stopAiVoiceOutput() {
+        aiVoicePlaybackPollJob?.cancel()
+        aiVoicePlaybackPollJob = null
+        AudioPlayerManager.stop("ai_voice_preview")
+        _aiVoiceUiState.update { it.copy(isPlayingOutput = false, playbackPositionMs = 0L) }
+    }
+
+    fun seekAiVoiceOutput(positionMs: Long) {
+        val clamped = positionMs.coerceIn(0L, _aiVoiceUiState.value.lastOutputDurationMs.coerceAtLeast(1L))
+        if (AudioPlayerManager.isTagActive("ai_voice_preview")) {
+            AudioPlayerManager.seekTo("ai_voice_preview", clamped.toInt())
+        }
+        _aiVoiceUiState.update { it.copy(playbackPositionMs = clamped) }
+    }
+
+    private fun startAiVoicePlaybackFromStart(file: File) {
+        val tag = "ai_voice_preview"
+        val started = AudioPlayerManager.playFile(
+            file = file,
+            tag = tag,
+            onPrepared = {
+                val dur = AudioPlayerManager.durationMs(tag)
+                _aiVoiceUiState.update {
+                    it.copy(
+                        isPlayingOutput = true,
+                        lastOutputDurationMs = if (dur > 0L) dur else it.lastOutputDurationMs,
+                    )
+                }
+                startAiVoicePositionPolling()
+            },
+            onCompletion = {
+                aiVoicePlaybackPollJob?.cancel()
+                _aiVoiceUiState.update { it.copy(isPlayingOutput = false, playbackPositionMs = 0L) }
+            },
+            onError = { err ->
+                aiVoicePlaybackPollJob?.cancel()
+                _aiVoiceUiState.update { it.copy(isPlayingOutput = false) }
+                postBanner("تعذر تشغيل الصوت المولّد: $err")
+            },
+        )
+        if (!started) {
+            _aiVoiceUiState.update { it.copy(isPlayingOutput = false) }
+        }
+    }
+
+    private fun startAiVoicePositionPolling() {
+        aiVoicePlaybackPollJob?.cancel()
+        aiVoicePlaybackPollJob = viewModelScope.launch {
+            val tag = "ai_voice_preview"
+            while (AudioPlayerManager.isTagActive(tag)) {
+                val pos = AudioPlayerManager.currentPositionMs(tag)
+                val playing = AudioPlayerManager.isPlaying(tag)
+                _aiVoiceUiState.update {
+                    it.copy(
+                        isPlayingOutput = playing,
+                        playbackPositionMs = pos,
+                    )
+                }
+                if (!playing) break
+                delay(120L)
+            }
+        }
+    }
+
+    fun saveAiVoiceOutputToDevice() {
+        val path = _aiVoiceUiState.value.lastOutputWavPath ?: return
+        val file = File(path)
+        if (!file.exists() || file.length() <= 44L) {
+            postBanner("يرجى توليد صوت أولاً قبل الحفظ")
+            return
+        }
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        dispatchSaveToDevice(
+            result = ExportedAudioResult(file = file, extension = "wav", mimeType = "audio/wav"),
+            suggestedName = "Sonix_AiVoice_$stamp.wav",
+        )
+    }
+
+    fun shareAiVoiceOutput() {
+        val app = getApplication<Application>()
+        val path = _aiVoiceUiState.value.lastOutputWavPath ?: return
+        val file = File(path)
+        if (!file.exists() || file.length() <= 44L) {
+            postBanner("يرجى توليد صوت أولاً قبل المشاركة")
+            return
+        }
+        val uri = runCatching {
+            FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
+        }.getOrNull() ?: return
+        _sideEffects.tryEmit(
+            StudioSideEffect.LaunchShareIntent(
+                uri = uri,
+                mimeType = "audio/wav",
+                title = "AI Voice Studio Output",
+            ),
+        )
+    }
+
+    fun insertAiVoiceOutputIntoMainStudio(appendToExisting: Boolean = false) {
+        val path = _aiVoiceUiState.value.lastOutputWavPath ?: return
+        val file = File(path)
+        if (!file.exists() || file.length() <= 44L) {
+            postBanner("لا يوجد صوت مولّد لإدراجه في الاستوديو")
+            return
+        }
+        viewModelScope.launch(safeCoroutineHandler) {
+            val app = getApplication<Application>()
+            val decoded = withContext(Dispatchers.IO) {
+                AiVoiceAudioStitcher.readSimplePcmWav(file) ?: AudioDecoder.decodeFile(file)
+            }
+            if (decoded == null || decoded.frameCount <= 0) {
+                postBanner("تعذر قراءة الملف المولّد لإدراجه")
+                return@launch
+            }
+            val existing = activeBuffer
+            val shouldAppend = appendToExisting && existing != null
+            val finalBuf = if (shouldAppend) {
+                mergeClipsStreamingOnDisk(app, existing!!, decoded, crossfadeMs = 15)
+            } else {
+                decoded
+            }
+            setActiveBuffer(
+                buf = finalBuf,
+                recordUndo = existing != null,
+                resetDspOnNewEntry = existing == null && !shouldAppend,
+            )
+            repository.indexAudioRecording(
+                title = "AI Voice Studio • ${_aiVoiceUiState.value.lastOutputEngine?.titleAr ?: "Studio"}",
+                buffer = decoded,
+                sourceType = RecordingSourceType.TTS,
+            )
+            postBanner("تم إدراج الصوت المولّد داخل مشروع Sonix الرئيسي بنجاح")
+        }
+    }
+
+    // =========================================================================
+    // DEVELOPER & ADMIN PANEL (Temporary Owner-Only Section via BuildConfig flag)
+    // =========================================================================
+
+    fun selectDeveloperTab(tab: DeveloperPanelTab) = developerPanelController.selectTab(tab)
+    fun selectDeveloperTestEngine(engineId: String) = developerPanelController.selectTestEngine(engineId)
+    fun refreshDeveloperPanel() = developerPanelController.verifyAndRefreshAll()
+    fun clearDeveloperFeedback() = developerPanelController.clearFeedback()
+
+    fun adjustDeveloperCredits(
+        targetUserId: String,
+        targetEmail: String,
+        creditType: CreditType,
+        isGrant: Boolean,
+        amount: Long,
+        reason: String,
+    ) = developerPanelController.adjustUserCredits(targetUserId, targetEmail, creditType, isGrant, amount, reason)
+
+    fun refundDeveloperTransaction(record: CreditTransactionRecord) =
+        developerPanelController.refundTransaction(record)
+
+    fun recordDeveloperPayment(
+        userId: String,
+        paymentType: PaymentType,
+        productId: String,
+        amountUsd: Double,
+        status: PaymentStatus,
+        provider: String,
+    ) = developerPanelController.recordPayment(userId, paymentType, productId, amountUsd, status, provider)
+
+    fun recordDeveloperFinanceEntry(
+        entryType: FinanceEntryType,
+        source: String,
+        amountUsd: Double,
+        periodLabel: String,
+        notes: String,
+    ) = developerPanelController.recordFinanceEntry(entryType, source, amountUsd, periodLabel, notes)
+
+    fun deleteDeveloperFinanceEntry(docId: String) = developerPanelController.deleteFinanceEntry(docId)
+
+    fun saveDeveloperPartnerConfig(partnerSharePercent: Double, partnerName: String) =
+        developerPanelController.savePartnerShareConfig(partnerSharePercent, partnerName)
+
+    fun addDeveloperChangelog(
+        title: String,
+        category: DevChangelogCategory,
+        status: DevChangelogStatus,
+        details: String,
+        changeDate: String,
+    ) = developerPanelController.addDevChangelog(title, category, status, details, changeDate)
+
+    fun deleteDeveloperChangelog(docId: String) = developerPanelController.deleteDevChangelog(docId)
+
+    fun runDeveloperTest(testType: AdminTestType) = developerPanelController.runDiagnosticTest(testType)
+
     override fun onCleared() {
         super.onCleared()
+        developerPanelController.stopCollectors()
         runCatching { Firebase.auth.removeAuthStateListener(authStateListener) }
         sliderDebounceJob?.cancel()
         activeOnlineJob?.cancel()
+        aiVoiceSynthJob?.cancel()
+        aiVoicePlaybackPollJob?.cancel()
         cloudPresetsJob?.cancel()
         cloudDraftsJob?.cancel()
         sleepTimerJob?.cancel()

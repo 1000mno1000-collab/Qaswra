@@ -1,0 +1,175 @@
+package com.example.aivoice
+
+import com.example.audio.aivoice.AiArabicDialect
+import com.example.audio.aivoice.AiDeliveryPace
+import com.example.audio.aivoice.AiDialogueTurn
+import com.example.audio.aivoice.AiVoiceAudioStitcher
+import com.example.audio.aivoice.AiVoiceCategory
+import com.example.audio.aivoice.AiVoiceCharacter
+import com.example.audio.aivoice.AiVoiceEmotion
+import com.example.audio.aivoice.AiVoiceEngineKind
+import com.example.audio.aivoice.AiVoiceLanguage
+import com.example.audio.aivoice.AiVoicePromptBuilder
+import com.example.audio.aivoice.AiVoiceSynthRequest
+import com.example.audio.aivoice.BUILT_IN_AI_VOICE_CHARACTERS
+import com.example.audio.aivoice.WavStitchSegment
+import com.example.audio.writeStereoWavFile
+import com.example.model.StereoAudioBuffer
+import kotlinx.serialization.json.Json
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sin
+
+class AiVoiceStudioTests {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
+
+    @Test
+    fun voxCpmInstructionIncludesDialectCategoryEmotionAndFreeText() {
+        val request = AiVoiceSynthRequest(
+            engine = AiVoiceEngineKind.VOXCPM_2,
+            text = "مرحباً بكم في الاستوديو.",
+            language = AiVoiceLanguage.AR,
+            dialect = AiArabicDialect.IRAQI,
+            category = AiVoiceCategory.MALE,
+            voiceDescriptionPrompt = "رجل عراقي في الأربعين بصوت دافئ عميق",
+            emotion = AiVoiceEmotion.SAD,
+            emotionIntensity = 0.85f,
+            pace = AiDeliveryPace.SLOW,
+        )
+
+        val instruction = AiVoicePromptBuilder.buildVoxCpmInstruction(request)
+
+        assertTrue(instruction.contains("male adult speaker"))
+        assertTrue(instruction.contains("Iraqi Arabic dialect"))
+        assertTrue(instruction.contains("strong intense"))
+        assertTrue(instruction.contains("sad"))
+        assertTrue(instruction.contains("measured unhurried"))
+        assertTrue(instruction.contains("رجل عراقي في الأربعين"))
+    }
+
+    @Test
+    fun audarExpressiveTagsPrependExpectedTokensPreservingArabic() {
+        val sample = "يا هلا والله شلونكم اليوم"
+        val whisper = AiVoicePromptBuilder.buildAudarExpressiveText(sample, AiVoiceEmotion.WHISPER, 0.8f)
+        val laugh = AiVoicePromptBuilder.buildAudarExpressiveText(sample, AiVoiceEmotion.LAUGH, 0.7f)
+        val sad = AiVoicePromptBuilder.buildAudarExpressiveText(sample, AiVoiceEmotion.SAD, 0.9f)
+        val neutral = AiVoicePromptBuilder.buildAudarExpressiveText(sample, AiVoiceEmotion.NEUTRAL, 0.5f)
+
+        assertEquals("[whispers] $sample", whisper)
+        assertEquals("[laughs] $sample", laugh)
+        assertEquals("[sighs] $sample", sad)
+        assertEquals(sample, neutral)
+
+        // Ensure no duplicate tag if already present
+        val alreadyTagged = AiVoicePromptBuilder.buildAudarExpressiveText("[whispers] همسة هادئة", AiVoiceEmotion.WHISPER, 0.7f)
+        assertEquals("[whispers] همسة هادئة", alreadyTagged)
+    }
+
+    @Test
+    fun chunkSplitterSplitsLongArabicParagraphsOnSentenceBoundaries() {
+        val text = "الجملة الأولى في المشهد الدرامي تتحدث عن البداية! " +
+            "هل سمعت الصوت القادِم من البعيد؟ " +
+            "هذه جملة ثالثة طويلة قليلاً لاختبار التقطيع المنطقي للنصوص العربية دون تقطيع الكلمات في المنتصف؛ " +
+            "والجملة الرابعة تختم الحوار بهدوء."
+
+        val chunks = AiVoicePromptBuilder.splitTextIntoChunks(text, maxCharsPerChunk = 95)
+
+        assertTrue("Expected multiple chunks for long script", chunks.size >= 3)
+        assertTrue(chunks.all { it.length <= 95 })
+        assertTrue(chunks.joinToString(" ").contains("تختم الحوار بهدوء."))
+    }
+
+    @Test
+    fun wavStitcherCombinesDifferentSampleRatesAndAddsPreciseSilencePadding() {
+        val sr1 = 24000
+        val frames1 = sr1 / 4 // 250ms tone
+        val left1 = FloatArray(frames1) { i -> 0.5f * sin(2.0 * PI * 440.0 * i / sr1).toFloat() }
+        val buf1 = StereoAudioBuffer(left1, left1.copyOf(), sr1)
+        val f1 = tempFolder.newFile("turn1_24k.wav")
+        writeStereoWavFile(f1, buf1)
+
+        val sr2 = 48000
+        val frames2 = sr2 / 4 // 250ms tone
+        val left2 = FloatArray(frames2) { i -> 0.4f * sin(2.0 * PI * 660.0 * i / sr2).toFloat() }
+        val buf2 = StereoAudioBuffer(left2, left2.copyOf(), sr2)
+        val f2 = tempFolder.newFile("turn2_48k.wav")
+        writeStereoWavFile(f2, buf2)
+
+        val stitchedOut = tempFolder.newFile("dialogue_stitched_48k.wav")
+        val stitched = AiVoiceAudioStitcher.stitchWavSegments(
+            segments = listOf(
+                WavStitchSegment(f1, pauseAfterMs = 500),
+                WavStitchSegment(f2, pauseAfterMs = 400), // trailing pause skipped cleanly
+            ),
+            outFile = stitchedOut,
+            targetSampleRate = 48000,
+        )
+
+        // Expected total = 250ms (turn1) + 500ms (silence) + 250ms (turn2) = ~1000ms at 48kHz
+        assertEquals(48000, stitched.sampleRate)
+        assertTrue("Expected stitched duration ~1000ms, got ${stitched.durationMs}", stitched.durationMs in 980L..1020L)
+
+        val parsed = AiVoiceAudioStitcher.readSimplePcmWav(stitchedOut)
+        assertNotNull(parsed)
+        assertEquals(48000, parsed!!.sampleRate)
+
+        // Verify silence gap at ~500ms (halfway mark) has near-zero amplitude
+        val gapIndex = (48000 * 0.50).toInt()
+        assertTrue("Expected silent pause in inter-turn gap", abs(parsed.left[gapIndex]) < 0.005f)
+        // Verify audio energy exists in turn 1 and turn 2
+        val turn1Sample = (48000 * 0.125).toInt()
+        val turn2Sample = (48000 * 0.875).toInt()
+        assertTrue(abs(parsed.left[turn1Sample]) > 0.05f || abs(parsed.left[turn1Sample + 10]) > 0.05f)
+        assertTrue(abs(parsed.left[turn2Sample]) > 0.05f || abs(parsed.left[turn2Sample + 10]) > 0.05f)
+    }
+
+    @Test
+    fun builtInCharactersAndDialogueTurnsSerializeRoundTripCleanly() {
+        val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+        val encodedChars = json.encodeToString(BUILT_IN_AI_VOICE_CHARACTERS)
+        val decodedChars = json.decodeFromString<List<AiVoiceCharacter>>(encodedChars)
+
+        assertEquals(BUILT_IN_AI_VOICE_CHARACTERS.size, decodedChars.size)
+        assertTrue(decodedChars.any { it.dialect == AiArabicDialect.IRAQI })
+        assertTrue(decodedChars.any { it.category == AiVoiceCategory.ELDERLY })
+        assertTrue(decodedChars.any { it.category == AiVoiceCategory.CHILD })
+        assertTrue(decodedChars.any { it.category == AiVoiceCategory.CARTOON })
+        assertTrue(decodedChars.any { it.category == AiVoiceCategory.NARRATOR })
+
+        val turn = AiDialogueTurn(
+            id = "t1",
+            characterId = decodedChars.first().id,
+            text = "تجربة حوار",
+            emotion = AiVoiceEmotion.WHISPER,
+            emotionIntensity = 0.72f,
+            pace = AiDeliveryPace.DRAMATIC_PAUSES,
+            pauseAfterMs = 600,
+        )
+        val decodedTurn = json.decodeFromString<AiDialogueTurn>(json.encodeToString(turn))
+        assertEquals(turn, decodedTurn)
+    }
+
+    @Test
+    fun allElevenRequiredEmotionsArePresent() {
+        assertEquals(11, AiVoiceEmotion.entries.size)
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.NEUTRAL))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.SAD))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.CRYING))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.JOY))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.ANGER))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.FEAR))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.CALM))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.EXCITED))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.SURPRISED))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.WHISPER))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.LAUGH))
+    }
+}

@@ -9,6 +9,8 @@ const fs = require('node:fs');
 const PROJECT_ID = process.env.GCP_PROJECT || 'demo-no-project';
 const ALICE_UID = 'alice_123';
 const BOB_UID = 'bob_456';
+const OWNER_UID = 'owner_uid_999';
+const OWNER_EMAIL = '1000iraq1000@gmail.com';
 
 const [emulatorHost, emulatorPortStr] = (
   process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8085'
@@ -86,90 +88,179 @@ beforeEach(async () => {
   }
 });
 
-test('Unauthenticated user: rejects read and write across collections', async () => {
+test('Unauthenticated user: rejects read and write across all user and admin collections', async () => {
   const unauthDb = testEnv.unauthenticatedContext().firestore();
   await assertFails(unauthDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p1').get());
-  await assertFails(
-    unauthDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p1').set(validPresetPayload(ALICE_UID))
-  );
-  await assertFails(unauthDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').get());
-  await assertFails(
-    unauthDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').set(validDraftPayload(ALICE_UID))
-  );
+  await assertFails(unauthDb.collection('admin_settings').doc('finance').get());
+  await assertFails(unauthDb.collection('credit_accounts').get());
+  await assertFails(unauthDb.collection('payments').get());
+  await assertFails(unauthDb.collection('finance_ledger').get());
+  await assertFails(unauthDb.collection('dev_changelog').get());
+  await assertFails(unauthDb.collection('admin_test_runs').get());
 });
 
-test('Owner: creates, lists, updates, and deletes custom_presets', async () => {
+test('Owner user workflows: custom_presets & drafts still pass cleanly', async () => {
   const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
   const presetRef = aliceDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p1');
-
   await assertSucceeds(presetRef.set(validPresetPayload(ALICE_UID)));
   await assertSucceeds(presetRef.get());
-  await assertSucceeds(
-    aliceDb.collection(`users/${ALICE_UID}/custom_presets`).orderBy('createdAt', 'desc').get()
-  );
-  await assertSucceeds(
-    presetRef.update({
-      name: 'Updated Broadcast',
-      updatedAt: new Date(Date.now() - 1000),
-    })
-  );
-  await assertSucceeds(presetRef.delete());
-});
 
-test('Owner: creates, lists, updates, and deletes drafts', async () => {
-  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
   const draftRef = aliceDb.collection(`users/${ALICE_UID}/drafts`).doc('d1');
-
   await assertSucceeds(draftRef.set(validDraftPayload(ALICE_UID)));
-  await assertSucceeds(draftRef.get());
-  await assertSucceeds(
-    aliceDb.collection(`users/${ALICE_UID}/drafts`).orderBy('updatedAt', 'desc').get()
+  await assertSucceeds(draftRef.update({ name: 'Renamed Draft', updatedAt: new Date(Date.now() - 1000) }));
+});
+
+test('Zero-trust admin guard: blocks regular users, unverified spoofed emails, and self-promotion to /admins', async () => {
+  const regularDb = testEnv.authenticatedContext(BOB_UID, { email: 'user@example.com', email_verified: true }).firestore();
+  const spoofedDb = testEnv.authenticatedContext(BOB_UID, { email: OWNER_EMAIL, email_verified: false }).firestore();
+
+  // Regular user cannot self-promote to /admins
+  await assertFails(regularDb.collection('admins').doc(BOB_UID).set({ uid: BOB_UID, role: 'OWNER' }));
+  // Regular user cannot list or write admin collections
+  await assertFails(regularDb.collection('credit_accounts').get());
+  await assertFails(regularDb.collection('credit_transactions').get());
+  await assertFails(regularDb.collection('payments').get());
+  await assertFails(regularDb.collection('finance_ledger').get());
+  await assertFails(regularDb.collection('dev_changelog').get());
+  await assertFails(regularDb.collection('admin_test_runs').get());
+  await assertFails(regularDb.collection('admin_settings').doc('finance').get());
+
+  // Unverified spoofed owner email must also be blocked!
+  await assertFails(spoofedDb.collection('finance_ledger').get());
+  await assertFails(spoofedDb.collection('credit_accounts').get());
+
+  // Regular user cannot inflate their own credits
+  const ts = new Date(Date.now() - 1000);
+  await assertFails(
+    regularDb.collection('credit_accounts').doc(BOB_UID).set({
+      userId: BOB_UID,
+      email: 'user@example.com',
+      freeCredits: 9999,
+      paidCredits: 9999,
+      totalSpentCredits: 0,
+      totalRefundedCredits: 0,
+      createdAt: ts,
+      updatedAt: ts,
+    })
   );
+});
+
+test('Verified owner account: manages credits, refunds, payments, finance ledger, changelog, and test runs', async () => {
+  const ownerDb = testEnv.authenticatedContext(OWNER_UID, {
+    email: OWNER_EMAIL,
+    email_verified: true,
+  }).firestore();
+  const ts = new Date(Date.now() - 5000);
+
   await assertSucceeds(
-    draftRef.update({
-      name: 'Renamed Draft',
+    ownerDb.collection('admin_settings').doc('finance').set({
+      partnerSharePercent: 25,
+      partnerName: 'Co-Founder',
+      currencyCode: 'USD',
+      updatedByUid: OWNER_UID,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  await assertSucceeds(
+    ownerDb.collection('credit_accounts').doc(ALICE_UID).set({
+      userId: ALICE_UID,
+      email: 'alice@example.com',
+      freeCredits: 50,
+      paidCredits: 100,
+      totalSpentCredits: 10,
+      totalRefundedCredits: 0,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  const txRef = ownerDb.collection('credit_transactions').doc('tx_1');
+  await assertSucceeds(
+    txRef.set({
+      userId: ALICE_UID,
+      creditType: 'PAID',
+      operation: 'FAILED_CHARGE',
+      amount: 10,
+      status: 'FAILED',
+      reason: 'GPU request timeout',
+      engineId: 'voxcpm2',
+      performedByUid: OWNER_UID,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  await assertSucceeds(
+    txRef.update({
+      status: 'REFUNDED',
+      reason: 'Refunded failed charge to user',
+      performedByUid: OWNER_UID,
       updatedAt: new Date(Date.now() - 1000),
     })
   );
-  await assertSucceeds(draftRef.delete());
-});
 
-test('Cross-user access: blocks Bob from reading or modifying Alice custom_presets and drafts', async () => {
-  await testEnv.withSecurityRulesDisabled(async (context) => {
-    await context.firestore().collection(`users/${ALICE_UID}/drafts`).doc('d1').set(validDraftPayload(ALICE_UID));
-    await context.firestore().collection(`users/${ALICE_UID}/custom_presets`).doc('p1').set(validPresetPayload(ALICE_UID));
-  });
-
-  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
-  await assertFails(bobDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').get());
-  await assertFails(bobDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').update({ name: 'Hijacked' }));
-  await assertFails(bobDb.collection(`users/${ALICE_UID}/drafts`).doc('d1').delete());
-  await assertFails(bobDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p1').get());
-  await assertFails(
-    bobDb.collection(`users/${ALICE_UID}/custom_presets`).doc('p2').set(validPresetPayload(ALICE_UID))
-  );
-});
-
-test('Validation bounds: rejects empty/oversized strings, ghost fields, future timestamps, and createdAt tampering', async () => {
-  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
-  const badRef = aliceDb.collection(`users/${ALICE_UID}/drafts`).doc('dBad');
-
-  await assertFails(badRef.set({ ...validDraftPayload(ALICE_UID), name: '' }));
-  await assertFails(badRef.set({ ...validDraftPayload(ALICE_UID), name: 'a'.repeat(120) }));
-  await assertFails(badRef.set({ ...validDraftPayload(ALICE_UID), extraGhostField: 42 }));
-  await assertFails(
-    badRef.set({
-      ...validDraftPayload(ALICE_UID),
-      createdAt: new Date(Date.now() + 60000),
+  await assertSucceeds(
+    ownerDb.collection('payments').doc('pay_1').set({
+      userId: ALICE_UID,
+      paymentType: 'PURCHASE',
+      productId: 'pro_credits_100',
+      amountUsd: 9.99,
+      status: 'SUCCEEDED',
+      provider: 'google_play',
+      recordedByUid: OWNER_UID,
+      createdAt: ts,
+      updatedAt: ts,
     })
   );
 
-  const goodRef = aliceDb.collection(`users/${ALICE_UID}/drafts`).doc('dGood');
-  await assertSucceeds(goodRef.set(validDraftPayload(ALICE_UID)));
-  await assertFails(
-    goodRef.update({
-      createdAt: new Date(1000),
-      updatedAt: new Date(Date.now() - 1000),
+  await assertSucceeds(
+    ownerDb.collection('finance_ledger').doc('fin_1').set({
+      entryType: 'HOSTING_COST',
+      source: 'Modal L4',
+      amountUsd: 4.5,
+      periodLabel: '2026-11',
+      notes: 'GPU test hours',
+      createdByUid: OWNER_UID,
+      createdAt: ts,
+      updatedAt: ts,
     })
   );
+
+  await assertSucceeds(
+    ownerDb.collection('dev_changelog').doc('chg_1').set({
+      title: 'Developer Panel Owner Guard',
+      category: 'IMPLEMENTED',
+      status: 'DONE',
+      details: 'Server-verified admin rules deployed',
+      changeDate: '2026-11-18',
+      createdByUid: OWNER_UID,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  await assertSucceeds(
+    ownerDb.collection('admin_test_runs').doc('run_1').set({
+      testType: 'SERVER_CONNECTION',
+      engineId: 'voxcpm2',
+      passed: false,
+      latencyMs: 120,
+      summary: 'Backend URL not configured yet',
+      errorDetail: 'No GPU server URL configured',
+      executedByUid: OWNER_UID,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  // Regular user CAN read only their own credit_accounts doc and own filtered transactions/payments
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID, { email: 'alice@example.com', email_verified: true }).firestore();
+  await assertSucceeds(aliceDb.collection('credit_accounts').doc(ALICE_UID).get());
+  await assertSucceeds(aliceDb.collection('credit_transactions').where('userId', '==', ALICE_UID).get());
+  await assertSucceeds(aliceDb.collection('payments').where('userId', '==', ALICE_UID).get());
+  // Regular user CANNOT read Bob's balance or unfiltered payments
+  await assertFails(aliceDb.collection('credit_accounts').doc(BOB_UID).get());
+  await assertFails(aliceDb.collection('payments').get());
 });

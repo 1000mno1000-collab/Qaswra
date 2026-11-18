@@ -49,6 +49,8 @@ class StudioRepository(private val context: Context) {
     val savedAssistantChatsFlow: Flow<List<SavedAssistantChatSession>> = prefs.savedAssistantChatsFlow
     val favoriteOnlineSoundsFlow: Flow<List<OnlineSoundItem>> = prefs.favoriteOnlineSoundsFlow
     val onlineListeningHistoryFlow: Flow<List<OnlineSoundHistoryItem>> = prefs.onlineListeningHistoryFlow
+    val savedAiVoiceCharactersFlow: Flow<List<com.example.audio.aivoice.AiVoiceCharacter>> = prefs.savedAiVoiceCharactersFlow
+    val aiVoiceBackendUrlFlow: Flow<String> = prefs.aiVoiceBackendUrlFlow
 
     val projectsFlow: Flow<List<StudioProject>> = dao.observeProjects().map { list ->
         list.map { entity ->
@@ -117,6 +119,9 @@ class StudioRepository(private val context: Context) {
     suspend fun saveDefaultSaveFolder(uriString: String, folderName: String) =
         prefs.saveDefaultSaveFolder(uriString, folderName)
     suspend fun clearDefaultSaveFolder() = prefs.clearDefaultSaveFolder()
+    suspend fun saveAiVoiceCharacters(characters: List<com.example.audio.aivoice.AiVoiceCharacter>) =
+        prefs.saveAiVoiceCharacters(characters)
+    suspend fun saveAiVoiceBackendUrl(url: String) = prefs.saveAiVoiceBackendUrl(url)
 
     suspend fun upsertAssistantChatSession(session: SavedAssistantChatSession) {
         val current = prefs.savedAssistantChatsFlow.first()

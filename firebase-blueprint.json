@@ -96,6 +96,352 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "AdminRegistryEntry": {
+      "title": "AdminRegistryEntry",
+      "description": "Trusted server-provisioned admin role marker document keyed by Firebase UID",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Admin Firebase UID"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["OWNER"],
+          "description": "Role assigned strictly on server"
+        }
+      },
+      "required": ["uid", "role"]
+    },
+    "AdminFinanceSetting": {
+      "title": "AdminFinanceSetting",
+      "description": "Owner-configured finance settings including partner revenue share percentage",
+      "type": "object",
+      "properties": {
+        "partnerSharePercent": {
+          "type": "number",
+          "description": "Partner share percentage of net profit (0-100)"
+        },
+        "partnerName": {
+          "type": "string",
+          "description": "Partner label (0-80 chars)"
+        },
+        "currencyCode": {
+          "type": "string",
+          "description": "ISO currency code e.g. USD"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Owner Firebase UID"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "partnerSharePercent",
+        "partnerName",
+        "currencyCode",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CreditAccount": {
+      "title": "CreditAccount",
+      "description": "Real user credit balances separated by free vs paid credits",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "freeCredits": {
+          "type": "integer"
+        },
+        "paidCredits": {
+          "type": "integer"
+        },
+        "totalSpentCredits": {
+          "type": "integer"
+        },
+        "totalRefundedCredits": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "userId",
+        "email",
+        "freeCredits",
+        "paidCredits",
+        "totalSpentCredits",
+        "totalRefundedCredits",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CreditTransaction": {
+      "title": "CreditTransaction",
+      "description": "Immutable credit ledger record covering grants, deductions, failures, and refunds",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string"
+        },
+        "creditType": {
+          "type": "string",
+          "enum": ["FREE", "PAID"]
+        },
+        "operation": {
+          "type": "string",
+          "enum": ["GRANT", "DEDUCT", "REFUND", "FAILED_CHARGE"]
+        },
+        "amount": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["COMPLETED", "FAILED", "REFUNDED"]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "engineId": {
+          "type": "string"
+        },
+        "performedByUid": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "userId",
+        "creditType",
+        "operation",
+        "amount",
+        "status",
+        "reason",
+        "engineId",
+        "performedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PaymentRecord": {
+      "title": "PaymentRecord",
+      "description": "Real purchase and subscription transaction record",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string"
+        },
+        "paymentType": {
+          "type": "string",
+          "enum": ["PURCHASE", "SUBSCRIPTION"]
+        },
+        "productId": {
+          "type": "string"
+        },
+        "amountUsd": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["SUCCEEDED", "FAILED", "ACTIVE", "CANCELLED", "REFUNDED"]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "recordedByUid": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "userId",
+        "paymentType",
+        "productId",
+        "amountUsd",
+        "status",
+        "provider",
+        "recordedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FinanceLedgerEntry": {
+      "title": "FinanceLedgerEntry",
+      "description": "Owner-only accounting entry for real ad revenues and hosting/engine costs",
+      "type": "object",
+      "properties": {
+        "entryType": {
+          "type": "string",
+          "enum": ["AD_REVENUE", "HOSTING_COST", "ENGINE_COST"]
+        },
+        "source": {
+          "type": "string"
+        },
+        "amountUsd": {
+          "type": "number"
+        },
+        "periodLabel": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "createdByUid": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "entryType",
+        "source",
+        "amountUsd",
+        "periodLabel",
+        "notes",
+        "createdByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DevChangelogEntry": {
+      "title": "DevChangelogEntry",
+      "description": "Owner-only engineering changelog tracking implemented features, pending items, and issues",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["IMPLEMENTED", "UNCOMPLETED", "ISSUE", "TEST_PASSED", "TEST_FAILED"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["DONE", "IN_PROGRESS", "OPEN", "BLOCKED"]
+        },
+        "details": {
+          "type": "string"
+        },
+        "changeDate": {
+          "type": "string"
+        },
+        "createdByUid": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "title",
+        "category",
+        "status",
+        "details",
+        "changeDate",
+        "createdByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminTestRun": {
+      "title": "AdminTestRun",
+      "description": "Real executed diagnostic test run stored in Firestore by the owner",
+      "type": "object",
+      "properties": {
+        "testType": {
+          "type": "string",
+          "enum": [
+            "ARABIC_TTS",
+            "DIALECTS",
+            "EMOTIONS",
+            "MULTI_CHARACTER",
+            "EXPORT_WAV_MP3",
+            "SERVER_CONNECTION"
+          ]
+        },
+        "engineId": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "latencyMs": {
+          "type": "integer"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "errorDetail": {
+          "type": "string"
+        },
+        "executedByUid": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "testType",
+        "engineId",
+        "passed",
+        "latencyMs",
+        "summary",
+        "errorDetail",
+        "executedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -110,6 +456,54 @@
         "$ref": "#/entities/CloudDraft"
       },
       "description": "Private per-user audio engineering drafts owned exclusively by userId"
+    },
+    "/admins/{adminUid}": {
+      "schema": {
+        "$ref": "#/entities/AdminRegistryEntry"
+      },
+      "description": "Server-managed trusted admin UID registry (no client writes)"
+    },
+    "/admin_settings/{settingId}": {
+      "schema": {
+        "$ref": "#/entities/AdminFinanceSetting"
+      },
+      "description": "Owner-only financial and administrative settings"
+    },
+    "/credit_accounts/{userId}": {
+      "schema": {
+        "$ref": "#/entities/CreditAccount"
+      },
+      "description": "Per-user free & paid credit accounts (owner-managed writes)"
+    },
+    "/credit_transactions/{txId}": {
+      "schema": {
+        "$ref": "#/entities/CreditTransaction"
+      },
+      "description": "Auditable credit grant/deduct/failure/refund ledger"
+    },
+    "/payments/{paymentId}": {
+      "schema": {
+        "$ref": "#/entities/PaymentRecord"
+      },
+      "description": "Verified purchases and active subscriptions ledger"
+    },
+    "/finance_ledger/{entryId}": {
+      "schema": {
+        "$ref": "#/entities/FinanceLedgerEntry"
+      },
+      "description": "Owner-only ad revenue and hosting/engine cost ledger"
+    },
+    "/dev_changelog/{entryId}": {
+      "schema": {
+        "$ref": "#/entities/DevChangelogEntry"
+      },
+      "description": "Owner-only engineering changelog and issue log"
+    },
+    "/admin_test_runs/{runId}": {
+      "schema": {
+        "$ref": "#/entities/AdminTestRun"
+      },
+      "description": "Owner-only real engine and export test run telemetry"
     }
   }
 }
