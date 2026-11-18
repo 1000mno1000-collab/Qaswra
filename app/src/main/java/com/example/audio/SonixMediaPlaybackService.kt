@@ -133,8 +133,8 @@ class SonixMediaPlaybackService : Service() {
     }
 
     private fun ensureForeground(title: String, subtitle: String, isPlaying: Boolean) {
-        val notification = buildNotification(title, subtitle, isPlaying)
-        runCatching {
+        try {
+            val notification = buildNotification(title, subtitle, isPlaying)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
                     NOTIFICATION_ID,
@@ -144,6 +144,7 @@ class SonixMediaPlaybackService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+        } catch (_: Exception) {
         }
     }
 

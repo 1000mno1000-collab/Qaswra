@@ -43,7 +43,7 @@ object AudioPlayerManager {
         onCompletion: () -> Unit = {},
         onError: (String) -> Unit = {},
     ): Boolean {
-        if (!file.exists() || file.length() <= 0L) {
+        if (file.absolutePath.isBlank() || !file.exists() || file.length() <= 0L) {
             onError("Preview audio file is missing or empty")
             return false
         }
@@ -64,14 +64,20 @@ object AudioPlayerManager {
         onPrepared: (() -> Unit)? = null,
         onCompletion: () -> Unit = {},
         onError: (String) -> Unit = {},
-    ): Boolean = startInternal(
-        tag = tag,
-        tempFile = null,
-        configureDataSource = { mp -> mp.setDataSource(context, uri) },
-        onPrepared = onPrepared,
-        onCompletion = onCompletion,
-        onError = onError,
-    )
+    ): Boolean {
+        if (uri.toString().isBlank()) {
+            onError("Preview audio URI is blank")
+            return false
+        }
+        return startInternal(
+            tag = tag,
+            tempFile = null,
+            configureDataSource = { mp -> mp.setDataSource(context, uri) },
+            onPrepared = onPrepared,
+            onCompletion = onCompletion,
+            onError = onError,
+        )
+    }
 
     fun playUrl(
         url: String,
@@ -79,14 +85,20 @@ object AudioPlayerManager {
         onPrepared: (() -> Unit)? = null,
         onCompletion: () -> Unit = {},
         onError: (String) -> Unit = {},
-    ): Boolean = startInternal(
-        tag = tag,
-        tempFile = null,
-        configureDataSource = { mp -> mp.setDataSource(url) },
-        onPrepared = onPrepared,
-        onCompletion = onCompletion,
-        onError = onError,
-    )
+    ): Boolean {
+        if (url.isBlank()) {
+            onError("Preview audio URL is blank")
+            return false
+        }
+        return startInternal(
+            tag = tag,
+            tempFile = null,
+            configureDataSource = { mp -> mp.setDataSource(url) },
+            onPrepared = onPrepared,
+            onCompletion = onCompletion,
+            onError = onError,
+        )
+    }
 
     fun stop(tag: String? = null) {
         val cleanup: (() -> Unit)?
@@ -113,7 +125,12 @@ object AudioPlayerManager {
 
         val priorCleanup: (() -> Unit)?
         val myGen: Long
-        val mp = MediaPlayer()
+        val mp: MediaPlayer = try {
+            MediaPlayer()
+        } catch (e: Exception) {
+            onError(e.localizedMessage ?: "MediaPlayer initialization failed")
+            return false
+        }
         synchronized(lock) {
             priorCleanup = releaseLocked()
             myGen = generation.incrementAndGet()
@@ -122,7 +139,9 @@ object AudioPlayerManager {
             activeTempFile = tempFile
             activeCleanupCallback = null
         }
-        priorCleanup?.invoke()
+        try {
+            priorCleanup?.invoke()
+        } catch (_: Exception) {}
 
         return try {
             mp.setAudioAttributes(
@@ -135,13 +154,15 @@ object AudioPlayerManager {
             mp.setOnPreparedListener { prepared ->
                 val valid = synchronized(lock) { activePlayer === prepared && generation.get() == myGen }
                 if (!valid) {
-                    runCatching { prepared.release() }
+                    try { prepared.release() } catch (_: Exception) {}
                     return@setOnPreparedListener
                 }
-                val started = runCatching {
+                val started = try {
                     prepared.start()
                     true
-                }.getOrDefault(false)
+                } catch (_: Exception) {
+                    false
+                }
                 if (started) {
                     onPrepared?.invoke()
                 } else {
@@ -178,14 +199,15 @@ object AudioPlayerManager {
             }
             mp.prepareAsync()
             true
-        } catch (t: Throwable) {
+        } catch (e: Exception) {
             synchronized(lock) {
                 if (activePlayer === mp && generation.get() == myGen) {
                     releaseLocked()
                 } else {
-                    runCatching { mp.release() }
+                    try { mp.release() } catch (_: Exception) {}
                 }
             }
+            onError(e.localizedMessage ?: "MediaPlayer failed to prepare")
             false
         }
     }
@@ -200,14 +222,14 @@ object AudioPlayerManager {
         activeTempFile = null
         activeCleanupCallback = null
         if (old != null) {
-            runCatching {
+            try {
                 if (old.isPlaying) old.stop()
-            }
-            runCatching { old.reset() }
-            runCatching { old.release() }
+            } catch (_: Exception) {}
+            try { old.reset() } catch (_: Exception) {}
+            try { old.release() } catch (_: Exception) {}
         }
         if (oldTemp != null) {
-            runCatching { oldTemp.delete() }
+            try { oldTemp.delete() } catch (_: Exception) {}
         }
         return oldCleanup
     }

@@ -156,6 +156,8 @@ import com.example.ui.theme.SonixTheme
 import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioSideEffect
 import com.example.viewmodel.StudioViewModel
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 
 private class CreateTypedDocumentContract : ActivityResultContract<Pair<String, String>, Uri?>() {
     override fun createIntent(context: Context, input: Pair<String, String>): Intent {
@@ -183,6 +185,20 @@ class MainActivity : ComponentActivity() {
             }
         } catch (t: Throwable) {
             Log.e("MainActivity", "Failed to register uncaught exception handler", t)
+        }
+
+        try {
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                val options = FirebaseOptions.Builder()
+                    .setApplicationId("1:71794555883:android:4c65036e94f7e36e3b37ae")
+                    .setApiKey("AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo")
+                    .setProjectId("gen-lang-client-0021883952")
+                    .setStorageBucket("gen-lang-client-0021883952.firebasestorage.app")
+                    .build()
+                FirebaseApp.initializeApp(this, options)
+            }
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Manual FirebaseApp initialization skipped safely: ${e.message}")
         }
 
         initializeFirebaseSafely()
@@ -449,18 +465,25 @@ private fun SonixRootApp(
                                 uiState = uiState,
                                 playbackFlow = viewModel.playbackTelemetry,
                                 onPlayPause = {
-                                    if (!viewModel.playbackTelemetry.value.isPlaying &&
-                                        !askedNotificationOnce &&
-                                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                                        ContextCompat.checkSelfPermission(
-                                            context,
-                                            Manifest.permission.POST_NOTIFICATIONS,
-                                        ) != PackageManager.PERMISSION_GRANTED
-                                    ) {
-                                        askedNotificationOnce = true
-                                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    try {
+                                        if (!viewModel.playbackTelemetry.value.isPlaying &&
+                                            viewModel.canStartPlayback() &&
+                                            !askedNotificationOnce &&
+                                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                            ContextCompat.checkSelfPermission(
+                                                context,
+                                                Manifest.permission.POST_NOTIFICATIONS,
+                                            ) != PackageManager.PERMISSION_GRANTED
+                                        ) {
+                                            askedNotificationOnce = true
+                                            runCatching {
+                                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                            }
+                                        }
+                                        viewModel.togglePlayPause()
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Play/Pause action failed safely", e)
                                     }
-                                    viewModel.togglePlayPause()
                                 },
                                 onStop = { viewModel.stopPlayback() },
                                 onSeekFraction = { viewModel.seekToFraction(it) },

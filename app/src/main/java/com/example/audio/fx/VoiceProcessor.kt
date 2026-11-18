@@ -69,52 +69,57 @@ class VoiceProcessor @JvmOverloads constructor(private val sampleRate: Int = 441
         if (job?.isActive == true) return
 
         job = scope.launch(Dispatchers.IO) {
-            val minRec = AudioRecord.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-            ).coerceAtLeast(2048)
-            val minTrack = AudioTrack.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-            ).coerceAtLeast(2048)
-            val frameSize = 1024
-
-            val record = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minRec, frameSize * 4),
-            )
-            val track = AudioTrack(
-                AudioManager.STREAM_MUSIC,
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minTrack, frameSize * 4),
-                AudioTrack.MODE_STREAM,
-            )
-
-            val ns = if (NoiseSuppressor.isAvailable()) {
-                runCatching { NoiseSuppressor.create(record.audioSessionId)?.also { it.enabled = true } }.getOrNull()
-            } else {
-                null
-            }
-            val agc = if (AutomaticGainControl.isAvailable()) {
-                runCatching { AutomaticGainControl.create(record.audioSessionId)?.also { it.enabled = true } }.getOrNull()
-            } else {
-                null
-            }
-            val aec = if (AcousticEchoCanceler.isAvailable()) {
-                runCatching { AcousticEchoCanceler.create(record.audioSessionId)?.also { it.enabled = true } }.getOrNull()
-            } else {
-                null
-            }
-
-            val buf = ShortArray(frameSize)
+            var record: AudioRecord? = null
+            var track: AudioTrack? = null
+            var ns: NoiseSuppressor? = null
+            var agc: AutomaticGainControl? = null
+            var aec: AcousticEchoCanceler? = null
             try {
+                val minRec = AudioRecord.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                ).coerceAtLeast(2048)
+                val minTrack = AudioTrack.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                ).coerceAtLeast(2048)
+                val frameSize = 1024
+
+                record = AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    maxOf(minRec, frameSize * 4),
+                )
+                track = AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    maxOf(minTrack, frameSize * 4),
+                    AudioTrack.MODE_STREAM,
+                )
+
+                ns = if (NoiseSuppressor.isAvailable()) {
+                    runCatching { NoiseSuppressor.create(record.audioSessionId)?.also { it.enabled = true } }.getOrNull()
+                } else {
+                    null
+                }
+                agc = if (AutomaticGainControl.isAvailable()) {
+                    runCatching { AutomaticGainControl.create(record.audioSessionId)?.also { it.enabled = true } }.getOrNull()
+                } else {
+                    null
+                }
+                aec = if (AcousticEchoCanceler.isAvailable()) {
+                    runCatching { AcousticEchoCanceler.create(record.audioSessionId)?.also { it.enabled = true } }.getOrNull()
+                } else {
+                    null
+                }
+
+                val buf = ShortArray(frameSize)
                 if (record.state != AudioRecord.STATE_INITIALIZED || track.state != AudioTrack.STATE_INITIALIZED) {
                     return@launch
                 }
@@ -127,14 +132,15 @@ class VoiceProcessor @JvmOverloads constructor(private val sampleRate: Int = 441
                     track.write(buf, 0, n)
                     onFrame?.invoke(buf.copyOf(n))
                 }
+            } catch (_: Exception) {
             } finally {
-                runCatching { record.stop() }
-                runCatching { track.stop() }
-                runCatching { ns?.release() }
-                runCatching { agc?.release() }
-                runCatching { aec?.release() }
-                runCatching { record.release() }
-                runCatching { track.release() }
+                try { record?.stop() } catch (_: Exception) {}
+                try { track?.stop() } catch (_: Exception) {}
+                try { ns?.release() } catch (_: Exception) {}
+                try { agc?.release() } catch (_: Exception) {}
+                try { aec?.release() } catch (_: Exception) {}
+                try { record?.release() } catch (_: Exception) {}
+                try { track?.release() } catch (_: Exception) {}
             }
         }
     }

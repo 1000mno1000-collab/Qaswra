@@ -402,7 +402,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private var preEntryClipGainDb: Float = 0f
     private var clipGainUnappliedDirty: Boolean = false
 
-    private fun hasLoadedAudio(): Boolean = activeBuffer != null || (activeSourceFile?.exists() == true)
+    private fun hasLoadedAudio(): Boolean {
+        val buf = activeBuffer
+        if (buf != null && buf.frameCount > 0) return true
+        val file = activeSourceFile ?: return false
+        val path = file.absolutePath
+        return path.isNotBlank() && file.exists() && file.length() > 0L
+    }
+
+    fun canStartPlayback(): Boolean = hasLoadedAudio()
 
     private inline fun launchSingleFlightProcessing(
         purifyInitProgress: Float? = null,
@@ -1392,16 +1400,39 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     // Transport
     fun togglePlayPause() {
-        if (!hasLoadedAudio()) {
-            postBanner("سجّل أو استورد مقطعاً صوتياً أولاً")
-            return
-        }
-        livePreviewStartedPlayback = false
-        if (_playbackTelemetry.value.isPlaying) {
-            player.pause()
-        } else {
-            AudioPlayerManager.releaseAll()
-            player.play()
+        try {
+            if (!hasLoadedAudio()) {
+                val msg = if (_uiState.value.language == AppLanguage.EN) {
+                    "Please record audio or import an audio file first"
+                } else {
+                    "يرجى تسجيل صوت أو استيراد ملف صوتي أولاً"
+                }
+                postBanner(msg)
+                return
+            }
+            livePreviewStartedPlayback = false
+            if (_playbackTelemetry.value.isPlaying) {
+                player.pause()
+            } else {
+                AudioPlayerManager.releaseAll()
+                val started = player.play()
+                if (!started) {
+                    val msg = if (_uiState.value.language == AppLanguage.EN) {
+                        "Please record audio or import an audio file first"
+                    } else {
+                        "يرجى تسجيل صوت أو استيراد ملف صوتي أولاً"
+                    }
+                    postBanner(msg)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("StudioViewModel", "togglePlayPause failed safely", e)
+            val msg = if (_uiState.value.language == AppLanguage.EN) {
+                "Please record audio or import an audio file first"
+            } else {
+                "يرجى تسجيل صوت أو استيراد ملف صوتي أولاً"
+            }
+            postBanner(msg)
         }
     }
 

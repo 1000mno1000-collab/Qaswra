@@ -16,12 +16,14 @@ import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.media.PlaybackParams
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.model.DspConfig
 import com.example.model.EffectType
 import com.example.model.PlaybackTelemetry
 import com.example.model.RecorderTelemetry
 import com.example.model.StereoAudioBuffer
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -53,7 +55,12 @@ class StudioAudioPlayer(
     private val context: Context? = null,
     private val onTelemetry: (PlaybackTelemetry) -> Unit,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val playerExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e("StudioAudioPlayer", "Playback coroutine intercepted error safely", throwable)
+        isPlaying.set(false)
+        emitTelemetry()
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + playerExceptionHandler)
     @Volatile private var buffer: StereoAudioBuffer? = null
     @Volatile private var sourceFile: File? = null
     @Volatile private var sourceDurationMs: Long = 0L
@@ -296,20 +303,26 @@ class StudioAudioPlayer(
         return ((sourceDurationMs * sourceSampleRate.coerceAtLeast(8000)) / 1000L).coerceAtLeast(1L)
     }
 
-    fun play() {
+    fun play(): Boolean {
         val buf = buffer
         val diskFile = sourceFile
         if (buf == null) {
-            if (diskFile == null || !diskFile.exists() || diskFile.length() <= 0L) return
-            playDiskSourceFile(diskFile)
-            return
+            if (diskFile == null || diskFile.absolutePath.isBlank() || !diskFile.exists() || diskFile.length() <= 0L) {
+                isPlaying.set(false)
+                emitTelemetry()
+                return false
+            }
+            return playDiskSourceFile(diskFile)
         }
-        if (buf.frameCount == 0) return
+        if (buf.frameCount <= 0) {
+            isPlaying.set(false)
+            emitTelemetry()
+            return false
+        }
 
         // Use native MediaPlayer + PlaybackParams for crack-free decoupled Pitch & Speed live preview
         if (pitchSpeedPreviewActive && context != null && !mergePreviewActive) {
-            playBufferWithNativePlaybackParams(buf)
-            return
+            return playBufferWithNativePlaybackParams(buf)
         }
 
         stopAudioThreadOnly()
@@ -331,34 +344,55 @@ class StudioAudioPlayer(
             playhead = 0.0
         }
 
-        val minBufBytes = AudioTrack.getMinBufferSize(
-            sr,
-            AudioFormat.CHANNEL_OUT_STEREO,
-            AudioFormat.ENCODING_PCM_FLOAT,
-        ).coerceAtLeast(2048 * 8)
+        val track: AudioTrack = try {
+            val minBufBytes = AudioTrack.getMinBufferSize(
+                sr,
+                AudioFormat.CHANNEL_OUT_STEREO,
+                AudioFormat.ENCODING_PCM_FLOAT,
+            ).coerceAtLeast(2048 * 8)
 
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build(),
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                    .setSampleRate(sr)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                    .build(),
-            )
-            .setBufferSizeInBytes(minBufBytes)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+            val built = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build(),
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                        .setSampleRate(sr)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                        .build(),
+                )
+                .setBufferSizeInBytes(minBufBytes)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
 
-        audioTrack = track
-        isPlaying.set(true)
-        track.play()
-        emitTelemetry()
+            if (built.state != AudioTrack.STATE_INITIALIZED) {
+                try { built.release() } catch (_: Exception) {}
+                isPlaying.set(false)
+                abandonAudioFocusSafely()
+                emitTelemetry()
+                return false
+            }
+            audioTrack = built
+            isPlaying.set(true)
+            built.play()
+            emitTelemetry()
+            built
+        } catch (e: Exception) {
+            Log.e("StudioAudioPlayer", "Failed to initialize or start AudioTrack", e)
+            isPlaying.set(false)
+            val stale = audioTrack
+            audioTrack = null
+            if (stale != null) {
+                try { stale.release() } catch (_: Exception) {}
+            }
+            abandonAudioFocusSafely()
+            emitTelemetry()
+            return false
+        }
 
         playbackJob = scope.launch {
             val blockFrames = 2048
@@ -666,15 +700,19 @@ class StudioAudioPlayer(
                     }
                     emitTelemetry()
                 }
+            } catch (e: Exception) {
+                Log.e("StudioAudioPlayer", "AudioTrack playback loop error", e)
+                isPlaying.set(false)
             } finally {
-                runCatching { track.pause() }
-                runCatching { track.flush() }
-                runCatching { track.release() }
+                try { track.pause() } catch (_: Exception) {}
+                try { track.flush() } catch (_: Exception) {}
+                try { track.release() } catch (_: Exception) {}
                 if (audioTrack === track) audioTrack = null
                 abandonAudioFocusSafely()
                 emitTelemetry()
             }
         }
+        return true
     }
 
     fun pause() {
@@ -741,8 +779,9 @@ class StudioAudioPlayer(
         }
     }
 
-    private fun playBufferWithNativePlaybackParams(buf: StereoAudioBuffer) {
-        val ctx = context ?: return
+    private fun playBufferWithNativePlaybackParams(buf: StereoAudioBuffer): Boolean {
+        val ctx = context ?: return false
+        if (buf.frameCount <= 0) return false
         stopAudioThreadOnly()
         requestAudioFocusSafely()
 
@@ -760,30 +799,48 @@ class StudioAudioPlayer(
         emitTelemetry()
 
         playbackJob = scope.launch(Dispatchers.IO) {
-            val idHash = System.identityHashCode(buf)
-            val existing = cachedPitchLiveWavFile
-            val wavFile = if (existing != null &&
-                existing.exists() &&
-                existing.length() > 44L &&
-                cachedPitchLiveBufIdentity == idHash &&
-                cachedPitchLiveBufFrames == buf.frameCount
-            ) {
-                existing
-            } else {
-                val target = File(ctx.cacheDir, "pitch_live_src.wav")
-                writeStereoWavFile(target, buf)
-                cachedPitchLiveWavFile = target
-                cachedPitchLiveBufIdentity = idHash
-                cachedPitchLiveBufFrames = buf.frameCount
-                target
+            try {
+                val idHash = System.identityHashCode(buf)
+                val existing = cachedPitchLiveWavFile
+                val wavFile = if (existing != null &&
+                    existing.exists() &&
+                    existing.length() > 44L &&
+                    cachedPitchLiveBufIdentity == idHash &&
+                    cachedPitchLiveBufFrames == buf.frameCount
+                ) {
+                    existing
+                } else {
+                    val target = File(ctx.cacheDir, "pitch_live_src.wav")
+                    writeStereoWavFile(target, buf)
+                    cachedPitchLiveWavFile = target
+                    cachedPitchLiveBufIdentity = idHash
+                    cachedPitchLiveBufFrames = buf.frameCount
+                    target
+                }
+                if (!isActive || !isPlaying.get()) return@launch
+                if (!wavFile.exists() || wavFile.length() <= 0L) {
+                    isPlaying.set(false)
+                    emitTelemetry()
+                    return@launch
+                }
+                val startMs = ((playhead * 1000.0) / sr).roundToInt().coerceAtLeast(0)
+                streamDiskFileWithMediaPlayer(wavFile, startMs)
+            } catch (e: Exception) {
+                Log.e("StudioAudioPlayer", "playBufferWithNativePlaybackParams failed safely", e)
+                isPlaying.set(false)
+                abandonAudioFocusSafely()
+                emitTelemetry()
             }
-            if (!isActive || !isPlaying.get()) return@launch
-            val startMs = ((playhead * 1000.0) / sr).roundToInt().coerceAtLeast(0)
-            streamDiskFileWithMediaPlayer(wavFile, startMs)
         }
+        return true
     }
 
-    private fun playDiskSourceFile(file: File) {
+    private fun playDiskSourceFile(file: File): Boolean {
+        if (file.absolutePath.isBlank() || !file.exists() || file.length() <= 0L) {
+            isPlaying.set(false)
+            emitTelemetry()
+            return false
+        }
         stopAudioThreadOnly()
         requestAudioFocusSafely()
 
@@ -801,27 +858,38 @@ class StudioAudioPlayer(
         emitTelemetry()
 
         playbackJob = scope.launch(Dispatchers.IO) {
-            val startUs = ((playhead * 1_000_000.0) / sr).toLong().coerceAtLeast(0L)
-            val streamedViaCodec = if (pitchSpeedPreviewActive) {
-                false
-            } else {
-                streamDiskFileWithMediaCodec(file, startUs)
-            }
-            if (!streamedViaCodec && isActive && isPlaying.get()) {
-                // Reliable OS path via MediaPlayer direct file path in cacheDir (also supports native PlaybackParams!)
-                streamDiskFileWithMediaPlayer(file, (startUs / 1000L).toInt())
+            try {
+                val startUs = ((playhead * 1_000_000.0) / sr).toLong().coerceAtLeast(0L)
+                val streamedViaCodec = if (pitchSpeedPreviewActive) {
+                    false
+                } else {
+                    streamDiskFileWithMediaCodec(file, startUs)
+                }
+                if (!streamedViaCodec && isActive && isPlaying.get()) {
+                    // Reliable OS path via MediaPlayer direct file path in cacheDir (also supports native PlaybackParams!)
+                    streamDiskFileWithMediaPlayer(file, (startUs / 1000L).toInt())
+                }
+            } catch (e: Exception) {
+                Log.e("StudioAudioPlayer", "playDiskSourceFile failed safely", e)
+                isPlaying.set(false)
+                abandonAudioFocusSafely()
+                emitTelemetry()
             }
         }
+        return true
     }
 
     private suspend fun streamDiskFileWithMediaCodec(file: File, startUs: Long): Boolean {
-        val extractor = MediaExtractor()
+        if (file.absolutePath.isBlank() || !file.exists() || file.length() <= 0L) return false
+        var extractor: MediaExtractor? = null
         var codec: MediaCodec? = null
         var track: AudioTrack? = null
         return try {
-            val setOk = runCatching { extractor.setDataSource(file.absolutePath); true }.getOrElse {
+            val ext = MediaExtractor()
+            extractor = ext
+            val setOk = runCatching { ext.setDataSource(file.absolutePath); true }.getOrElse {
                 runCatching {
-                    FileInputStream(file).use { fis -> extractor.setDataSource(fis.fd) }
+                    FileInputStream(file).use { fis -> ext.setDataSource(fis.fd) }
                     true
                 }.getOrDefault(false)
             }
@@ -829,8 +897,8 @@ class StudioAudioPlayer(
 
             var audioIdx = -1
             var fmt: MediaFormat? = null
-            for (i in 0 until extractor.trackCount) {
-                val tf = extractor.getTrackFormat(i)
+            for (i in 0 until ext.trackCount) {
+                val tf = ext.getTrackFormat(i)
                 if (tf.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
                     audioIdx = i
                     fmt = tf
@@ -839,9 +907,9 @@ class StudioAudioPlayer(
             }
             if (audioIdx < 0 || fmt == null) return false
             val mime = fmt.getString(MediaFormat.KEY_MIME) ?: return false
-            extractor.selectTrack(audioIdx)
+            ext.selectTrack(audioIdx)
             if (startUs > 0L) {
-                extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                ext.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
             }
 
             var sr = if (fmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE).coerceAtLeast(8000) else TARGET_SAMPLE_RATE
@@ -903,13 +971,13 @@ class StudioAudioPlayer(
                     val inIdx = codec.dequeueInputBuffer(8_000L)
                     if (inIdx >= 0) {
                         val ib = codec.getInputBuffer(inIdx)
-                        val sz = if (ib != null) extractor.readSampleData(ib, 0) else -1
+                        val sz = if (ib != null) ext.readSampleData(ib, 0) else -1
                         if (sz < 0) {
                             codec.queueInputBuffer(inIdx, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
-                            codec.queueInputBuffer(inIdx, 0, sz, extractor.sampleTime.coerceAtLeast(0L), 0)
-                            extractor.advance()
+                            codec.queueInputBuffer(inIdx, 0, sz, ext.sampleTime.coerceAtLeast(0L), 0)
+                            ext.advance()
                         }
                     }
                 }
@@ -1000,7 +1068,7 @@ class StudioAudioPlayer(
                             if (loopEnabled && isPlaying.get()) {
                                 val loopStartUs = ((loopStartFrac.toDouble() * totalFrameCount() * 1_000_000.0) / sr).toLong()
                                 playhead = loopStartFrac.toDouble() * totalFrameCount()
-                                extractor.seekTo(loopStartUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                                ext.seekTo(loopStartUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
                                 codec.flush()
                                 inputDone = false
                             } else {
@@ -1023,12 +1091,16 @@ class StudioAudioPlayer(
                 abandonAudioFocusSafely()
             }
             true
-        } catch (_: Throwable) {
+        } catch (e: Exception) {
+            Log.e("StudioAudioPlayer", "streamDiskFileWithMediaCodec error", e)
             false
         } finally {
-            runCatching { codec?.stop(); codec?.release() }
-            runCatching { extractor.release() }
-            runCatching { track?.pause(); track?.flush(); track?.release() }
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            try { extractor?.release() } catch (_: Exception) {}
+            try { track?.pause() } catch (_: Exception) {}
+            try { track?.flush() } catch (_: Exception) {}
+            try { track?.release() } catch (_: Exception) {}
             if (audioTrack === track) audioTrack = null
             abandonAudioFocusSafely()
             emitTelemetry()
@@ -1036,29 +1108,56 @@ class StudioAudioPlayer(
     }
 
     private suspend fun streamDiskFileWithMediaPlayer(file: File, startMs: Int) {
-        val mp = MediaPlayer()
-        streamMediaPlayer = mp
+        if (file.absolutePath.isBlank() || !file.exists() || file.length() <= 0L) {
+            isPlaying.set(false)
+            abandonAudioFocusSafely()
+            emitTelemetry()
+            return
+        }
+        var mp: MediaPlayer? = null
         var completed = false
         try {
-            mp.setAudioAttributes(
+            val playerInstance = MediaPlayer()
+            mp = playerInstance
+            streamMediaPlayer = playerInstance
+            playerInstance.setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build(),
             )
-            mp.setDataSource(file.absolutePath)
-            mp.prepare()
-            val dur = mp.duration.toLong().coerceAtLeast(currentDurationMs().coerceAtLeast(1L))
+            playerInstance.setDataSource(file.absolutePath)
+            playerInstance.setOnErrorListener { _, _, _ ->
+                completed = true
+                isPlaying.set(false)
+                emitTelemetry()
+                true
+            }
+            try {
+                playerInstance.prepare()
+            } catch (e: Exception) {
+                Log.e("StudioAudioPlayer", "MediaPlayer.prepare failed safely", e)
+                isPlaying.set(false)
+                return
+            }
+            val dur = playerInstance.duration.toLong().coerceAtLeast(currentDurationMs().coerceAtLeast(1L))
             if (buffer == null && !mergePreviewActive) {
                 sourceDurationMs = dur
             }
             if (startMs in 1 until dur.toInt()) {
-                mp.seekTo(startMs)
+                try { playerInstance.seekTo(startMs) } catch (_: Exception) {}
             }
-            mp.setOnCompletionListener {
+            playerInstance.setOnCompletionListener {
                 if (loopEnabled && isPlaying.get()) {
                     val sMs = (loopStartFrac * dur).toInt()
-                    runCatching { mp.seekTo(sMs); mp.start() }
+                    try {
+                        playerInstance.seekTo(sMs)
+                        playerInstance.start()
+                    } catch (_: Exception) {
+                        completed = true
+                        isPlaying.set(false)
+                        emitTelemetry()
+                    }
                 } else {
                     completed = true
                     isPlaying.set(false)
@@ -1066,13 +1165,19 @@ class StudioAudioPlayer(
                     emitTelemetry()
                 }
             }
-            mp.start()
+            try {
+                playerInstance.start()
+            } catch (e: Exception) {
+                Log.e("StudioAudioPlayer", "MediaPlayer.start failed safely", e)
+                isPlaying.set(false)
+                return
+            }
             if (pitchSpeedPreviewActive || abs(monitoringSpeed - 1f) > 0.01f) {
-                applyLivePlaybackParams(mp)
+                applyLivePlaybackParams(playerInstance)
             }
             val sr = (buffer?.sampleRate ?: sourceSampleRate).coerceAtLeast(8000)
             while (playbackJob?.isActive == true && isPlaying.get() && !completed) {
-                val curMs = runCatching { mp.currentPosition }.getOrDefault(0).coerceAtLeast(0)
+                val curMs = try { playerInstance.currentPosition } catch (_: Exception) { 0 }.coerceAtLeast(0)
                 playhead = (curMs.toDouble() * sr) / 1000.0
                 latestBars = List(48) { idx ->
                     val phase = ((curMs / 80.0) + idx * 0.4)
@@ -1083,12 +1188,18 @@ class StudioAudioPlayer(
                 emitTelemetry()
                 delay(65L)
             }
-        } catch (_: Throwable) {
+        } catch (e: Exception) {
+            Log.e("StudioAudioPlayer", "streamDiskFileWithMediaPlayer failed safely", e)
             isPlaying.set(false)
         } finally {
-            runCatching { mp.stop() }
-            runCatching { mp.release() }
-            if (streamMediaPlayer === mp) streamMediaPlayer = null
+            mp?.let { playerInstance ->
+                try {
+                    if (playerInstance.isPlaying) playerInstance.stop()
+                } catch (_: Exception) {}
+                try { playerInstance.reset() } catch (_: Exception) {}
+                try { playerInstance.release() } catch (_: Exception) {}
+                if (streamMediaPlayer === playerInstance) streamMediaPlayer = null
+            }
             abandonAudioFocusSafely()
             emitTelemetry()
         }
@@ -1100,15 +1211,18 @@ class StudioAudioPlayer(
         val mp = streamMediaPlayer
         streamMediaPlayer = null
         if (mp != null) {
-            runCatching { mp.stop() }
-            runCatching { mp.release() }
+            try {
+                if (mp.isPlaying) mp.stop()
+            } catch (_: Exception) {}
+            try { mp.reset() } catch (_: Exception) {}
+            try { mp.release() } catch (_: Exception) {}
         }
         val t = audioTrack
         audioTrack = null
         if (t != null) {
-            runCatching { t.pause() }
-            runCatching { t.flush() }
-            runCatching { t.release() }
+            try { t.pause() } catch (_: Exception) {}
+            try { t.flush() } catch (_: Exception) {}
+            try { t.release() } catch (_: Exception) {}
         }
     }
 
