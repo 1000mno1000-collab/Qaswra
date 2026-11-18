@@ -118,14 +118,20 @@ object SonixCrashGuard {
         }.getOrNull()
     }
 
-    fun buildFallbackFirebaseOptions(): FirebaseOptions =
-        FirebaseOptions.Builder()
+    fun buildFallbackFirebaseOptions(): FirebaseOptions? {
+        val apiKey = BuildConfig.FIREBASE_API_KEY
+            .trim()
+            .takeIf { it.startsWith("AIza") }
+            ?: BuildConfig.GEMINI_API_KEY.trim().takeIf { it.startsWith("AIza") }
+            ?: return null
+        return FirebaseOptions.Builder()
             .setApplicationId("1:71794555883:android:4c65036e94f7e36e3b37ae")
-            .setApiKey("AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo")
+            .setApiKey(apiKey)
             .setProjectId("gen-lang-client-0021883952")
             .setGcmSenderId("71794555883")
             .setStorageBucket("gen-lang-client-0021883952.firebasestorage.app")
             .build()
+    }
 
     fun safeInitializeFirebase(context: Context) {
         val appCtx = context.applicationContext ?: context
@@ -135,8 +141,12 @@ object SonixCrashGuard {
                 if (autoInitialized == null && FirebaseApp.getApps(appCtx).isEmpty()) {
                     val options = parseFirebaseOptionsFromAssetsOrNull(appCtx)
                         ?: buildFallbackFirebaseOptions()
-                    FirebaseApp.initializeApp(appCtx, options)
-                    Log.i("SonixStartup", "FirebaseApp initialized manually via FirebaseOptions.")
+                    if (options != null) {
+                        FirebaseApp.initializeApp(appCtx, options)
+                        Log.i("SonixStartup", "FirebaseApp initialized manually via FirebaseOptions.")
+                    } else {
+                        Log.i("SonixStartup", "Firebase config not provided; running local studio tools.")
+                    }
                 }
             }
         } catch (t: Throwable) {

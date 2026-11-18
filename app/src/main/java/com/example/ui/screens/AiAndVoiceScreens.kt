@@ -838,9 +838,6 @@ fun TextToSpeechStudioScreen(
         pitchOffsetPercent = snap.pitchOffsetPercent
     }
 
-    val hasInternet = remember(uiState.ttsUiState, uiState.studioLuxuryEnhancement, uiState.isExtractingArticle) {
-        OnlineGuard.isOnline(context)
-    }
     val effectiveSpeechRate = (selectedDialect.defaultRate * (1f + rateOffsetPercent / 100f)).coerceIn(0.55f, 1.65f)
     val effectiveSpeechPitch = (selectedDialect.defaultPitch * (1f + pitchOffsetPercent / 100f)).coerceIn(0.65f, 1.45f)
 
@@ -883,17 +880,13 @@ fun TextToSpeechStudioScreen(
             },
         )
 
-        // Open Cloud Neural Engine Card (100% Online, Free & Keyless + Studio Luxury FFmpeg Filter)
+        // Local Offline Arabic TTS Studio Card (Android TextToSpeech + FFmpegKit)
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
             border = BorderStroke(
                 1.dp,
-                if (!hasInternet) {
-                    StudioColors.Rose.copy(alpha = 0.6f)
-                } else {
-                    StudioColors.Emerald.copy(alpha = 0.55f)
-                },
+                StudioColors.Emerald.copy(alpha = 0.55f),
             ),
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -962,9 +955,9 @@ fun TextToSpeechStudioScreen(
                             )
                             Text(
                                 text = if (lang == AppLanguage.EN) {
-                                    "Direct WebSocket: Microsoft Edge Neural (24kHz MP3 + FFmpegKit)"
+                                    "Offline Studio Engine: Android TextToSpeech + FFmpegKit"
                                 } else {
-                                    "اتصال WebSocket مباشر: Microsoft Edge Neural (MP3 + FFmpegKit)"
+                                    "محرك محلي فوري بدون إنترنت: Android TextToSpeech + FFmpegKit"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = StudioColors.Cyan,
@@ -1054,13 +1047,6 @@ fun TextToSpeechStudioScreen(
                             modifier = Modifier.testTag("tts_studio_luxury_switch"),
                         )
                     }
-                }
-
-                if (!hasInternet) {
-                    AiStatusCard(
-                        message = OnlineGuard.offlineErrorMessage(lang),
-                        isAmber = false,
-                    )
                 }
             }
         }
@@ -1233,7 +1219,7 @@ fun TextToSpeechStudioScreen(
                     selectedPersona = selectedPersona,
                     selectedAcousticMode = selectedAcousticMode,
                     language = lang,
-                    isEdgeNeuralTts = true,
+                    isLocalStudioTts = true,
                     onSelectPersona = { persona ->
                         preferVmUndo = false
                         selectedPersona = persona
@@ -2494,12 +2480,13 @@ private fun CategorizedVoicePersonasSection(
     selectedPersona: TtsVoicePersona?,
     selectedAcousticMode: TtsPersonaAcousticMode,
     language: AppLanguage,
-    isEdgeNeuralTts: Boolean = false,
+    isLocalStudioTts: Boolean = false,
     onSelectPersona: (TtsVoicePersona) -> Unit,
     onSelectAcousticMode: (TtsPersonaAcousticMode) -> Unit,
 ) {
-    val malePersonas = remember { TTS_VOICE_PERSONAS.filter { it.gender == TtsGender.MALE } }
-    val femalePersonas = remember { TTS_VOICE_PERSONAS.filter { it.gender == TtsGender.FEMALE } }
+    val malePersonas = remember { TTS_VOICE_PERSONAS.filter { it.gender == TtsGender.MALE && it.id != "child_voice" } }
+    val femalePersonas = remember { TTS_VOICE_PERSONAS.filter { it.gender == TtsGender.FEMALE && it.id != "child_voice" } }
+    val specialPersonas = remember { TTS_VOICE_PERSONAS.filter { it.id == "child_voice" } }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -2507,8 +2494,8 @@ private fun CategorizedVoicePersonasSection(
     ) {
         Text(
             text = when {
-                isEdgeNeuralTts && language == AppLanguage.EN -> "Men's Voices (Edge Neural)"
-                isEdgeNeuralTts -> "قسم نبرات الرجال (Edge Neural)"
+                isLocalStudioTts && language == AppLanguage.EN -> "Men's Voices (Local TTS + FFmpegKit)"
+                isLocalStudioTts -> "قسم نبرات الرجال (محلي + FFmpegKit)"
                 language == AppLanguage.EN -> "Men's Voices (Gemini 2.5 Audio)"
                 else -> "قسم نبرات الرجال (Gemini 2.5)"
             },
@@ -2526,7 +2513,7 @@ private fun CategorizedVoicePersonasSection(
                         selected = persona.id == selectedPersona?.id,
                         accentColor = StudioColors.Cyan,
                         language = language,
-                        isEdgeNeuralTts = isEdgeNeuralTts,
+                        isLocalStudioTts = isLocalStudioTts,
                         onClick = { onSelectPersona(persona) },
                         modifier = Modifier.weight(1f),
                     )
@@ -2542,8 +2529,8 @@ private fun CategorizedVoicePersonasSection(
 
         Text(
             text = when {
-                isEdgeNeuralTts && language == AppLanguage.EN -> "Women's Voices (Edge Neural)"
-                isEdgeNeuralTts -> "قسم نبرات النساء (Edge Neural)"
+                isLocalStudioTts && language == AppLanguage.EN -> "Women's Voices (Local TTS + FFmpegKit)"
+                isLocalStudioTts -> "قسم نبرات النساء (محلي + FFmpegKit)"
                 language == AppLanguage.EN -> "Women's Voices (Gemini 2.5 Audio)"
                 else -> "قسم نبرات النساء (Gemini 2.5)"
             },
@@ -2561,12 +2548,47 @@ private fun CategorizedVoicePersonasSection(
                         selected = persona.id == selectedPersona?.id,
                         accentColor = StudioColors.Violet,
                         language = language,
-                        isEdgeNeuralTts = isEdgeNeuralTts,
+                        isLocalStudioTts = isLocalStudioTts,
                         onClick = { onSelectPersona(persona) },
                         modifier = Modifier.weight(1f),
                     )
                 }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+
+        if (specialPersonas.isNotEmpty()) {
+            HorizontalDivider(
+                color = StudioColors.Border,
+                modifier = Modifier.padding(vertical = 2.dp),
+            )
+            Text(
+                text = if (language == AppLanguage.EN) {
+                    "Special Voices (Child)"
+                } else {
+                    "أصوات خاصة (طفل)"
+                },
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                color = StudioColors.Amber,
+            )
+            specialPersonas.chunked(2).forEach { pair ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    pair.forEach { persona ->
+                        VoicePersonaCard(
+                            persona = persona,
+                            selected = persona.id == selectedPersona?.id,
+                            accentColor = StudioColors.Amber,
+                            language = language,
+                            isLocalStudioTts = isLocalStudioTts,
+                            onClick = { onSelectPersona(persona) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
             }
         }
 
@@ -2643,12 +2665,12 @@ private fun VoicePersonaCard(
     selected: Boolean,
     accentColor: Color,
     language: AppLanguage,
-    isEdgeNeuralTts: Boolean = false,
+    isLocalStudioTts: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val personaInteraction = remember { MutableInteractionSource() }
-    val badgeText = if (isEdgeNeuralTts) {
+    val badgeText = if (isLocalStudioTts) {
         if (language == AppLanguage.EN) {
             persona.defaultAcousticMode.titleEn.substringBefore('(').trim()
         } else {

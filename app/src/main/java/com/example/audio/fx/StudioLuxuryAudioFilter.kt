@@ -91,6 +91,24 @@ object StudioLuxuryAudioFilter {
                 ).joinToString(",")
                 listOf(primary, safeSimple)
             }
+            TtsPersonaAcousticMode.HALL_ECHO -> {
+                val primary = listOf(
+                    "highpass=f=65",
+                    "equalizer=f=130:width_type=h:width=100:g=${fmt(2.8f + extraWarm)}",
+                    "equalizer=f=2600:width_type=h:width=1150:g=2.2",
+                    "compand=attacks=0.015:decays=0.22:points=-80/-80|-28/-24|-16/-12|-6/-4|0/-1.5:soft-knee=6:gain=2.0",
+                    "aecho=0.8:0.78:70|140|230:0.42|0.28|0.18",
+                    "alimiter=limit=0.95",
+                ).joinToString(",")
+                val safeSimple = listOf(
+                    "highpass=f=65",
+                    "equalizer=f=2600:width_type=h:width=1150:g=2.2",
+                    "acompressor=threshold=-18dB:ratio=3.0:attack=8:release=85:makeup=2.4",
+                    "aecho=0.8:0.78:75|160:0.40|0.22",
+                    "alimiter=limit=0.95",
+                ).joinToString(",")
+                listOf(primary, safeSimple)
+            }
             TtsPersonaAcousticMode.NATURAL -> {
                 val cleanDenoise = "highpass=f=65,afftdn=nf=-28,alimiter=limit=0.97"
                 val cleanFallback = "highpass=f=65,alimiter=limit=0.97"

@@ -156,8 +156,6 @@ import com.example.ui.theme.SonixTheme
 import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioSideEffect
 import com.example.viewmodel.StudioViewModel
-import com.google.firebase.FirebaseApp
-import com.google.firebase.FirebaseOptions
 
 private class CreateTypedDocumentContract : ActivityResultContract<Pair<String, String>, Uri?>() {
     override fun createIntent(context: Context, input: Pair<String, String>): Intent {
@@ -303,20 +301,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun initializeFirebaseSafely() {
-        try {
-            if (FirebaseApp.getApps(this).isEmpty()) {
-                val options = FirebaseOptions.Builder()
-                    .setApplicationId("1:71794555883:android:4c65036e94f7e36e3b37ae")
-                    .setApiKey("AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo")
-                    .setProjectId("gen-lang-client-0021883952")
-                    .setGcmSenderId("71794555883")
-                    .setStorageBucket("gen-lang-client-0021883952.firebasestorage.app")
-                    .build()
-                FirebaseApp.initializeApp(this, options)
-            }
-        } catch (t: Throwable) {
-            Log.w("MainActivity", "Manual FirebaseApp initialization skipped safely: ${t.message}", t)
-        }
+        SonixCrashGuard.safeInitializeFirebase(this)
     }
 }
 

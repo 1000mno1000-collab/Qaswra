@@ -249,7 +249,7 @@ data class StudioUiState(
     val importBytesLabel: String? = null,
     val exportProgress: Float? = null,
     val purifyProgress: Float? = null,
-    val ttsEngineMode: TtsEngineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL,
+    val ttsEngineMode: TtsEngineMode = TtsEngineMode.LOCAL_ARABIC_STUDIO,
     val studioLuxuryEnhancement: Boolean = true,
     val homeScrollIndex: Int = 0,
     val homeScrollOffset: Int = 0,
@@ -4465,7 +4465,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // TTS Studio (100% Online Cloud-Only: Free Unlimited Open Neural TTS + Studio Luxury FFmpeg Filter)
+    // TTS Studio (100% Offline: LocalArabicTtsEngine via Android TextToSpeech + FFmpegKit)
     fun setStudioLuxuryEnhancement(enabled: Boolean) {
         FreeEmotionalTtsClient.saveStudioLuxuryEnhancement(getApplication(), enabled)
         _uiState.update { it.copy(studioLuxuryEnhancement = enabled) }
@@ -4487,27 +4487,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
     ) {
-        if (text.isBlank()) {
-            _uiState.update { it.copy(ttsUiState = it.ttsUiState.copy(errorMessage = "يرجى إدخال النص أولاً.")) }
-            return
-        }
         val lang = _uiState.value.language
-        val engineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL
-        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
-        if (offlineMsg != null) {
-            stopTtsPreview()
+        if (text.isBlank()) {
             _uiState.update {
                 it.copy(
-                    ttsUiState = TtsStudioUiState(
-                        selectedEngine = engineMode,
-                        isOffline = true,
-                        errorMessage = offlineMsg,
+                    ttsUiState = it.ttsUiState.copy(
+                        errorMessage = if (lang == AppLanguage.EN) "Please enter text first." else "يرجى إدخال النص أولاً.",
                     ),
                 )
             }
-            postBanner(offlineMsg)
             return
         }
+        val engineMode = TtsEngineMode.LOCAL_ARABIC_STUDIO
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             stopTtsPreview()
@@ -4544,21 +4535,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
                         val synthRes = outcome.result
-                        ttsPreviewTempFile = synthRes.mp3File
+                        ttsPreviewTempFile = synthRes.audioFile
                         val initiated = AudioPlayerManager.playFile(
-                            file = synthRes.mp3File,
+                            file = synthRes.audioFile,
                             tag = "tts_preview",
                             onCompletion = {
                                 releaseTtsPreviewPlayer()
                                 _uiState.update { it.copy(ttsUiState = it.ttsUiState.copy(isPreviewing = false)) }
                             },
-                            onError = {
+                            onError = { errDetail ->
                                 releaseTtsPreviewPlayer()
                                 _uiState.update {
                                     it.copy(
                                         ttsUiState = TtsStudioUiState(
                                             selectedEngine = engineMode,
-                                            errorMessage = t(lang, "tts_cloud_required_error"),
+                                            errorMessage = if (lang == AppLanguage.EN) {
+                                                "Unable to play local TTS preview ($errDetail)."
+                                            } else {
+                                                "تعذر تشغيل معاينة الصوت المحلي ($errDetail)."
+                                            },
                                         ),
                                     )
                                 }
@@ -4582,24 +4577,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                                 it.copy(
                                     ttsUiState = TtsStudioUiState(
                                         selectedEngine = engineMode,
-                                        errorMessage = t(lang, "tts_cloud_required_error"),
+                                        errorMessage = if (lang == AppLanguage.EN) {
+                                            "Unable to start local audio preview playback."
+                                        } else {
+                                            "تعذر بدء تشغيل المعاينة الصوتية."
+                                        },
                                     ),
                                 )
                             }
                         }
-                    }
-                    VoiceRouteOutcome.Offline -> {
-                        val err = OnlineGuard.offlineErrorMessage(lang)
-                        _uiState.update {
-                            it.copy(
-                                ttsUiState = TtsStudioUiState(
-                                    selectedEngine = engineMode,
-                                    isOffline = true,
-                                    errorMessage = err,
-                                ),
-                            )
-                        }
-                        postBanner(err)
                     }
                     is VoiceRouteOutcome.ProviderError -> {
                         _uiState.update {
@@ -4649,22 +4635,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         if (text.isBlank()) return
         val lang = _uiState.value.language
-        val engineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL
-        val offlineMsg = OnlineGuard.requireOnlineOrError(getApplication(), lang)
-        if (offlineMsg != null) {
-            stopTtsPreview()
-            _uiState.update {
-                it.copy(
-                    ttsUiState = TtsStudioUiState(
-                        selectedEngine = engineMode,
-                        isOffline = true,
-                        errorMessage = offlineMsg,
-                    ),
-                )
-            }
-            postBanner(offlineMsg)
-            return
-        }
+        val engineMode = TtsEngineMode.LOCAL_ARABIC_STUDIO
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             _uiState.update {
@@ -4698,14 +4669,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
                         val synthRes = outcome.result
-                        synthRes.mp3File.delete()
+                        runCatching { synthRes.audioFile.delete() }
                         val rawBuf = synthRes.buffer
                         if (rawBuf.frameCount == 0) {
                             _uiState.update {
                                 it.copy(
                                     ttsUiState = TtsStudioUiState(
                                         selectedEngine = engineMode,
-                                        errorMessage = t(lang, "tts_cloud_required_error"),
+                                        errorMessage = if (lang == AppLanguage.EN) {
+                                            "Synthesized audio buffer is empty."
+                                        } else {
+                                            "الملف الصوتي المولّد فارغ."
+                                        },
                                     ),
                                 )
                             }
@@ -4727,7 +4702,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         val personaTag = persona?.let {
                             if (lang == AppLanguage.EN) it.titleEn else it.titleAr
                         }
-                        val engineTag = if (cur.studioLuxuryEnhancement) "Sonix Neural • Studio" else "Sonix Neural"
+                        val engineTag = if (cur.studioLuxuryEnhancement) "Sonix Local • Studio" else "Sonix Local"
                         val titleLabel = listOfNotNull(engineTag, personaTag, dialectLabel).joinToString(" • ")
                         repository.indexAudioRecording(titleLabel, rawBuf, RecordingSourceType.TTS)
                         _uiState.update {
@@ -4740,20 +4715,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             )
                         }
                         val bannerPersona = personaTag?.let { " — $it" }.orEmpty()
-                        postBanner("تم توليد وإدراج الصوت البشري ($dialectLabel$bannerPersona) إلى الاستوديو")
-                    }
-                    VoiceRouteOutcome.Offline -> {
-                        val err = OnlineGuard.offlineErrorMessage(lang)
-                        _uiState.update {
-                            it.copy(
-                                ttsUiState = TtsStudioUiState(
-                                    selectedEngine = engineMode,
-                                    isOffline = true,
-                                    errorMessage = err,
-                                ),
-                            )
-                        }
-                        postBanner(err)
+                        postBanner("تم توليد وإدراج الصوت الاستوديو ($dialectLabel$bannerPersona) بنجاح بدون إنترنت")
                     }
                     is VoiceRouteOutcome.ProviderError -> {
                         _uiState.update {

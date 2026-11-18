@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.util.Base64
 import android.util.Base64OutputStream
+import com.example.BuildConfig
 import com.example.audio.AudioDecoder
 import com.example.audio.OnlineGuard
 import com.example.audio.TARGET_SAMPLE_RATE
@@ -66,7 +67,6 @@ import kotlin.math.roundToInt
  */
 object SonixUnifiedAIEngine {
 
-    private const val BUILTIN_PROJECT_API_KEY = "AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo"
     private const val ENDPOINT_MULTIMODAL =
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     private const val ENDPOINT_AUDIO_TTS =
@@ -101,10 +101,14 @@ object SonixUnifiedAIEngine {
     )
 
     private fun resolveProjectApiKey(): String {
+        val envKey = BuildConfig.GEMINI_API_KEY
+            .trim()
+            .takeIf { it.startsWith("AIza") }
+        if (envKey != null) return envKey
         val firebaseKey = runCatching { FirebaseApp.getInstance().options.apiKey }.getOrNull()
             ?.trim()
             ?.takeIf { it.startsWith("AIza") }
-        return firebaseKey ?: BUILTIN_PROJECT_API_KEY
+        return firebaseKey ?: ""
     }
 
     // -------------------------------------------------------------------------
@@ -132,6 +136,8 @@ object SonixUnifiedAIEngine {
                 "اضبط علامات الترقيم والوقف الدرامي (... و ، و .) لتناسب إلقاءً وثائقياً رصيناً بوقفات تنفس مدروسة."
             TtsPersonaAcousticMode.PODCAST ->
                 "اضبط الفواصل الطبيعية (،) وعلامات النبرة العفوية لتناسب بودكاست دافئ وسلس قريب من المايكروفون."
+            TtsPersonaAcousticMode.HALL_ECHO ->
+                "اضبط علامات الوقف الرخيم لتناسب قاعة فسيحة بصدى متزن ووضوح عالٍ."
             TtsPersonaAcousticMode.NATURAL ->
                 "حافظ على سلاسة الجمل وضع فقط التشكيل وعلامات الترقيم الضرورية لإلقاء طبيعي نقي."
         }
@@ -311,6 +317,7 @@ object SonixUnifiedAIEngine {
         val acousticStyleNote = when (acousticMode) {
             TtsPersonaAcousticMode.DOCUMENTARY -> "مع إضافة التشكيل وعلامات الوقف الوثائقية (... و ،)"
             TtsPersonaAcousticMode.PODCAST -> "مع إضافة الفواصل الطبيعية المناسبة لحديث البودكاست"
+            TtsPersonaAcousticMode.HALL_ECHO -> "مع تنفس واضح ومساحة ترددية متوازنة تناسب القاعات"
             TtsPersonaAcousticMode.NATURAL -> "مع التشكيل الخفيف وعلامات الترقيم الدقيقة"
         }
 
@@ -1228,6 +1235,8 @@ object SonixUnifiedAIEngine {
                 "أسلوب الإلقاء الوثائقي: تمهّل بثقة مع وقفات تنفس درامية واضحة وعزم عميق في الصوت."
             TtsPersonaAcousticMode.PODCAST ->
                 "أسلوب البودكاست: حديث عفوي دافئ ومباشر كأنك تتكلم أمام مايكروفون استوديو قريب من المستمع."
+            TtsPersonaAcousticMode.HALL_ECHO ->
+                "أسلوب صدى القاعة: إلقاء رصين ومهيب بوقفات متوازنة تبرز رحابة المكان."
             TtsPersonaAcousticMode.NATURAL ->
                 "أسلوب إلقاء طبيعي نقي: انسيابية بشرية هادئة بدون مبالغة أو تصنّع."
         }
@@ -1268,6 +1277,7 @@ object SonixUnifiedAIEngine {
         val acousticHint = when (acousticMode) {
             TtsPersonaAcousticMode.DOCUMENTARY -> "بإلقاء وثائقي عميق مع وقفات درامية مدروسة"
             TtsPersonaAcousticMode.PODCAST -> "بأسلوب بودكاست حميمي قريب من المايكروفون"
+            TtsPersonaAcousticMode.HALL_ECHO -> "برحابة قاعة فخمة وصدى متوازن"
             TtsPersonaAcousticMode.NATURAL -> "بنقاء صوتي طبيعي وواضح"
         }
         return "تقمص الشخصية التالية بالكامل وبصوت بشري حقيقي 100%: $personaDesc ($acousticHint)، مع الحفاظ على اللهجة ($detectedDialect) والانفعال ($detectedEmotion) دون أي طابع آلي."
@@ -1282,6 +1292,21 @@ object SonixUnifiedAIEngine {
         readTimeoutMs: Int,
         language: AppLanguage,
     ): JsonPostOutcome {
+        val apiKeyParam = if (urlStr.contains("?key=")) {
+            urlStr.substringAfter("?key=").substringBefore("&")
+        } else {
+            ""
+        }
+        if (urlStr.contains("?key=") && apiKeyParam.isBlank()) {
+            return JsonPostOutcome(
+                null,
+                if (language == AppLanguage.EN) {
+                    "Gemini API key is not configured. Add GEMINI_API_KEY in AI Studio Secrets."
+                } else {
+                    "مفتاح Gemini API غير مُعدّ بعد. يرجى إضافة GEMINI_API_KEY في لوحة Secrets."
+                },
+            )
+        }
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {

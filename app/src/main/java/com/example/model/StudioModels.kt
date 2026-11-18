@@ -625,7 +625,7 @@ enum class TtsGender {
 }
 
 enum class TtsEngineMode {
-    FREE_EMOTIONAL_NEURAL,
+    LOCAL_ARABIC_STUDIO,
 }
 
 enum class TtsPersonaAcousticMode(
@@ -635,16 +635,22 @@ enum class TtsPersonaAcousticMode(
     val descEn: String,
 ) {
     DOCUMENTARY(
-        titleAr = "وثائقي",
-        titleEn = "Documentary",
-        descAr = "تعزيز العمق والهيبة الصوتية (110Hz + ضغط ناعم)",
-        descEn = "Deep cinema authority (110Hz EQ + smooth compression)",
+        titleAr = "معلق وثائقي",
+        titleEn = "Documentary Narrator",
+        descAr = "تعزيز العمق والهيبة الصوتية (110Hz + ضغط استوديو ناعم)",
+        descEn = "Deep cinema authority (110Hz EQ + smooth studio compression)",
     ),
     PODCAST(
-        titleAr = "بودكاست",
-        titleEn = "Podcast",
-        descAr = "دفء المايكروفون القريب ونقاء الحروف (highpass=70 + وضوح)",
-        descEn = "Intimate mic warmth & crisp clarity (highpass=70 + compressor)",
+        titleAr = "بودكاست احترافي",
+        titleEn = "Pro Podcast",
+        descAr = "دفء المايكروفون القريب ونقاء الحروف (highpass=70 + compand)",
+        descEn = "Intimate mic warmth & crisp clarity (highpass=70 + compand)",
+    ),
+    HALL_ECHO(
+        titleAr = "صدى قاعة",
+        titleEn = "Hall Echo",
+        descAr = "رحابة قاعة فخمة مع صدى متوازن وتردد استوديو نقي",
+        descEn = "Spacious hall ambience with clean studio echo",
     ),
     NATURAL(
         titleAr = "إلقاء طبيعي",
@@ -821,6 +827,23 @@ val TTS_VOICE_PERSONAS: List<TtsVoicePersona> = listOf(
         defaultWarmthDb = 2.8f,
         defaultPresenceDb = 1.8f,
         geminiDirectionPromptAr = "تحدثي بصوت راوية قصص ناعمة (Leda): نبرة عاطفية حالمة وهادئة مع تنفّس لطيف ومؤثر يشد المستمع في الخواطر والروايات والكتب الصوتية.",
+    ),
+    // أصوات خاصة
+    TtsVoicePersona(
+        id = "child_voice",
+        gender = TtsGender.FEMALE,
+        titleAr = "طفل لطيف وواضح",
+        titleEn = "Clear Child Voice",
+        descAr = "نبرة طفل حيوية وصافية للقصص التعليمية والمحتوى الإبداعي",
+        descEn = "Bright, natural child vocal profile for stories & creative clips",
+        geminiVoiceName = "Puck",
+        defaultStyle = TtsDeliveryStyle.ENERGETIC,
+        defaultAcousticMode = TtsPersonaAcousticMode.NATURAL,
+        defaultPitchSemitones = 4.6f,
+        defaultFormantShift = 1.24f,
+        defaultWarmthDb = 1.0f,
+        defaultPresenceDb = 2.6f,
+        geminiDirectionPromptAr = "تحدث بصوت طفل لطيف وطبيعي وواضح تماماً.",
     ),
 )
 
@@ -1007,7 +1030,7 @@ data class AiStreamState(
 
 @Immutable
 data class TtsStudioUiState(
-    val selectedEngine: TtsEngineMode = TtsEngineMode.FREE_EMOTIONAL_NEURAL,
+    val selectedEngine: TtsEngineMode = TtsEngineMode.LOCAL_ARABIC_STUDIO,
     val activeEngineUsed: TtsEngineMode? = null,
     val isSynthesizingPreview: Boolean = false,
     val isPreviewing: Boolean = false,
