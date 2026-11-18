@@ -107,6 +107,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.example.audio.OnlineGuard
 import com.example.diagnostics.AppDiagnosticLog
 import com.example.i18n.t
 import com.example.model.AudioPickerTarget
@@ -340,17 +341,36 @@ class MainActivity : ComponentActivity() {
                 val app = FirebaseApp.getApps(this@MainActivity).firstOrNull()
                     ?: FirebaseApp.initializeApp(this@MainActivity)
                 if (app == null) {
-                    Log.e("SonixFirebaseDiag", "MainActivity startup check: FirebaseApp is not initialized.")
+                    Log.w("SonixFirebaseDiag", "MainActivity startup check: FirebaseApp not initialized.")
                     return@launch
                 }
                 val auth = runCatching { FirebaseAuth.getInstance() }.getOrNull()
                 val authUid = runCatching { auth?.currentUser?.uid }.getOrNull()
                 val dbId = getString(R.string.firestore_database_id)
                 val db = FirebaseFirestore.getInstance(dbId)
+                val isOnline = OnlineGuard.isOnline(this@MainActivity)
                 Log.i(
                     "SonixFirebaseDiag",
-                    "MainActivity Firebase startup check | app=${app.name} | project=${app.options.projectId} | authReady=${auth != null} | uid=${authUid ?: "signed_out"} | db=$dbId",
+                    "MainActivity Firebase startup check | app=${app.name} | project=${app.options.projectId} | authReady=${auth != null} | uid=${authUid ?: "signed_out"} | db=$dbId | online=$isOnline",
                 )
+
+                if (!isOnline) {
+                    val cachedSnapshot = runCatching {
+                        withTimeoutOrNull(2_000L) {
+                            db.collection("app_diagnostics")
+                                .document("startup_probe")
+                                .get(Source.CACHE)
+                                .await()
+                        }
+                    }.getOrNull()
+                    Log.i(
+                        "SonixFirebaseDiag",
+                        "MainActivity Firestore offline/local cache ready | cachedExists=${cachedSnapshot?.exists() == true}",
+                    )
+                    return@launch
+                }
+
+                runCatching { withTimeoutOrNull(2_000L) { db.enableNetwork().await() } }
 
                 val snapshot = withTimeoutOrNull(6_000L) {
                     db.collection("app_diagnostics")
@@ -367,24 +387,33 @@ class MainActivity : ComponentActivity() {
                 } else {
                     Log.w(
                         "SonixFirebaseDiag",
-                        "MainActivity Firestore test fetch timed out after 6000ms (offline or slow network).",
+                        "MainActivity Firestore test fetch timed out after 6000ms; offline cache active.",
                     )
                 }
             } catch (e: FirebaseFirestoreException) {
-                if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
-                    Log.i(
-                        "SonixFirebaseDiag",
-                        "MainActivity Firestore reachable (server responded with PERMISSION_DENIED per security rules).",
-                    )
-                } else {
-                    Log.e(
-                        "SonixFirebaseDiag",
-                        "MainActivity Firestore diagnostic error [${e.code}]: ${e.message}",
-                        e,
-                    )
+                when (e.code) {
+                    FirebaseFirestoreException.Code.PERMISSION_DENIED -> {
+                        Log.i(
+                            "SonixFirebaseDiag",
+                            "MainActivity Firestore reachable (server responded with PERMISSION_DENIED per security rules).",
+                        )
+                    }
+                    FirebaseFirestoreException.Code.UNAVAILABLE,
+                    FirebaseFirestoreException.Code.DEADLINE_EXCEEDED -> {
+                        Log.w(
+                            "SonixFirebaseDiag",
+                            "MainActivity Firestore currently offline/unreachable (${e.code.name}); local persistence cache active.",
+                        )
+                    }
+                    else -> {
+                        Log.w(
+                            "SonixFirebaseDiag",
+                            "MainActivity Firestore diagnostic notice [${e.code}]: ${e.message}",
+                        )
+                    }
                 }
             } catch (t: Throwable) {
-                Log.e("SonixFirebaseDiag", "MainActivity Firebase diagnostic failed: ${t.message}", t)
+                Log.w("SonixFirebaseDiag", "MainActivity Firebase diagnostic skipped: ${t.message}")
             }
         }
     }

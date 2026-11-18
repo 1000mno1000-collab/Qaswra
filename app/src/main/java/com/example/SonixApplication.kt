@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.Looper
 import android.os.Process
 import android.util.Log
+import com.example.audio.OnlineGuard
 import com.example.audio.cache.SmartCacheManager
 import com.example.data.RecentEditsCacheManager
 import com.example.diagnostics.AppDiagnosticLog
@@ -292,26 +293,30 @@ object SonixCrashGuard {
         if (dbId.isNotBlank()) {
             val db = runCatching { FirebaseFirestore.getInstance(dbId) }.getOrNull()
             if (db != null) {
-                try {
-                    val snapshot = withTimeoutOrNull(6_000L) {
-                        db.collection("_startup_check").limit(1).get(Source.SERVER).await()
+                if (!OnlineGuard.isOnline(appCtx)) {
+                    firestoreStatus = "OFFLINE_CACHE_READY"
+                } else {
+                    try {
+                        val snapshot = withTimeoutOrNull(6_000L) {
+                            db.collection("_startup_check").limit(1).get(Source.SERVER).await()
+                        }
+                        if (snapshot != null) {
+                            firestoreReachable = true
+                            firestoreStatus = "CONNECTED"
+                        } else {
+                            firestoreStatus = "TIMEOUT_OFFLINE"
+                        }
+                    } catch (e: FirebaseFirestoreException) {
+                        // PERMISSION_DENIED proves the live Firestore server received our request and evaluated rules.
+                        if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            firestoreReachable = true
+                            firestoreStatus = "CONNECTED_RULES_ACTIVE"
+                        } else {
+                            firestoreStatus = "LOCAL_CACHE_${e.code.name}"
+                        }
+                    } catch (t: Throwable) {
+                        firestoreStatus = "LOCAL_ONLY_${t.javaClass.simpleName}"
                     }
-                    if (snapshot != null) {
-                        firestoreReachable = true
-                        firestoreStatus = "CONNECTED"
-                    } else {
-                        firestoreStatus = "TIMEOUT_OFFLINE"
-                    }
-                } catch (e: FirebaseFirestoreException) {
-                    // PERMISSION_DENIED proves the live Firestore server received our request and evaluated rules.
-                    if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
-                        firestoreReachable = true
-                        firestoreStatus = "CONNECTED_RULES_ACTIVE"
-                    } else {
-                        firestoreStatus = "ERROR_${e.code.name}"
-                    }
-                } catch (t: Throwable) {
-                    firestoreStatus = "LOCAL_ONLY_${t.javaClass.simpleName}"
                 }
             }
         }
