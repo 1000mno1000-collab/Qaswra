@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -430,6 +431,30 @@ private fun SonixRootApp(
                         runCatching { navBackStackEntry?.toRoute<StudioRoute.AudioPicker>()?.target }.getOrNull() == AudioPickerTarget.LIBRARY_BROWSE
                     val isProjectsTab = currentDest?.hasRoute<StudioRoute.ProjectsExport>() == true
                     val showBottomNav = isHomeTab || isLibraryTab || isProjectsTab
+                    val isChildSubRoute = (currentDest?.hasRoute<StudioRoute.AudioPicker>() == true && !isLibraryTab) ||
+                        currentDest?.hasRoute<StudioRoute.EchoDetail>() == true ||
+                        currentDest?.hasRoute<StudioRoute.EffectDetail>() == true ||
+                        currentDest?.hasRoute<StudioRoute.AiToolDetail>() == true ||
+                        currentDest?.hasRoute<StudioRoute.NotificationDetail>() == true
+
+                    val returnToHome: () -> Unit = {
+                        if (!navController.popBackStack(StudioRoute.Home, inclusive = false)) {
+                            navController.navigate(StudioRoute.Home) {
+                                launchSingleTop = true
+                            }
+                        }
+                    }
+                    val popBackOrHome: () -> Unit = {
+                        if (!navController.popBackStack()) {
+                            navController.navigate(StudioRoute.Home) {
+                                launchSingleTop = true
+                            }
+                        }
+                    }
+
+                    BackHandler(enabled = currentDest != null && !isHomeTab && !isChildSubRoute) {
+                        returnToHome()
+                    }
 
                 Scaffold(
                     containerColor = Color.Transparent,
@@ -731,11 +756,7 @@ private fun SonixRootApp(
                                         }
                                     },
                                     onBack = {
-                                        if (!navController.popBackStack()) {
-                                            navController.navigate(StudioRoute.Home) {
-                                                launchSingleTop = true
-                                            }
-                                        }
+                                        if (isBrowseTab) returnToHome() else popBackOrHome()
                                     },
                                 )
                             }
@@ -746,14 +767,14 @@ private fun SonixRootApp(
                                     onOpenAudioPicker = {
                                         navController.navigate(StudioRoute.AudioPicker(AudioPickerTarget.IMPORT_MAIN))
                                     },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.VoicePurifier> {
                                 VoicePurifierScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.EchoSpace> {
@@ -761,7 +782,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenDetail = { grp -> navController.navigate(StudioRoute.EchoDetail(grp)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.EchoDetail> { entry ->
@@ -770,7 +791,7 @@ private fun SonixRootApp(
                                     group = dest.group,
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = popBackOrHome,
                                 )
                             }
                             composable<StudioRoute.EffectsChain> {
@@ -778,7 +799,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenEffect = { eff -> navController.navigate(StudioRoute.EffectDetail(eff)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.EffectDetail> { entry ->
@@ -788,7 +809,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenEchoDetail = { grp -> navController.navigate(StudioRoute.EchoDetail(grp)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = popBackOrHome,
                                 )
                             }
                             composable<StudioRoute.Editor> {
@@ -798,7 +819,7 @@ private fun SonixRootApp(
                                     onOpenPicker = { target ->
                                         navController.navigate(StudioRoute.AudioPicker(target))
                                     },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.Presets> {
@@ -806,27 +827,21 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenEchoSpace = { navController.navigate(StudioRoute.EchoSpace) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.ProjectsExport> {
                                 ProjectsExportScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = {
-                                        if (!navController.popBackStack()) {
-                                            navController.navigate(StudioRoute.Home) {
-                                                launchSingleTop = true
-                                            }
-                                        }
-                                    },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.AiStudio> {
                                 AiStudioScreen(
                                     uiState = uiState,
                                     onOpenTool = { tool -> navController.navigate(StudioRoute.AiToolDetail(tool)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.AiToolDetail> { entry ->
@@ -835,21 +850,21 @@ private fun SonixRootApp(
                                     tool = dest.tool,
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = popBackOrHome,
                                 )
                             }
                             composable<StudioRoute.TtsStudio> {
                                 TextToSpeechStudioScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.VoiceTransformer> {
                                 VoiceTransformerScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.Settings> {
@@ -859,7 +874,7 @@ private fun SonixRootApp(
                                     onChangeDefaultSaveFolder = {
                                         openDocumentTreeLauncher.launch(null)
                                     },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.AudioMerge> {
@@ -867,7 +882,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.AudioSplit> {
@@ -875,7 +890,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.PitchAndSpeed> {
@@ -883,7 +898,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.ReverseAudio> {
@@ -891,7 +906,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.SurroundStereo> {
@@ -899,14 +914,14 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.GenerateSilence> {
                                 GenerateSilenceScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.FormatConverter> {
@@ -914,14 +929,14 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.ExtractVideoAudio> {
                                 ExtractVideoAudioScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.CompressAudio> {
@@ -929,7 +944,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.RingtoneMaker> {
@@ -937,7 +952,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.SpeechToText> {
@@ -945,7 +960,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.SmartMusicMixer> {
@@ -953,7 +968,7 @@ private fun SonixRootApp(
                                     uiState = uiState,
                                     viewModel = viewModel,
                                     onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.SmartAssistant> {
@@ -979,7 +994,7 @@ private fun SonixRootApp(
                                             launchSingleTop = true
                                         }
                                     },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.ReelsAudioTemplates> {
@@ -989,7 +1004,7 @@ private fun SonixRootApp(
                                     onOpenAudioPicker = { target ->
                                         navController.navigate(StudioRoute.AudioPicker(target))
                                     },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.Notifications> {
@@ -999,7 +1014,7 @@ private fun SonixRootApp(
                                     onOpenDetail = { entryId ->
                                         navController.navigate(StudioRoute.NotificationDetail(entryId))
                                     },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.NotificationDetail> { entry ->
@@ -1008,20 +1023,14 @@ private fun SonixRootApp(
                                     entryId = dest.entryId,
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = popBackOrHome,
                                 )
                             }
                             composable<StudioRoute.SmartQaLab> {
                                 SmartQaLabScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = {
-                                        if (!navController.popBackStack()) {
-                                            navController.navigate(StudioRoute.Home) {
-                                                launchSingleTop = true
-                                            }
-                                        }
-                                    },
+                                    onBack = returnToHome,
                                 )
                             }
                             composable<StudioRoute.BatchQueue> {
@@ -1033,13 +1042,7 @@ private fun SonixRootApp(
                                             launchSingleTop = true
                                         }
                                     },
-                                    onBack = {
-                                        if (!navController.popBackStack(StudioRoute.Home, inclusive = false)) {
-                                            navController.navigate(StudioRoute.Home) {
-                                                launchSingleTop = true
-                                            }
-                                        }
-                                    },
+                                    onBack = returnToHome,
                                 )
                             }
                         }
