@@ -89,6 +89,10 @@ dependencies {
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services)
     implementation(libs.googleid)
+    implementation("com.k2fsa.sherpa.onnx:sherpa-onnx-android:1.12.35")
+    implementation("org.apache.commons:commons-compress:1.26.1")
+    implementation("com.arthenica:ffmpeg-kit-full-gpl:6.0-2")
+
 
     debugImplementation(libs.androidx.ui.tooling)
 }
