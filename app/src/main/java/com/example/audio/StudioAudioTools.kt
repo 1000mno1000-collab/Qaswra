@@ -10,10 +10,20 @@ import android.provider.MediaStore
 import android.provider.Settings
 import com.example.diagnostics.AppDiagnosticLog
 import com.example.diagnostics.FfmpegKitBridge
+import com.example.model.BassBoostParams
+import com.example.model.BatchDspSettings
+import com.example.model.BatchFilterPreset
+import com.example.model.DspConfig
+import com.example.model.EffectType
+import com.example.model.ExportAudioFormat
 import com.example.model.GlobalProPreset
 import com.example.model.GlobalProPresetId
+import com.example.model.NoiseReductionParams
+import com.example.model.OneTapSocialPreset
 import com.example.model.PitchShiftParams
+import com.example.model.PlatformLoudnessTarget
 import com.example.model.StereoAudioBuffer
+import com.example.model.TrebleParams
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
@@ -1120,4 +1130,202 @@ suspend fun exportSourceFileDirectlyWithFfmpeg(
         null
     }
 }
+
+private fun batchFilterToFfmpegStages(preset: BatchFilterPreset): String = when (preset) {
+    BatchFilterPreset.NONE -> ""
+    BatchFilterPreset.VOICE_CLARITY ->
+        "highpass=f=85,equalizer=f=240:t=q:w=1.2:g=-2.0,equalizer=f=3200:t=q:w=1.3:g=3.5,acompressor=threshold=-20dB:ratio=3:attack=8:release=110"
+    BatchFilterPreset.BASS_WARMTH ->
+        "bass=g=5.5:f=95,equalizer=f=220:t=q:w=1.1:g=2.5,acompressor=threshold=-19dB:ratio=2.8:attack=12:release=140"
+    BatchFilterPreset.STUDIO_RADIO ->
+        "highpass=f=75,acompressor=threshold=-18dB:ratio=4:attack=5:release=60,bass=g=4.5,treble=g=3.0,alimiter=limit=0.95"
+    BatchFilterPreset.ECHO_SPACE ->
+        "aecho=0.8:0.86:55:0.32,treble=g=2.0"
+    BatchFilterPreset.BRIGHT_AIR ->
+        "highpass=f=70,equalizer=f=5500:t=q:w=1.1:g=4.0,treble=g=4.0,alimiter=limit=0.95"
+    BatchFilterPreset.ACTIVE_STUDIO_DSP -> ""
+}
+
+private fun moveExportToPersistentBatchDir(
+    context: Context,
+    exported: ExportedAudioResult,
+    cleanBase: String,
+): ExportedAudioResult {
+    val batchDir = File(context.filesDir, "batch_exports").apply { mkdirs() }
+    val stamp = UUID.randomUUID().toString().take(6)
+    val dest = File(batchDir, "${cleanBase}_$stamp.${exported.extension}")
+    val moved = exported.file.renameTo(dest) && dest.exists() && dest.length() > 0L
+    if (!moved) {
+        exported.file.inputStream().buffered(65_536).use { inp ->
+            dest.outputStream().buffered(65_536).use { out ->
+                inp.copyTo(out, 65_536)
+            }
+        }
+        runCatching { exported.file.delete() }
+    }
+    return ExportedAudioResult(dest, exported.extension, exported.mimeType)
+}
+
+/**
+ * Applies the selected batch DSP settings (pitch, speed, filter preset / active studio DSP,
+ * loudness normalization, and output format) to one audio source file and writes the result
+ * to persistent `filesDir/batch_exports`.
+ */
+suspend fun processBatchItemWithDsp(
+    context: Context,
+    sourceFile: File,
+    displayBaseName: String,
+    settings: BatchDspSettings,
+    activeDspConfig: DspConfig,
+    onProgress: (Float) -> Unit = {},
+): ExportedAudioResult? = withContext(Dispatchers.IO) {
+    if (!sourceFile.exists() || sourceFile.length() <= 0L) return@withContext null
+    val cleanBase = displayBaseName.trim()
+        .substringBeforeLast('.')
+        .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        .ifEmpty { "Sonix_Batch" }
+    onProgress(0.08f)
+
+    val hasPitchOrSpeed = abs(settings.pitchSemitones) >= 0.05f || abs(settings.speedRatio - 1.0f) >= 0.02f
+    val useFfmpegFastPath = settings.filterPreset != BatchFilterPreset.ACTIVE_STUDIO_DSP && FfmpegKitBridge.isAvailable()
+
+    if (useFfmpegFastPath) {
+        val filterStages = batchFilterToFfmpegStages(settings.filterPreset)
+        val candidates = if (hasPitchOrSpeed) {
+            val (rbChain, soxrChain) = buildPitchAndSpeedFfmpegChains(
+                semitones = settings.pitchSemitones,
+                tempoRatio = settings.speedRatio,
+            )
+            listOf(rbChain, soxrChain).map { ps ->
+                if (filterStages.isNotBlank()) "$ps,$filterStages" else ps
+            }
+        } else {
+            listOf(filterStages)
+        }.map { chain ->
+            if (settings.normalizeOutput) {
+                if (chain.isNotBlank()) "$chain,loudnorm=I=-15:TP=-1.0:LRA=9" else "loudnorm=I=-15:TP=-1.0:LRA=9"
+            } else {
+                chain
+            }
+        }
+
+        for ((idx, graph) in candidates.withIndex()) {
+            onProgress(if (idx == 0) 0.25f else 0.45f)
+            val tempProcessed = if (graph.isNotBlank()) {
+                processAudioFileWithFfmpeg(
+                    context = context,
+                    inputFile = sourceFile,
+                    audioFilter = graph,
+                    toolName = "BatchQueueFfmpeg",
+                )
+            } else {
+                sourceFile
+            }
+            if (tempProcessed != null && tempProcessed.exists() && tempProcessed.length() > 512L) {
+                onProgress(0.76f)
+                val exported = exportSourceFileDirectlyWithFfmpeg(
+                    context = context,
+                    sourceFile = tempProcessed,
+                    format = settings.outputFormat,
+                    baseFileName = cleanBase,
+                    loudnessTarget = PlatformLoudnessTarget.ORIGINAL,
+                )
+                if (tempProcessed != sourceFile) runCatching { tempProcessed.delete() }
+                if (exported != null) {
+                    val persisted = moveExportToPersistentBatchDir(context, exported, cleanBase)
+                    onProgress(1f)
+                    return@withContext persisted
+                }
+            } else if (tempProcessed != null && tempProcessed != sourceFile) {
+                runCatching { tempProcessed.delete() }
+            }
+        }
+    }
+
+    // Pure-Kotlin offline path (used for Active Studio DSP chain or when FFmpeg is unavailable)
+    val decoded = AudioDecoder.decodeFileWithProgress(sourceFile) { dec ->
+        onProgress((0.10f + dec * 0.25f).coerceIn(0.10f, 0.35f))
+    } ?: return@withContext null
+
+    if (decoded.frameCount <= 0) return@withContext null
+
+    onProgress(0.40f)
+    val filtered = when (settings.filterPreset) {
+        BatchFilterPreset.NONE -> decoded
+        BatchFilterPreset.ACTIVE_STUDIO_DSP -> withContext(Dispatchers.Default) {
+            renderOfflineDsp(decoded, activeDspConfig)
+        }
+        BatchFilterPreset.VOICE_CLARITY -> purifyBufferOffline(
+            source = decoded,
+            params = NoiseReductionParams(
+                thresholdDb = -46f,
+                reductionDb = 12f,
+                highPassHz = 85f,
+                spectralStrength = 0.4f,
+                clarityBoostDb = 2.5f,
+                spectralCleanerEnabled = true,
+            ),
+        )
+        BatchFilterPreset.BASS_WARMTH -> withContext(Dispatchers.Default) {
+            renderOfflineDsp(
+                decoded,
+                DspConfig()
+                    .withSlotEnabled(EffectType.BASS_BOOST, true)
+                    .withSlotEnabled(EffectType.COMPRESSOR, true)
+                    .copy(bassBoost = BassBoostParams(gainDb = 6f, frequencyHz = 95f)),
+            )
+        }
+        BatchFilterPreset.STUDIO_RADIO -> applyOneTapSocialPreset(
+            context = context,
+            buffer = decoded,
+            preset = OneTapSocialPreset.FM_RADIO,
+        )
+        BatchFilterPreset.ECHO_SPACE -> applyOneTapSocialPreset(
+            context = context,
+            buffer = decoded,
+            preset = OneTapSocialPreset.GRAND_HALL_REVERB,
+        )
+        BatchFilterPreset.BRIGHT_AIR -> withContext(Dispatchers.Default) {
+            renderOfflineDsp(
+                decoded,
+                DspConfig()
+                    .withSlotEnabled(EffectType.TREBLE, true)
+                    .copy(treble = TrebleParams(gainDb = 4.5f, frequencyHz = 6500f)),
+            )
+        }
+    }
+
+    onProgress(0.58f)
+    val pitched = if (hasPitchOrSpeed) {
+        applyPitchAndSpeedOffline(
+            buffer = filtered,
+            semitones = settings.pitchSemitones,
+            tempoRatio = settings.speedRatio,
+            context = context,
+        ) { p ->
+            onProgress((0.58f + p * 0.22f).coerceIn(0.58f, 0.80f))
+        }
+    } else {
+        filtered
+    }
+
+    val finalBuf = if (settings.normalizeOutput) {
+        normalizeAudio(pitched, -1.0f)
+    } else {
+        pitched
+    }
+
+    val exported = exportRenderedAudioToFile(
+        context = context,
+        buffer = finalBuf,
+        format = settings.outputFormat,
+        baseFileName = cleanBase,
+    ) { ep ->
+        onProgress((0.82f + ep * 0.18f).coerceIn(0.82f, 1.0f))
+    }
+    val persisted = moveExportToPersistentBatchDir(context, exported, cleanBase)
+    onProgress(1f)
+    persisted
+}
+
 

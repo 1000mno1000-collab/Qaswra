@@ -1108,7 +1108,7 @@ fun SonixExitConfirmDialog(
         shape = RoundedCornerShape(22.dp),
         title = {
             Text(
-                text = if (isEn) "Confirm Exit from Sonix ✦" else "تأكيد الخروج من Sonix ✦",
+                text = if (isEn) "Confirm Exit" else "تأكيد المغادرة",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 color = StudioColors.Cyan,
             )
@@ -1116,9 +1116,9 @@ fun SonixExitConfirmDialog(
         text = {
             Text(
                 text = if (isEn) {
-                    "Are you sure you want to close the app? (Make sure to save your audio edits first)"
+                    "Would you like to leave Sonix ✦ or stay?"
                 } else {
-                    "هل تريد بالتأكيد إغلاق التطبيق؟ (تأكد من حفظ تعديلاتك الصوتية أولاً)"
+                    "هل تريد الخروج من تطبيق Sonix ✦ أم البقاء؟"
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = StudioColors.TextSecondary,
@@ -1152,7 +1152,7 @@ fun SonixExitConfirmDialog(
                     .testTag("exit_dialog_stay_button"),
             ) {
                 Text(
-                    text = if (isEn) "Stay in App" else "بقاء في التطبيق",
+                    text = if (isEn) "Stay" else "البقاء",
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                     color = StudioColors.Cyan,
                 )

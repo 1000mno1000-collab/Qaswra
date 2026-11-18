@@ -32,14 +32,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.CallSplit
+import androidx.compose.material.icons.automirrored.rounded.Login
+import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.Compress
 import androidx.compose.material.icons.rounded.ContentCut
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.HourglassEmpty
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Mic
@@ -48,7 +52,9 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PersonOutline
 import androidx.compose.material.icons.rounded.Podcasts
+import androidx.compose.material.icons.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SpatialAudioOff
@@ -57,19 +63,25 @@ import androidx.compose.material.icons.rounded.SurroundSound
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Undo
+import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.Waves
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
@@ -161,6 +173,7 @@ fun HomeScreen(
     val lang = uiState.language
     val context = LocalContext.current
     var langDialogOpen by remember { mutableStateOf(false) }
+    var accountSheetOpen by remember { mutableStateOf(false) }
     var activeToolInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
     var exitConfirmDialogOpen by remember { mutableStateOf(false) }
 
@@ -526,13 +539,7 @@ fun HomeScreen(
                         ) {
                             val authChipInteraction = remember { MutableInteractionSource() }
                             Surface(
-                                onClick = {
-                                    if (uiState.authSession is AuthSession.Guest) {
-                                        viewModel.requestSignIn()
-                                    } else {
-                                        viewModel.signOut()
-                                    }
-                                },
+                                onClick = { accountSheetOpen = true },
                                 interactionSource = authChipInteraction,
                                 shape = RoundedCornerShape(999.dp),
                                 color = StudioColors.ElevatedSurface.copy(alpha = 0.92f),
@@ -549,18 +556,18 @@ fun HomeScreen(
                                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Rounded.Person,
-                                        contentDescription = null,
-                                        tint = StudioColors.Cyan,
+                                        imageVector = if (uiState.authSession is AuthSession.SignedIn) {
+                                            Icons.Rounded.Person
+                                        } else {
+                                            Icons.Rounded.PersonOutline
+                                        },
+                                        contentDescription = userLabel,
+                                        tint = if (uiState.authSession is AuthSession.SignedIn) StudioColors.Cyan else StudioColors.Amber,
                                         modifier = Modifier.size(16.dp),
                                     )
                                     Text(
-                                        text = if (uiState.authSession is AuthSession.Guest) {
-                                            "$userLabel • ${t(lang, "auth_sign_in")}"
-                                        } else {
-                                            "$userLabel • ${t(lang, "auth_sign_out")}"
-                                        },
-                                        style = MaterialTheme.typography.labelMedium,
+                                        text = userLabel,
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                                         color = StudioColors.TextPrimary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
@@ -947,6 +954,83 @@ fun HomeScreen(
                             modifier = Modifier.weight(1f),
                         )
                     }
+                    val batchInteraction = remember { MutableInteractionSource() }
+                    val batchState = uiState.batchQueueState
+                    Card(
+                        onClick = { onNavigate(StudioRoute.BatchQueue) },
+                        interactionSource = batchInteraction,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = StudioColors.ElevatedSurface),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (batchState.isRunning) StudioColors.Cyan else StudioColors.Violet.copy(alpha = 0.45f),
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 56.dp)
+                            .lit(batchInteraction, StudioColors.Cyan, cornerRadius = 16.dp)
+                            .testTag("home_card_batch_queue"),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = StudioColors.Cyan.copy(alpha = 0.16f),
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.QueueMusic,
+                                        contentDescription = t(lang, "tool_batch_queue"),
+                                        tint = StudioColors.Cyan,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                }
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = t(lang, "tool_batch_queue"),
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = StudioColors.TextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = if (batchState.isRunning) {
+                                        val pct = (batchState.overallProgress * 100f).toInt()
+                                        if (lang == AppLanguage.EN) "Running in background ($pct%)" else "قيد المعالجة بالخلفية ($pct%)"
+                                    } else {
+                                        t(lang, "batch_queue_subtitle")
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (batchState.isRunning) StudioColors.Cyan else StudioColors.TextSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (batchState.items.isNotEmpty()) {
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = StudioColors.Cyan.copy(alpha = 0.18f),
+                                ) {
+                                    Text(
+                                        text = "${batchState.items.size}",
+                                        style = TelemetryTextStyle,
+                                        color = StudioColors.Cyan,
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -990,6 +1074,38 @@ fun HomeScreen(
             context.findHostActivity()?.finish()
         },
     )
+
+    if (accountSheetOpen) {
+        SonixAccountBottomSheet(
+            authSession = uiState.authSession,
+            language = lang,
+            onDismiss = { accountSheetOpen = false },
+            onOpenBatchQueue = {
+                accountSheetOpen = false
+                onNavigate(StudioRoute.BatchQueue)
+            },
+            onOpenProjects = {
+                accountSheetOpen = false
+                onNavigate(StudioRoute.ProjectsExport)
+            },
+            onOpenSettings = {
+                accountSheetOpen = false
+                onNavigate(StudioRoute.Settings)
+            },
+            onOpenLanguage = {
+                accountSheetOpen = false
+                langDialogOpen = true
+            },
+            onSignIn = {
+                accountSheetOpen = false
+                viewModel.requestSignIn()
+            },
+            onSignOut = {
+                accountSheetOpen = false
+                viewModel.signOut()
+            },
+        )
+    }
 }
 
 @Composable
@@ -1201,3 +1317,281 @@ private fun ExtraQuickChip(
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SonixAccountBottomSheet(
+    authSession: AuthSession,
+    language: AppLanguage,
+    onDismiss: () -> Unit,
+    onOpenBatchQueue: () -> Unit,
+    onOpenProjects: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenLanguage: () -> Unit,
+    onSignIn: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    val isEn = language == AppLanguage.EN
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val signedIn = authSession as? AuthSession.SignedIn
+    val initialChar = signedIn?.displayName?.trim()?.firstOrNull()?.uppercaseChar()?.toString() ?: "S"
+    val avatarBorderBrush = remember {
+        Brush.linearGradient(colors = listOf(StudioColors.Cyan, StudioColors.Violet))
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = StudioColors.CardSurface,
+        contentColor = StudioColors.TextPrimary,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        modifier = Modifier.testTag("account_bottom_sheet"),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 26.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                text = if (isEn) "Account & Studio Profile" else "حسابي في Sonix ✦",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = StudioColors.TextPrimary,
+            )
+
+            // Account Info Card
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = StudioColors.ElevatedSurface,
+                border = BorderStroke(1.dp, StudioColors.BorderBright),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = StudioColors.BgTop,
+                        border = BorderStroke(2.dp, avatarBorderBrush),
+                        modifier = Modifier.size(56.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (signedIn != null) {
+                                Text(
+                                    text = initialChar,
+                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
+                                    color = StudioColors.Cyan,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Rounded.PersonOutline,
+                                    contentDescription = null,
+                                    tint = StudioColors.Amber,
+                                    modifier = Modifier.size(28.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = signedIn?.displayName ?: if (isEn) "Guest User" else "مستخدم ضيف",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = StudioColors.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = signedIn?.email?.takeIf { it.isNotBlank() }
+                                ?: if (isEn) "Offline studio mode • No linked account" else "وضع الاستوديو المحلي • بدون حساب مرتبط",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioColors.TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = if (signedIn != null) {
+                                StudioColors.Emerald.copy(alpha = 0.16f)
+                            } else {
+                                StudioColors.Amber.copy(alpha = 0.16f)
+                            },
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (signedIn != null) {
+                                    StudioColors.Emerald.copy(alpha = 0.5f)
+                                } else {
+                                    StudioColors.Amber.copy(alpha = 0.5f)
+                                },
+                            ),
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.VerifiedUser,
+                                    contentDescription = null,
+                                    tint = if (signedIn != null) StudioColors.Emerald else StudioColors.Amber,
+                                    modifier = Modifier.size(13.dp),
+                                )
+                                Text(
+                                    text = if (signedIn != null) {
+                                        if (isEn) "Connected & Active" else "حساب متصل ومفعّل"
+                                    } else {
+                                        if (isEn) "Guest Session" else "جلسة ضيف مؤقتة"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = if (signedIn != null) StudioColors.Emerald else StudioColors.Amber,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Quick Actions
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AccountSheetShortcutRow(
+                    icon = Icons.Rounded.QueueMusic,
+                    label = t(language, "tool_batch_queue"),
+                    accent = StudioColors.Cyan,
+                    testTag = "sheet_batch_queue_button",
+                    onClick = onOpenBatchQueue,
+                )
+                AccountSheetShortcutRow(
+                    icon = Icons.Rounded.FolderOpen,
+                    label = t(language, "nav_projects"),
+                    accent = StudioColors.Violet,
+                    testTag = "sheet_projects_button",
+                    onClick = onOpenProjects,
+                )
+                AccountSheetShortcutRow(
+                    icon = Icons.Rounded.Settings,
+                    label = t(language, "section_settings_title"),
+                    accent = StudioColors.Amber,
+                    testTag = "sheet_settings_button",
+                    onClick = onOpenSettings,
+                )
+                AccountSheetShortcutRow(
+                    icon = Icons.Rounded.Language,
+                    label = if (isEn) "App Language" else "لغة التطبيق",
+                    accent = StudioColors.Emerald,
+                    testTag = "sheet_language_button",
+                    onClick = onOpenLanguage,
+                )
+            }
+
+            HorizontalDivider(color = StudioColors.Border)
+
+            if (signedIn != null) {
+                OutlinedButton(
+                    onClick = onSignOut,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, StudioColors.Rose.copy(alpha = 0.6f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = StudioColors.Rose.copy(alpha = 0.14f),
+                        contentColor = StudioColors.RoseBright,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 50.dp)
+                        .testTag("sheet_logout_button"),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.Logout,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (isEn) "Sign Out" else "تسجيل الخروج",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    )
+                }
+            } else {
+                Button(
+                    onClick = onSignIn,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.Cyan,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 50.dp)
+                        .testTag("sheet_login_button"),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.Login,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = t(language, "auth_sign_in"),
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountSheetShortcutRow(
+    icon: ImageVector,
+    label: String,
+    accent: Color,
+    testTag: String,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Surface(
+        onClick = onClick,
+        interactionSource = interaction,
+        shape = RoundedCornerShape(14.dp),
+        color = StudioColors.ElevatedSurface.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, StudioColors.Border),
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 48.dp)
+            .lit(interaction, accent, cornerRadius = 14.dp)
+            .testTag(testTag),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = accent,
+                modifier = Modifier.size(20.dp),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = StudioColors.TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+

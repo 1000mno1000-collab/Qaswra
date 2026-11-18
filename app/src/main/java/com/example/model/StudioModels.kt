@@ -941,3 +941,57 @@ data class SavedAssistantChatSession(
     val updatedAtMs: Long,
     val messages: List<AssistantChatMessage>,
 )
+
+enum class BatchFilterPreset(val titleKey: String) {
+    NONE("batch_filter_none"),
+    VOICE_CLARITY("batch_filter_clarity"),
+    BASS_WARMTH("batch_filter_bass"),
+    STUDIO_RADIO("batch_filter_radio"),
+    ECHO_SPACE("batch_filter_echo"),
+    BRIGHT_AIR("batch_filter_air"),
+    ACTIVE_STUDIO_DSP("batch_filter_active_dsp"),
+}
+
+enum class BatchItemStatus {
+    QUEUED,
+    PROCESSING,
+    COMPLETED,
+    FAILED,
+}
+
+@Immutable
+data class BatchDspSettings(
+    val pitchSemitones: Float = 0f,
+    val speedRatio: Float = 1.0f,
+    val filterPreset: BatchFilterPreset = BatchFilterPreset.VOICE_CLARITY,
+    val normalizeOutput: Boolean = true,
+    val outputFormat: ExportAudioFormat = ExportAudioFormat.M4A,
+)
+
+@Immutable
+data class BatchQueueItem(
+    val id: String,
+    val displayName: String,
+    val sourceUriString: String,
+    val localFilePath: String? = null,
+    val durationMs: Long = 0L,
+    val status: BatchItemStatus = BatchItemStatus.QUEUED,
+    val itemProgress: Float = 0f,
+    val outputFilePath: String? = null,
+    val outputFormat: ExportAudioFormat = ExportAudioFormat.M4A,
+    val errorMessage: String? = null,
+)
+
+@Immutable
+data class BatchQueueUiState(
+    val items: List<BatchQueueItem> = emptyList(),
+    val settings: BatchDspSettings = BatchDspSettings(),
+    val isRunning: Boolean = false,
+    val currentIndex: Int = -1,
+    val overallProgress: Float = 0f,
+    val completedCount: Int = 0,
+    val failedCount: Int = 0,
+    val statusSummary: String? = null,
+    val previewingItemId: String? = null,
+)
+

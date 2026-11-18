@@ -345,6 +345,12 @@ class StudioRepository(private val context: Context) {
         readStereoWavFile(File(audioDir, rec.audioFileName))
     }
 
+    suspend fun getRecordingFile(id: Long): File? = withContext(Dispatchers.IO) {
+        val rec = dao.getRecordingById(id) ?: return@withContext null
+        val file = File(audioDir, rec.audioFileName)
+        if (file.exists() && file.length() > 0L) file else null
+    }
+
     suspend fun deleteRecording(id: Long) = withContext(Dispatchers.IO) {
         val rec = dao.getRecordingById(id)
         rec?.audioFileName?.let { File(audioDir, it).delete() }

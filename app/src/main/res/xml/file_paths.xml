@@ -2,4 +2,5 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="exports" path="exports/" />
     <files-path name="audio_files" path="studio_audio/" />
+    <files-path name="batch_exports" path="batch_exports/" />
 </paths>

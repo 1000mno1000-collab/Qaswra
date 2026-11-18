@@ -122,6 +122,7 @@ import com.example.ui.screens.AudioEditorScreen
 import com.example.ui.screens.AudioMergeScreen
 import com.example.ui.screens.AudioSplitScreen
 import com.example.ui.screens.AuthScreen
+import com.example.ui.screens.BatchQueueScreen
 import com.example.ui.screens.CompressAudioScreen
 import com.example.ui.screens.EchoDetailScreen
 import com.example.ui.screens.EchoReverbScreen
@@ -1014,7 +1015,31 @@ private fun SonixRootApp(
                                 SmartQaLabScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onBack = { navController.popBackStack() },
+                                    onBack = {
+                                        if (!navController.popBackStack()) {
+                                            navController.navigate(StudioRoute.Home) {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                    },
+                                )
+                            }
+                            composable<StudioRoute.BatchQueue> {
+                                BatchQueueScreen(
+                                    uiState = uiState,
+                                    viewModel = viewModel,
+                                    onOpenStudioEditor = {
+                                        navController.navigate(StudioRoute.Editor) {
+                                            launchSingleTop = true
+                                        }
+                                    },
+                                    onBack = {
+                                        if (!navController.popBackStack(StudioRoute.Home, inclusive = false)) {
+                                            navController.navigate(StudioRoute.Home) {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                    },
                                 )
                             }
                         }

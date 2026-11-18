@@ -34,6 +34,7 @@ import com.example.audio.fx.VoiceEffect
 import com.example.audio.fx.VoiceProcessor
 import com.example.audio.network.NetworkImmunityManager
 import com.example.audio.processAudioFileWithFfmpeg
+import com.example.audio.processBatchItemWithDsp
 import com.example.audio.processReelsAudioTemplate
 import com.example.audio.stageLargeFileToCleanAsciiCache
 import com.example.audio.tts.FreeEmotionalTtsClient
@@ -112,6 +113,11 @@ import com.example.model.AudioMarker
 import com.example.model.AudioRecordingItem
 import com.example.model.AuthSession
 import com.example.model.BUILT_IN_PRESETS
+import com.example.model.BatchDspSettings
+import com.example.model.BatchFilterPreset
+import com.example.model.BatchItemStatus
+import com.example.model.BatchQueueItem
+import com.example.model.BatchQueueUiState
 import com.example.model.CloudDraft
 import com.example.model.DeviceAudioItem
 import com.example.model.DspConfig
@@ -284,6 +290,7 @@ data class StudioUiState(
     val updateCheckLoading: Boolean = false,
     val updateCheckResult: AppUpdateCheckResult? = null,
     val updateCheckError: String? = null,
+    val batchQueueState: BatchQueueUiState = BatchQueueUiState(),
 ) {
     val allPresets: List<StudioPreset> get() = customPresets + BUILT_IN_PRESETS
 }
@@ -434,6 +441,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private var activeOnlineJob: Job? = null
     private var smartMixPreviewJob: Job? = null
     private var sleepTimerJob: Job? = null
+    private var batchProcessingJob: Job? = null
     private var cloudPresetsJob: Job? = null
     private var cloudDraftsJob: Job? = null
     private var pendingExportResult: ExportedAudioResult? = null
@@ -3962,7 +3970,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         runCatching { toolPreviewPlayer?.stop() }
         runCatching { toolPreviewPlayer?.release() }
         toolPreviewPlayer = null
-        _uiState.update { it.copy(isToolPreviewPlaying = false) }
+        _uiState.update {
+            it.copy(
+                isToolPreviewPlaying = false,
+                batchQueueState = it.batchQueueState.copy(previewingItemId = null),
+            )
+        }
     }
 
     // Recent Edits Temporary Cache & Diagnostics Helpers
@@ -5421,6 +5434,545 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun getSmartQaFullReport(): String = SmartQaBotEngine.formatFullReport(_uiState.value.language)
 
+    // Batch Processing Queue (Multi-file DSP: Pitch, Speed, Filter, Normalize & Export)
+    fun addBatchUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val app = getApplication<Application>()
+        viewModelScope.launch(safeCoroutineHandler) {
+            val existingKeys = _uiState.value.batchQueueState.items.map { it.sourceUriString }.toMutableSet()
+            val added = mutableListOf<BatchQueueItem>()
+            for (uri in uris) {
+                val uriStr = uri.toString()
+                if (!existingKeys.add(uriStr)) continue
+                runCatching {
+                    app.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                val name = AudioFileUploader.resolveDisplayName(app, uri)
+                added += BatchQueueItem(
+                    id = "batch_${UUID.randomUUID().toString().take(8)}",
+                    displayName = name,
+                    sourceUriString = uriStr,
+                    outputFormat = _uiState.value.batchQueueState.settings.outputFormat,
+                )
+            }
+            if (added.isNotEmpty()) {
+                _uiState.update { cur ->
+                    val merged = cur.batchQueueState.items + added
+                    cur.copy(
+                        batchQueueState = cur.batchQueueState.copy(
+                            items = merged,
+                            completedCount = merged.count { it.status == BatchItemStatus.COMPLETED },
+                            failedCount = merged.count { it.status == BatchItemStatus.FAILED },
+                        ),
+                    )
+                }
+                val isEn = _uiState.value.language == AppLanguage.EN
+                postBanner(
+                    if (isEn) "Added ${added.size} file(s) to batch queue"
+                    else "تمت إضافة ${added.size} ملفات إلى قائمة المعالجة",
+                )
+            }
+        }
+    }
+
+    fun addBatchDeviceAudios(items: List<DeviceAudioItem>) {
+        if (items.isEmpty()) return
+        _uiState.update { cur ->
+            val existingKeys = cur.batchQueueState.items.map { it.sourceUriString }.toMutableSet()
+            val added = items.mapNotNull { dev ->
+                if (!existingKeys.add(dev.uriString)) null
+                else BatchQueueItem(
+                    id = "batch_${UUID.randomUUID().toString().take(8)}",
+                    displayName = dev.displayName,
+                    sourceUriString = dev.uriString,
+                    durationMs = dev.durationMs,
+                    outputFormat = cur.batchQueueState.settings.outputFormat,
+                )
+            }
+            val merged = cur.batchQueueState.items + added
+            cur.copy(
+                batchQueueState = cur.batchQueueState.copy(
+                    items = merged,
+                    completedCount = merged.count { it.status == BatchItemStatus.COMPLETED },
+                    failedCount = merged.count { it.status == BatchItemStatus.FAILED },
+                ),
+            )
+        }
+    }
+
+    fun addBatchRecordings(items: List<AudioRecordingItem>) {
+        if (items.isEmpty()) return
+        viewModelScope.launch(safeCoroutineHandler) {
+            val existingKeys = _uiState.value.batchQueueState.items.map { it.sourceUriString }.toMutableSet()
+            val added = mutableListOf<BatchQueueItem>()
+            for (rec in items) {
+                val file = repository.getRecordingFile(rec.id) ?: continue
+                val key = "recording://${rec.id}"
+                if (!existingKeys.add(key)) continue
+                added += BatchQueueItem(
+                    id = "batch_${UUID.randomUUID().toString().take(8)}",
+                    displayName = rec.title,
+                    sourceUriString = key,
+                    localFilePath = file.absolutePath,
+                    durationMs = rec.durationMs,
+                    outputFormat = _uiState.value.batchQueueState.settings.outputFormat,
+                )
+            }
+            if (added.isNotEmpty()) {
+                _uiState.update { cur ->
+                    val merged = cur.batchQueueState.items + added
+                    cur.copy(
+                        batchQueueState = cur.batchQueueState.copy(
+                            items = merged,
+                            completedCount = merged.count { it.status == BatchItemStatus.COMPLETED },
+                            failedCount = merged.count { it.status == BatchItemStatus.FAILED },
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun removeBatchQueueItem(itemId: String) {
+        if (_uiState.value.batchQueueState.isRunning) return
+        if (_uiState.value.batchQueueState.previewingItemId == itemId) {
+            stopToolPreview()
+        }
+        _uiState.update { cur ->
+            val target = cur.batchQueueState.items.firstOrNull { it.id == itemId }
+            target?.outputFilePath?.let { path -> runCatching { File(path).delete() } }
+            val filtered = cur.batchQueueState.items.filterNot { it.id == itemId }
+            cur.copy(
+                batchQueueState = cur.batchQueueState.copy(
+                    items = filtered,
+                    completedCount = filtered.count { it.status == BatchItemStatus.COMPLETED },
+                    failedCount = filtered.count { it.status == BatchItemStatus.FAILED },
+                    overallProgress = 0f,
+                ),
+            )
+        }
+    }
+
+    fun clearBatchQueue(onlyCompleted: Boolean = false) {
+        if (_uiState.value.batchQueueState.isRunning) return
+        stopToolPreview()
+        _uiState.update { cur ->
+            val currentItems = cur.batchQueueState.items
+            val toKeep = if (onlyCompleted) {
+                currentItems.filter { it.status != BatchItemStatus.COMPLETED }
+            } else {
+                emptyList()
+            }
+            val keepIds = toKeep.map { it.id }.toSet()
+            currentItems.filter { it.id !in keepIds }.forEach { removed ->
+                removed.outputFilePath?.let { p -> runCatching { File(p).delete() } }
+            }
+            cur.copy(
+                batchQueueState = cur.batchQueueState.copy(
+                    items = toKeep,
+                    completedCount = toKeep.count { it.status == BatchItemStatus.COMPLETED },
+                    failedCount = toKeep.count { it.status == BatchItemStatus.FAILED },
+                    overallProgress = 0f,
+                    currentIndex = -1,
+                    statusSummary = null,
+                    previewingItemId = null,
+                ),
+            )
+        }
+    }
+
+    fun updateBatchDspSettings(
+        pitchSemitones: Float? = null,
+        speedRatio: Float? = null,
+        filterPreset: BatchFilterPreset? = null,
+        normalizeOutput: Boolean? = null,
+        outputFormat: ExportAudioFormat? = null,
+    ) {
+        if (_uiState.value.batchQueueState.isRunning) return
+        _uiState.update { cur ->
+            val old = cur.batchQueueState.settings
+            val next = old.copy(
+                pitchSemitones = (pitchSemitones ?: old.pitchSemitones).coerceIn(-12f, 12f),
+                speedRatio = (speedRatio ?: old.speedRatio).coerceIn(0.5f, 2.0f),
+                filterPreset = filterPreset ?: old.filterPreset,
+                normalizeOutput = normalizeOutput ?: old.normalizeOutput,
+                outputFormat = outputFormat ?: old.outputFormat,
+            )
+            cur.copy(batchQueueState = cur.batchQueueState.copy(settings = next))
+        }
+    }
+
+    fun startBatchProcessingQueue() {
+        val currentBatch = _uiState.value.batchQueueState
+        if (currentBatch.isRunning || currentBatch.items.isEmpty()) return
+
+        batchProcessingJob?.cancel()
+        val settings = currentBatch.settings
+        val activeDspSnapshot = _uiState.value.dspConfig
+        val app = getApplication<Application>()
+        val allCompletedAlready = currentBatch.items.all { it.status == BatchItemStatus.COMPLETED }
+
+        val preparedItems = currentBatch.items.map { item ->
+            if (allCompletedAlready || item.status != BatchItemStatus.COMPLETED) {
+                item.copy(
+                    status = BatchItemStatus.QUEUED,
+                    itemProgress = 0f,
+                    errorMessage = null,
+                )
+            } else {
+                item
+            }
+        }
+
+        _uiState.update { cur ->
+            cur.copy(
+                batchQueueState = cur.batchQueueState.copy(
+                    items = preparedItems,
+                    isRunning = true,
+                    currentIndex = 0,
+                    overallProgress = 0f,
+                    completedCount = preparedItems.count { it.status == BatchItemStatus.COMPLETED },
+                    failedCount = 0,
+                    statusSummary = null,
+                ),
+            )
+        }
+
+        batchProcessingJob = viewModelScope.launch(safeCoroutineHandler) {
+            val total = preparedItems.size.coerceAtLeast(1)
+            try {
+                for (index in preparedItems.indices) {
+                    val snapshotList = _uiState.value.batchQueueState.items
+                    val item = snapshotList.getOrNull(index) ?: continue
+                    if (item.status == BatchItemStatus.COMPLETED) continue
+
+                    _uiState.update { cur ->
+                        val updated = cur.batchQueueState.items.mapIndexed { idx, entry ->
+                            if (idx == index) entry.copy(status = BatchItemStatus.PROCESSING, itemProgress = 0.04f) else entry
+                        }
+                        cur.copy(
+                            batchQueueState = cur.batchQueueState.copy(
+                                items = updated,
+                                currentIndex = index,
+                            ),
+                        )
+                    }
+
+                    var tempCopiedSource: File? = null
+                    try {
+                        val localPathFile = item.localFilePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
+                        val resolvedSource: File? = if (localPathFile != null) {
+                            localPathFile
+                        } else {
+                            when (
+                                val up = AudioFileUploader.copyAudioUriToCacheDetailed(app, Uri.parse(item.sourceUriString)) { info ->
+                                    val frac = (info.fraction * 0.20f).coerceIn(0.04f, 0.20f)
+                                    updateBatchItemProgress(index, frac, total)
+                                }
+                            ) {
+                                is AudioUploadOutcome.Success -> {
+                                    tempCopiedSource = up.uploaded.file
+                                    up.uploaded.file
+                                }
+                                is AudioUploadOutcome.Failure -> {
+                                    throw IllegalStateException(up.errorMessage)
+                                }
+                            }
+                        }
+
+                        if (resolvedSource == null || !resolvedSource.exists()) {
+                            throw IllegalStateException("Missing audio source file")
+                        }
+
+                        val result = processBatchItemWithDsp(
+                            context = app,
+                            sourceFile = resolvedSource,
+                            displayBaseName = "${item.displayName.substringBeforeLast('.')}_sonix",
+                            settings = settings,
+                            activeDspConfig = activeDspSnapshot,
+                        ) { procFrac ->
+                            val mapped = if (localPathFile != null) procFrac else (0.20f + procFrac * 0.80f)
+                            updateBatchItemProgress(index, mapped.coerceIn(0.05f, 0.98f), total)
+                        } ?: throw IllegalStateException("Audio engine returned empty output")
+
+                        // Auto-write copy to user's configured default save folder if selected
+                        defaultSaveTreeUriString?.takeIf { it.isNotBlank() }?.let { treeUriStr ->
+                            val cleanOutName = "${item.displayName.substringBeforeLast('.')}_sonix.${result.extension}"
+                            withContext(Dispatchers.IO) {
+                                writeResultToTreeFolder(result, cleanOutName, treeUriStr)
+                            }
+                        }
+
+                        // Index lighter outputs into Studio Recordings library for convenience
+                        if (result.file.length() <= LARGE_AUDIO_THRESHOLD_BYTES) {
+                            runCatching {
+                                AudioDecoder.decodeFile(result.file)?.let { buf ->
+                                    if (buf.frameCount > 0) {
+                                        repository.indexAudioRecording(
+                                            title = "${item.displayName.substringBeforeLast('.')} (Batch)",
+                                            buffer = buf,
+                                            sourceType = RecordingSourceType.IMPORTED,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        _uiState.update { cur ->
+                            val updated = cur.batchQueueState.items.mapIndexed { idx, entry ->
+                                if (idx == index) {
+                                    entry.copy(
+                                        status = BatchItemStatus.COMPLETED,
+                                        itemProgress = 1f,
+                                        outputFilePath = result.file.absolutePath,
+                                        outputFormat = settings.outputFormat,
+                                        errorMessage = null,
+                                    )
+                                } else {
+                                    entry
+                                }
+                            }
+                            cur.copy(
+                                batchQueueState = cur.batchQueueState.copy(
+                                    items = updated,
+                                    completedCount = updated.count { it.status == BatchItemStatus.COMPLETED },
+                                    failedCount = updated.count { it.status == BatchItemStatus.FAILED },
+                                    overallProgress = ((index + 1).toFloat() / total.toFloat()).coerceIn(0f, 1f),
+                                ),
+                            )
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (t: Throwable) {
+                        AppDiagnosticLog.logRecoverable(
+                            toolName = "BatchProcessingQueue",
+                            titleAr = "تعذر معالجة ملف في القائمة الدفعية",
+                            titleEn = "Batch Item Failed",
+                            causeAr = "${item.displayName}: ${t.localizedMessage ?: t.javaClass.simpleName}",
+                            causeEn = "${item.displayName}: ${t.localizedMessage ?: t.javaClass.simpleName}",
+                            errorCode = t.javaClass.simpleName,
+                            throwable = t,
+                        )
+                        _uiState.update { cur ->
+                            val updated = cur.batchQueueState.items.mapIndexed { idx, entry ->
+                                if (idx == index) {
+                                    entry.copy(
+                                        status = BatchItemStatus.FAILED,
+                                        itemProgress = 0f,
+                                        errorMessage = t.localizedMessage ?: t.javaClass.simpleName,
+                                    )
+                                } else {
+                                    entry
+                                }
+                            }
+                            cur.copy(
+                                batchQueueState = cur.batchQueueState.copy(
+                                    items = updated,
+                                    completedCount = updated.count { it.status == BatchItemStatus.COMPLETED },
+                                    failedCount = updated.count { it.status == BatchItemStatus.FAILED },
+                                    overallProgress = ((index + 1).toFloat() / total.toFloat()).coerceIn(0f, 1f),
+                                ),
+                            )
+                        }
+                    } finally {
+                        tempCopiedSource?.let { f -> runCatching { f.delete() } }
+                    }
+                }
+
+                val doneBatch = _uiState.value.batchQueueState
+                val isEn = _uiState.value.language == AppLanguage.EN
+                val summary = if (isEn) {
+                    "Batch finished: ${doneBatch.completedCount} succeeded, ${doneBatch.failedCount} failed"
+                } else {
+                    "اكتملت المعالجة الدفعية: نجاح ${doneBatch.completedCount} • فشل ${doneBatch.failedCount}"
+                }
+                _uiState.update { cur ->
+                    cur.copy(
+                        batchQueueState = cur.batchQueueState.copy(
+                            isRunning = false,
+                            currentIndex = -1,
+                            overallProgress = 1f,
+                            statusSummary = summary,
+                        ),
+                    )
+                }
+                postBanner(summary)
+            } catch (ce: CancellationException) {
+                val isEn = _uiState.value.language == AppLanguage.EN
+                val cancelledMsg = if (isEn) "Batch processing cancelled" else "تم إيقاف المعالجة الدفعية"
+                _uiState.update { cur ->
+                    val resetItems = cur.batchQueueState.items.map { entry ->
+                        if (entry.status == BatchItemStatus.PROCESSING) {
+                            entry.copy(status = BatchItemStatus.QUEUED, itemProgress = 0f)
+                        } else {
+                            entry
+                        }
+                    }
+                    cur.copy(
+                        batchQueueState = cur.batchQueueState.copy(
+                            items = resetItems,
+                            isRunning = false,
+                            currentIndex = -1,
+                            statusSummary = cancelledMsg,
+                        ),
+                    )
+                }
+                throw ce
+            } finally {
+                _uiState.update { cur ->
+                    if (cur.batchQueueState.isRunning) {
+                        cur.copy(
+                            batchQueueState = cur.batchQueueState.copy(
+                                isRunning = false,
+                                currentIndex = -1,
+                            ),
+                        )
+                    } else {
+                        cur
+                    }
+                }
+            }
+        }
+    }
+
+    private fun updateBatchItemProgress(index: Int, itemFrac: Float, totalItems: Int) {
+        _uiState.update { cur ->
+            val updated = cur.batchQueueState.items.mapIndexed { idx, entry ->
+                if (idx == index) entry.copy(itemProgress = itemFrac) else entry
+            }
+            val doneBefore = updated.count { it.status == BatchItemStatus.COMPLETED || it.status == BatchItemStatus.FAILED }
+            val overall = ((doneBefore + itemFrac) / totalItems.coerceAtLeast(1).toFloat()).coerceIn(0f, 0.99f)
+            cur.copy(
+                batchQueueState = cur.batchQueueState.copy(
+                    items = updated,
+                    overallProgress = overall,
+                ),
+            )
+        }
+    }
+
+    fun cancelBatchProcessingQueue() {
+        batchProcessingJob?.cancel()
+        batchProcessingJob = null
+    }
+
+    fun previewBatchOutputItem(item: BatchQueueItem) {
+        val currentPreviewId = _uiState.value.batchQueueState.previewingItemId
+        if (currentPreviewId == item.id && _uiState.value.isToolPreviewPlaying) {
+            stopToolPreview()
+            return
+        }
+        val path = item.outputFilePath ?: return
+        val file = File(path)
+        if (!file.exists() || file.length() <= 0L) {
+            postBanner(
+                if (_uiState.value.language == AppLanguage.EN) "Output file is missing"
+                else "الملف الناتج غير موجود",
+            )
+            return
+        }
+        viewModelScope.launch(safeCoroutineHandler) {
+            stopToolPreview()
+            player.pause()
+            stopMixPreviewPlayer()
+            try {
+                val mp = MediaPlayer().apply {
+                    setDataSource(file.absolutePath)
+                    setOnCompletionListener { stopToolPreview() }
+                    prepare()
+                    start()
+                }
+                toolPreviewPlayer = mp
+                _uiState.update {
+                    it.copy(
+                        isToolPreviewPlaying = true,
+                        batchQueueState = it.batchQueueState.copy(previewingItemId = item.id),
+                    )
+                }
+            } catch (t: Throwable) {
+                stopToolPreview()
+                postBanner(
+                    if (_uiState.value.language == AppLanguage.EN) "Unable to play preview"
+                    else "تعذر تشغيل معاينة الملف الناتج",
+                )
+            }
+        }
+    }
+
+    fun saveBatchOutputItem(item: BatchQueueItem) {
+        val path = item.outputFilePath ?: return
+        val file = File(path)
+        if (!file.exists() || file.length() <= 0L) {
+            postBanner(
+                if (_uiState.value.language == AppLanguage.EN) "Output file not found"
+                else "الملف الناتج غير متاح للحفظ",
+            )
+            return
+        }
+        val ext = file.extension.lowercase().ifBlank { "m4a" }
+        val mime = when (ext) {
+            "wav" -> "audio/wav"
+            "flac" -> "audio/flac"
+            "mp3" -> "audio/mpeg"
+            else -> "audio/mp4"
+        }
+        val cleanBase = "${item.displayName.substringBeforeLast('.')}_sonix"
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .ifBlank { "Sonix_Batch_Output" }
+        dispatchSaveToDevice(ExportedAudioResult(file, ext, mime), "$cleanBase.$ext")
+    }
+
+    fun shareAllBatchOutputs() {
+        val app = getApplication<Application>()
+        val completedFiles = _uiState.value.batchQueueState.items
+            .filter { it.status == BatchItemStatus.COMPLETED && !it.outputFilePath.isNullOrBlank() }
+            .mapNotNull { entry -> File(entry.outputFilePath!!).takeIf { it.exists() && it.length() > 0L } }
+
+        if (completedFiles.isEmpty()) {
+            postBanner(
+                if (_uiState.value.language == AppLanguage.EN) "No completed batch files to share yet"
+                else "لا توجد ملفات مكتملة للمشاركة بعد",
+            )
+            return
+        }
+        val uris = completedFiles.mapNotNull { file ->
+            runCatching { FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file) }.getOrNull()
+        }
+        if (uris.isEmpty()) return
+
+        if (uris.size == 1) {
+            val f = completedFiles.first()
+            val mime = when (f.extension.lowercase()) {
+                "wav" -> "audio/wav"
+                "flac" -> "audio/flac"
+                "mp3" -> "audio/mpeg"
+                else -> "audio/mp4"
+            }
+            _sideEffects.tryEmit(StudioSideEffect.LaunchShareIntent(uris.first(), mime, f.name))
+        } else {
+            _sideEffects.tryEmit(
+                StudioSideEffect.LaunchMultiShareIntent(
+                    uris = uris,
+                    mimeType = "audio/*",
+                    title = "Sonix Batch Outputs (${uris.size})",
+                ),
+            )
+        }
+    }
+
+    fun loadBatchOutputToStudio(
+        item: BatchQueueItem,
+        onComplete: (() -> Unit)? = null,
+    ) {
+        val path = item.outputFilePath ?: return
+        val file = File(path)
+        if (!file.exists() || file.length() <= 0L) return
+        importAudioUri(Uri.fromFile(file), onComplete)
+    }
+
     override fun onCleared() {
         super.onCleared()
         runCatching { Firebase.auth.removeAuthStateListener(authStateListener) }
@@ -5429,6 +5981,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         cloudPresetsJob?.cancel()
         cloudDraftsJob?.cancel()
         sleepTimerJob?.cancel()
+        batchProcessingJob?.cancel()
         smartMixPreviewJob?.cancel()
         deleteTempPreviewFile()
         replaceActiveSourceFile(null)

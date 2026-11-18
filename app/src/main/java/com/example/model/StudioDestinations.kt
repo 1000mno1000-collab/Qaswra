@@ -119,4 +119,7 @@ sealed interface StudioRoute {
 
     @Serializable
     data object VocalSplitter : StudioRoute
+
+    @Serializable
+    data object BatchQueue : StudioRoute
 }
