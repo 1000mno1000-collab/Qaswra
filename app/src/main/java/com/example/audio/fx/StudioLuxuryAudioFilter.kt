@@ -6,13 +6,18 @@ import com.example.audio.CompressorProcessor
 import com.example.audio.StereoBiquadFilter
 import com.example.audio.clamp
 import com.example.audio.normalizeAudio
+import com.example.audio.writeStereoWavFile
+import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.CompressorParams
 import com.example.model.StereoAudioBuffer
 import com.example.model.TtsDeliveryStyle
+import com.example.model.TtsGender
+import com.example.model.TtsPersonaAcousticMode
 import com.example.util.SafeTextGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.max
@@ -21,14 +26,12 @@ import kotlin.math.roundToInt
 import kotlin.math.tanh
 
 /**
- * "تحسين الفخامة الاستوديو" — FFmpegKit-compatible warm studio mastering processor.
+ * "تحسين الفخامة الاستوديو" — FFmpegKit-compatible warm studio & Acoustic Mastering processor.
  *
- * Applies the exact FFmpeg audio filter graph (`highpass` + multi-band warm `equalizer` +
- * studio `acompressor` + `alimiter`):
- * - Uses FFmpegKit (`com.arthenica.ffmpegkit.FFmpegKit`) via reflection if available on classpath.
- * - Executes the parsed filter graph (`equalizer` biquad stages, `acompressor` envelope compressor,
- *   soft harmonic chest warmth, and `alimiter` loudness ceiling) directly in native Kotlin DSP
- *   so studio luxury enhancement works reliably with zero external keys or fees.
+ * يدعم 3 أوضاع هندسية متخصصة عبر FFmpegKit:
+ * - وثائقي (DOCUMENTARY): تعزيز عمق الصدر 110Hz + ضغط ديناميكي ناعم ومهيب.
+ * - بودكاست (PODCAST): فلتر المايكروفون القريب highpass=f=70 + تعزيز وضوح الحروف + acompressor احترافي.
+ * - إلقاء طبيعي (NATURAL): الحفاظ على نقاء الصوت الصافي وتصفية التشويش فقط دون مبالغة.
  */
 object StudioLuxuryAudioFilter {
 
@@ -41,6 +44,105 @@ object StudioLuxuryAudioFilter {
             "acompressor=threshold=-18dB:ratio=3.5:attack=8:release=75:makeup=3.0," +
             "alimiter=limit=0.95"
 
+    fun buildAcousticMasteringFfmpegGraphCandidates(
+        mode: TtsPersonaAcousticMode,
+        style: TtsDeliveryStyle = TtsDeliveryStyle.NATURAL_WARM,
+        gender: TtsGender = TtsGender.MALE,
+        luxuryBoost: Boolean = true,
+    ): List<String> {
+        val extraWarm = if (gender == TtsGender.MALE) 0.5f else 0.0f
+        return when (mode) {
+            TtsPersonaAcousticMode.DOCUMENTARY -> {
+                val boost110 = if (luxuryBoost) 3.8f + extraWarm else 3.2f
+                val primary = listOf(
+                    "highpass=f=55",
+                    "equalizer=f=110:width_type=h:width=85:g=${fmt(boost110)}",
+                    "equalizer=f=240:width_type=h:width=130:g=1.2",
+                    "equalizer=f=2450:width_type=h:width=1100:g=2.0",
+                    "acompressor=threshold=-20dB:ratio=2.8:attack=12:release=110:makeup=2.4",
+                    "alimiter=limit=0.95",
+                ).joinToString(",")
+                val safeSimple = listOf(
+                    "highpass=f=55",
+                    "equalizer=f=110:width_type=h:width=85:g=${fmt(boost110)}",
+                    "acompressor=threshold=-20dB:ratio=2.8:attack=12:release=110:makeup=2.4",
+                    "alimiter=limit=0.95",
+                ).joinToString(",")
+                listOf(primary, safeSimple)
+            }
+            TtsPersonaAcousticMode.PODCAST -> {
+                val presence = when (style) {
+                    TtsDeliveryStyle.ENERGETIC, TtsDeliveryStyle.RADIO_ANCHOR -> 3.0f
+                    else -> 2.6f
+                }
+                val primary = listOf(
+                    "highpass=f=70",
+                    "equalizer=f=150:width_type=h:width=110:g=${fmt(2.6f + extraWarm)}",
+                    "equalizer=f=2750:width_type=h:width=1200:g=${fmt(presence)}",
+                    "equalizer=f=8800:width_type=h:width=2400:g=1.6",
+                    "acompressor=threshold=-17dB:ratio=3.4:attack=6:release=75:makeup=2.8",
+                    "alimiter=limit=0.95",
+                ).joinToString(",")
+                val safeSimple = listOf(
+                    "highpass=f=70",
+                    "equalizer=f=2750:width_type=h:width=1200:g=${fmt(presence)}",
+                    "acompressor=threshold=-17dB:ratio=3.4:attack=6:release=75:makeup=2.8",
+                    "alimiter=limit=0.95",
+                ).joinToString(",")
+                listOf(primary, safeSimple)
+            }
+            TtsPersonaAcousticMode.NATURAL -> {
+                val cleanDenoise = "highpass=f=65,afftdn=nf=-28,alimiter=limit=0.97"
+                val cleanFallback = "highpass=f=65,alimiter=limit=0.97"
+                listOf(cleanDenoise, cleanFallback)
+            }
+        }
+    }
+
+    suspend fun applyAcousticMastering(
+        context: Context,
+        decodedBuffer: StereoAudioBuffer,
+        mode: TtsPersonaAcousticMode,
+        style: TtsDeliveryStyle = TtsDeliveryStyle.NATURAL_WARM,
+        gender: TtsGender = TtsGender.MALE,
+        luxuryBoost: Boolean = true,
+    ): StereoAudioBuffer = withContext(Dispatchers.IO) {
+        if (decodedBuffer.frameCount <= 0) return@withContext decodedBuffer
+        val candidates = buildAcousticMasteringFfmpegGraphCandidates(
+            mode = mode,
+            style = style,
+            gender = gender,
+            luxuryBoost = luxuryBoost,
+        )
+        if (FfmpegKitBridge.isAvailable()) {
+            val sr = decodedBuffer.sampleRate.coerceAtLeast(8000)
+            val cacheDir = File(context.cacheDir, "ff_acoustic_master").apply { mkdirs() }
+            val inWav = File(cacheDir, "am_in_${UUID.randomUUID()}.wav")
+            val outWav = File(cacheDir, "am_out_${UUID.randomUUID()}.wav")
+            try {
+                writeStereoWavFile(inWav, decodedBuffer)
+                for (graph in candidates) {
+                    if (outWav.exists()) outWav.delete()
+                    val cmd = "-y -i \"${inWav.absolutePath}\" -af \"$graph\" -ar $sr -ac 2 \"${outWav.absolutePath}\""
+                    val ok = FfmpegKitBridge.execute(cmd, toolName = "AcousticMastering_${mode.name}", logNonZeroFailure = false)
+                    if (ok && outWav.exists() && outWav.length() > 44L) {
+                        val res = AudioDecoder.decodeFile(outWav)
+                        if (res != null && res.frameCount > 0) {
+                            return@withContext res
+                        }
+                    }
+                }
+            } finally {
+                runCatching { inWav.delete() }
+                runCatching { outWav.delete() }
+            }
+        }
+        // Pure-Kotlin exact DSP fallback preserving the selected acoustic character
+        withContext(Dispatchers.Default) {
+            executeFilterGraphDsp(decodedBuffer, candidates.last())
+        }
+    }
+
     fun buildFilterGraphForStyle(style: TtsDeliveryStyle): String {
         val warmthBoost = clamp(3.6f + (style.warmthDb - 2.0f) * 0.45f, 2.2f, 5.2f)
         val presenceBoost = when (style) {
@@ -52,9 +154,9 @@ object StudioLuxuryAudioFilter {
             else -> 2.0f
         }
         return "highpass=f=70," +
-            "equalizer=f=160:width_type=h:width=115:g=${"%.1f".format(java.util.Locale.US, warmthBoost)}," +
+            "equalizer=f=160:width_type=h:width=115:g=${"%.1f".format(Locale.US, warmthBoost)}," +
             "equalizer=f=320:width_type=h:width=190:g=1.6," +
-            "equalizer=f=3400:width_type=h:width=1400:g=${"%.1f".format(java.util.Locale.US, presenceBoost)}," +
+            "equalizer=f=3400:width_type=h:width=1400:g=${"%.1f".format(Locale.US, presenceBoost)}," +
             "equalizer=f=9000:width_type=h:width=2400:g=1.8," +
             "acompressor=threshold=-18dB:ratio=3.5:attack=8:release=75:makeup=3.0," +
             "alimiter=limit=0.95"
@@ -85,6 +187,8 @@ object StudioLuxuryAudioFilter {
         // Native Kotlin execution of the exact same highpass + equalizer + acompressor + alimiter graph
         executeFilterGraphDsp(decodedBuffer, filterGraph)
     }
+
+    private fun fmt(v: Float): String = "%.1f".format(Locale.US, v)
 
     private suspend fun tryExecuteWithFfmpegKitReflection(
         context: Context,
@@ -124,6 +228,7 @@ object StudioLuxuryAudioFilter {
         val outR = buffer.right.copyOf()
 
         val eqFilters = mutableListOf<StereoBiquadFilter>()
+        var hasCompressor = false
         var compParams = CompressorParams(
             thresholdDb = -18f,
             ratio = 3.5f,
@@ -161,6 +266,7 @@ object StudioLuxuryAudioFilter {
                     eqFilters += StereoBiquadFilter().apply { configurePeaking(sr, freq, q, gain) }
                 }
                 "acompressor" -> {
+                    hasCompressor = true
                     val thresh = args["threshold"]?.replace("dB", "", ignoreCase = true)?.toFloatOrNull() ?: -18f
                     val ratio = args["ratio"]?.toFloatOrNull() ?: 3.5f
                     val attack = args["attack"]?.toFloatOrNull() ?: 8f
@@ -181,7 +287,7 @@ object StudioLuxuryAudioFilter {
             }
         }
 
-        val comp = CompressorProcessor(sr)
+        val comp = if (hasCompressor) CompressorProcessor(sr) else null
         val blockSize = 2048
         val bL = FloatArray(blockSize)
         val bR = FloatArray(blockSize)
@@ -194,12 +300,13 @@ object StudioLuxuryAudioFilter {
             for (filter in eqFilters) {
                 filter.processStereo(bL, bR, count)
             }
-            comp.processStereo(bL, bR, count, compParams)
-
-            // Gentle analog chest warmth & silky studio vocal micro-ambience
-            for (i in 0 until count) {
-                bL[i] = tanh((bL[i] * 1.06).toDouble()).toFloat()
-                bR[i] = tanh((bR[i] * 1.06).toDouble()).toFloat()
+            if (comp != null) {
+                comp.processStereo(bL, bR, count, compParams)
+                // Gentle analog chest warmth & silky studio vocal micro-ambience
+                for (i in 0 until count) {
+                    bL[i] = tanh((bL[i] * 1.06).toDouble()).toFloat()
+                    bR[i] = tanh((bR[i] * 1.06).toDouble()).toFloat()
+                }
             }
 
             System.arraycopy(bL, 0, outL, off, count)

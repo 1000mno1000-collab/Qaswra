@@ -11,6 +11,8 @@ import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
 import com.example.model.TtsEngineMode
 import com.example.model.TtsGender
+import com.example.model.TtsPersonaAcousticMode
+import com.example.model.TtsVoicePersona
 import com.example.util.SafeTextGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -43,6 +45,8 @@ class SmartVoiceRouter {
         pitch: Float,
         language: AppLanguage = AppLanguage.AR,
         studioLuxuryEnhancement: Boolean = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(context),
+        persona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode? = null,
     ): VoiceRouteOutcome = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return@withContext VoiceRouteOutcome.ProviderError("النص فارغ")
@@ -59,6 +63,8 @@ class SmartVoiceRouter {
                 pitch = pitch,
                 language = language,
                 studioLuxuryEnhancement = studioLuxuryEnhancement,
+                persona = persona,
+                acousticMode = acousticMode,
             )
         ) {
             is FreeEmotionalTtsOutcome.Success -> VoiceRouteOutcome.Success(
@@ -115,6 +121,8 @@ class SmartVoiceRouter {
         style: TtsDeliveryStyle,
         speechRate: Float,
         pitch: Float,
+        persona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode? = null,
     ): EdgeTtsSynthResult? = withContext(Dispatchers.IO) {
         when (
             val outcome = synthesizeStudioVoiceWithStatus(
@@ -125,6 +133,8 @@ class SmartVoiceRouter {
                 style = style,
                 speechRate = speechRate,
                 pitch = pitch,
+                persona = persona,
+                acousticMode = acousticMode,
             )
         ) {
             is VoiceRouteOutcome.Success -> outcome.result

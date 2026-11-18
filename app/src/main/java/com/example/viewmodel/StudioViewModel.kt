@@ -33,6 +33,7 @@ import com.example.audio.ai.OnlineSoundItem
 import com.example.audio.ai.SmartAssistantAndSearch
 import com.example.audio.ai.SonixUnifiedAIEngine
 import com.example.audio.ai.ToolGuideResult
+import com.example.audio.fx.StudioLuxuryAudioFilter
 import com.example.audio.fx.VoiceEffect
 import com.example.audio.fx.VoiceProcessor
 import com.example.audio.network.NetworkImmunityManager
@@ -146,7 +147,9 @@ import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
 import com.example.model.TtsEngineMode
 import com.example.model.TtsGender
+import com.example.model.TtsPersonaAcousticMode
 import com.example.model.TtsStudioUiState
+import com.example.model.TtsVoicePersona
 import com.example.model.VocalSplitMode
 import com.example.model.VoiceCharacterPreset
 import com.example.model.VoicePurifyPreset
@@ -3749,13 +3752,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         dualLayerPitchSemitones: Float = 0f,
         dualLayerFormantShift: Float = 1.0f,
         dualLayerMix: Float = 0f,
+        acousticMode: TtsPersonaAcousticMode = TtsPersonaAcousticMode.NATURAL,
+        style: TtsDeliveryStyle = TtsDeliveryStyle.NATURAL_WARM,
+        gender: TtsGender = TtsGender.MALE,
     ) {
         val src = activeBuffer ?: run {
             postBanner(t(_uiState.value.language, "no_audio_loaded"))
             return
         }
         toggleToolBufferPreview("VoiceMorphPreview") {
-            runTransformVoiceOffline(
+            val morphed = runTransformVoiceOffline(
                 source = src,
                 pitchSemitones = pitchSemitones,
                 formantShift = formantShift,
@@ -3773,6 +3779,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 dualLayerMix = dualLayerMix,
                 studioMasteringPolish = true,
             )
+            if (acousticMode == TtsPersonaAcousticMode.NATURAL) {
+                morphed
+            } else {
+                StudioLuxuryAudioFilter.applyAcousticMastering(
+                    context = getApplication(),
+                    decodedBuffer = morphed,
+                    mode = acousticMode,
+                    style = style,
+                    gender = gender,
+                    luxuryBoost = true,
+                )
+            }
         }
     }
 
@@ -4413,6 +4431,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         style: TtsDeliveryStyle,
         speechRate: Float,
         pitch: Float,
+        persona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode? = null,
     ) {
         if (text.isBlank()) {
             _uiState.update { it.copy(ttsUiState = it.ttsUiState.copy(errorMessage = "يرجى إدخال النص أولاً.")) }
@@ -4465,6 +4485,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     pitch = pitch,
                     language = lang,
                     studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
+                    persona = persona,
+                    acousticMode = acousticMode,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -4564,6 +4586,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         speechRate: Float,
         pitch: Float,
         appendToExisting: Boolean,
+        persona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode? = null,
     ) {
         if (text.isBlank()) return
         val lang = _uiState.value.language
@@ -4610,6 +4634,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     pitch = pitch,
                     language = lang,
                     studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
+                    persona = persona,
+                    acousticMode = acousticMode,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -4640,8 +4666,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             resetDspOnNewEntry = existing == null && !isAppend,
                         )
                         val dialectLabel = t(lang, dialect.titleKey)
+                        val personaTag = persona?.let {
+                            if (lang == AppLanguage.EN) it.titleEn else it.titleAr
+                        }
                         val engineTag = if (cur.studioLuxuryEnhancement) "Sonix Neural • Studio" else "Sonix Neural"
-                        repository.indexAudioRecording("$engineTag • $dialectLabel", rawBuf, RecordingSourceType.TTS)
+                        val titleLabel = listOfNotNull(engineTag, personaTag, dialectLabel).joinToString(" • ")
+                        repository.indexAudioRecording(titleLabel, rawBuf, RecordingSourceType.TTS)
                         _uiState.update {
                             it.copy(
                                 ttsUiState = TtsStudioUiState(
@@ -4651,7 +4681,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                                 ),
                             )
                         }
-                        postBanner("تم توليد وإدراج الصوت البشري ذو المشاعر ($dialectLabel) إلى الاستوديو")
+                        val bannerPersona = personaTag?.let { " — $it" }.orEmpty()
+                        postBanner("تم توليد وإدراج الصوت البشري ($dialectLabel$bannerPersona) إلى الاستوديو")
                     }
                     VoiceRouteOutcome.Offline -> {
                         val err = OnlineGuard.offlineErrorMessage(lang)
@@ -4707,13 +4738,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         dualLayerPitchSemitones: Float = 0f,
         dualLayerFormantShift: Float = 1.0f,
         dualLayerMix: Float = 0f,
+        acousticMode: TtsPersonaAcousticMode = TtsPersonaAcousticMode.NATURAL,
+        style: TtsDeliveryStyle = TtsDeliveryStyle.NATURAL_WARM,
+        gender: TtsGender = TtsGender.MALE,
     ) {
         val src = activeBuffer ?: run {
             postBanner("سجّل أو استورد مقطعاً صوتياً أولاً لتغيير الشخصية الصوتية")
             return
         }
         launchSingleFlightProcessing(purifyInitProgress = 0.05f) {
-            val transformed = runTransformVoiceOffline(
+            val rawTransformed = runTransformVoiceOffline(
                 source = src,
                 pitchSemitones = pitchSemitones,
                 formantShift = formantShift,
@@ -4731,9 +4765,22 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 dualLayerMix = dualLayerMix,
                 studioMasteringPolish = true,
             ) { p ->
-                _uiState.update { it.copy(purifyProgress = p) }
+                _uiState.update { it.copy(purifyProgress = p * 0.88f) }
             }
-            setActiveBuffer(transformed, recordUndo = true)
+            val finalTransformed = if (acousticMode == TtsPersonaAcousticMode.NATURAL) {
+                rawTransformed
+            } else {
+                StudioLuxuryAudioFilter.applyAcousticMastering(
+                    context = getApplication(),
+                    decodedBuffer = rawTransformed,
+                    mode = acousticMode,
+                    style = style,
+                    gender = gender,
+                    luxuryBoost = true,
+                )
+            }
+            _uiState.update { it.copy(purifyProgress = 1f) }
+            setActiveBuffer(finalTransformed, recordUndo = true)
             postBanner("تم تحويل الصوت إلى شخصية \"$characterLabel\" بجودة الاستوديو بنجاح")
         }
     }
@@ -4750,6 +4797,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         formantShift: Float,
         warmthDb: Float,
         presenceDb: Float,
+        targetPersona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode = targetPersona?.defaultAcousticMode ?: TtsPersonaAcousticMode.NATURAL,
     ) {
         val src = activeBuffer
         val srcFile = activeSourceFile
@@ -4784,6 +4833,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         warmthDb = warmthDb,
                         presenceDb = presenceDb,
                         language = lang,
+                        targetPersona = targetPersona,
+                        acousticMode = acousticMode,
                     )
                 ) {
                     is SonixUnifiedAIEngine.UnifiedSpeechResult.Success -> {
@@ -4822,6 +4873,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         formantShift: Float,
         warmthDb: Float,
         presenceDb: Float,
+        targetPersona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode = targetPersona?.defaultAcousticMode ?: TtsPersonaAcousticMode.NATURAL,
     ) {
         val src = activeBuffer
         val srcFile = activeSourceFile
@@ -4843,6 +4896,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     warmthDb = warmthDb,
                     presenceDb = presenceDb,
                     language = lang,
+                    targetPersona = targetPersona,
+                    acousticMode = acousticMode,
                 )
             ) {
                 is SonixUnifiedAIEngine.UnifiedSpeechResult.Success -> {

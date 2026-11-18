@@ -9,6 +9,7 @@ import com.example.audio.OnlineGuard
 import com.example.audio.TARGET_SAMPLE_RATE
 import com.example.audio.cache.SmartCacheManager
 import com.example.audio.clamp
+import com.example.audio.fx.StudioLuxuryAudioFilter
 import com.example.audio.network.NetworkImmunityManager
 import com.example.audio.processAudioFileWithFfmpeg
 import com.example.audio.resampleStereo
@@ -22,6 +23,8 @@ import com.example.model.StereoAudioBuffer
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
 import com.example.model.TtsGender
+import com.example.model.TtsPersonaAcousticMode
+import com.example.model.TtsVoicePersona
 import com.example.model.VoiceCharacterPreset
 import com.google.firebase.FirebaseApp
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +47,7 @@ import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -104,21 +108,39 @@ object SonixUnifiedAIEngine {
     }
 
     // -------------------------------------------------------------------------
-    // 1. Arabic Tashkeel Diacritizer (gemini-2.5-flash)
+    // 1. Arabic Tashkeel, Punctuation & Breath-Pause Optimizer (gemini-2.5-flash)
     // -------------------------------------------------------------------------
 
     suspend fun diacritizeArabicIfAvailable(
         context: Context,
         rawText: String,
         dialect: TtsDialect,
+        style: TtsDeliveryStyle = TtsDeliveryStyle.NATURAL_WARM,
+        acousticMode: TtsPersonaAcousticMode = TtsPersonaAcousticMode.NATURAL,
     ): String? = withContext(Dispatchers.IO) {
         val hasArabic = rawText.any { it in '\u0600'..'\u06FF' }
-        if (!hasArabic || rawText.length > 900) return@withContext null
+        if (!hasArabic || rawText.length > 1200) return@withContext null
         val diacriticCount = rawText.count { it in '\u064B'..'\u0652' }
-        if (diacriticCount >= (rawText.length / 8).coerceAtLeast(3)) return@withContext null
+        val alreadyRichlyFormatted = diacriticCount >= (rawText.length / 6).coerceAtLeast(4) &&
+            acousticMode == TtsPersonaAcousticMode.NATURAL
+        if (alreadyRichlyFormatted) return@withContext null
         if (!OnlineGuard.isOnline(context)) return@withContext null
 
         val dialectDesc = describeDialectArabic(dialect.id)
+        val cadenceDirective = when (acousticMode) {
+            TtsPersonaAcousticMode.DOCUMENTARY ->
+                "اضبط علامات الترقيم والوقف الدرامي (... و ، و .) لتناسب إلقاءً وثائقياً رصيناً بوقفات تنفس مدروسة."
+            TtsPersonaAcousticMode.PODCAST ->
+                "اضبط الفواصل الطبيعية (،) وعلامات النبرة العفوية لتناسب بودكاست دافئ وسلس قريب من المايكروفون."
+            TtsPersonaAcousticMode.NATURAL ->
+                "حافظ على سلاسة الجمل وضع فقط التشكيل وعلامات الترقيم الضرورية لإلقاء طبيعي نقي."
+        }
+        val emotionHint = when (style) {
+            TtsDeliveryStyle.DRAMATIC -> "مع إبراز مواضع التفخيم والوقف السينمائي."
+            TtsDeliveryStyle.STORYTELLING -> "مع لمسة شاعرية لطيفة في علامات السرد."
+            TtsDeliveryStyle.RADIO_ANCHOR -> "بصياغة إخبارية دقيقة واضحة الأواخر."
+            else -> ""
+        }
         val payload = JSONObject().apply {
             put(
                 "contents",
@@ -128,7 +150,7 @@ object SonixUnifiedAIEngine {
                         JSONArray().put(
                             JSONObject().put(
                                 "text",
-                                "أضف علامات التشكيل والوقف الطبيعية المناسبة للنطق البشري السليم باللهجة ($dialectDesc) دون تغيير أي كلمة أو إضافة أي شرح. أعد النص فقط:\n$rawText",
+                                "أنت محرر نطق عربي محترف. أضف علامات التشكيل الدقيقة للكلمات باللهجة ($dialectDesc) دون تغيير أو إضافة أو حذف أي كلمة أو شرح. $cadenceDirective $emotionHint\nأعد النص المُشكّل فقط:\n$rawText",
                             ),
                         ),
                     ),
@@ -137,8 +159,8 @@ object SonixUnifiedAIEngine {
             put(
                 "generationConfig",
                 JSONObject().apply {
-                    put("temperature", 0.1)
-                    put("maxOutputTokens", 1200)
+                    put("temperature", 0.12)
+                    put("maxOutputTokens", 1500)
                 },
             )
         }
@@ -147,12 +169,12 @@ object SonixUnifiedAIEngine {
             urlStr = "$ENDPOINT_MULTIMODAL?key=${resolveProjectApiKey()}",
             bodyJson = payload.toString(),
             connectTimeoutMs = 3_500,
-            readTimeoutMs = 5_500,
+            readTimeoutMs = 6_000,
             language = AppLanguage.AR,
         )
         extractTextFromResponse(outcome.json)
             ?.trim()
-            ?.takeIf { it.isNotBlank() && it.length <= rawText.length * 2 + 120 }
+            ?.takeIf { it.isNotBlank() && it.length <= rawText.length * 2 + 160 }
     }
 
     // -------------------------------------------------------------------------
@@ -168,6 +190,8 @@ object SonixUnifiedAIEngine {
         style: TtsDeliveryStyle,
         speechRate: Float,
         language: AppLanguage = AppLanguage.AR,
+        persona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode? = null,
     ): UnifiedSpeechResult = withContext(Dispatchers.IO) {
         // Hybrid Priority 1: Local ONNX Runtime model in assets/models/ (if bundled)
         val localResult = LocalNeuralVoiceEngine.synthesizeTtsIfAvailable(
@@ -191,8 +215,16 @@ object SonixUnifiedAIEngine {
             return@withContext UnifiedSpeechResult.Offline(OnlineGuard.offlineErrorMessage(language))
         }
 
-        val voiceName = pickPrebuiltVoice(dialect, gender, style)
-        val dialectCoaching = buildDialectInstruction(dialect, gender, style, speechRate)
+        val effectiveMode = acousticMode ?: persona?.defaultAcousticMode ?: TtsPersonaAcousticMode.NATURAL
+        val voiceName = persona?.geminiVoiceName ?: pickPrebuiltVoice(dialect, gender, style)
+        val dialectCoaching = buildDialectInstruction(
+            dialect = dialect,
+            gender = gender,
+            style = style,
+            speechRate = speechRate,
+            persona = persona,
+            acousticMode = effectiveMode,
+        )
         val prompt = "$dialectCoaching\n\nالنص المراد نطقه بصوت بشري طبيعي تماماً:\n\"$text\""
 
         val audioAttempt = requestGeminiAudioOutput(
@@ -223,6 +255,8 @@ object SonixUnifiedAIEngine {
         warmthDb: Float,
         presenceDb: Float,
         language: AppLanguage = AppLanguage.AR,
+        targetPersona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode = targetPersona?.defaultAcousticMode ?: TtsPersonaAcousticMode.NATURAL,
     ): UnifiedSpeechResult = withContext(Dispatchers.IO) {
         val workingDir = File(context.cacheDir, "sonix_ai_v2v").apply { mkdirs() }
 
@@ -234,16 +268,20 @@ object SonixUnifiedAIEngine {
             val localVc = LocalNeuralVoiceEngine.convertVoiceIfAvailable(
                 context = context,
                 inputAudio = boundedForLocal,
-                targetCharacterId = targetPreset?.id ?: "custom",
+                targetCharacterId = targetPersona?.id ?: targetPreset?.id ?: "custom",
                 pitchSemitones = pitchSemitones,
             )
             if (localVc != null && localVc.buffer.frameCount > 0) {
                 val mastered = polishConvertedVoiceWithFfmpeg(
+                    context = context,
                     cacheDir = workingDir,
                     buffer = localVc.buffer,
                     warmthDb = warmthDb,
                     presenceDb = presenceDb,
                     bassBoostDb = targetPreset?.bassBoostDb ?: 0f,
+                    acousticMode = acousticMode,
+                    style = targetPersona?.defaultStyle ?: TtsDeliveryStyle.NATURAL_WARM,
+                    gender = targetPersona?.gender ?: TtsGender.MALE,
                 )
                 return@withContext UnifiedSpeechResult.Success(
                     buffer = mastered,
@@ -253,7 +291,7 @@ object SonixUnifiedAIEngine {
             }
         }
 
-        // Priority 2: 100% Online Gemini 2.5 Audio (Voice Analysis + Character Re-Voicing + FFmpegKit)
+        // Priority 2: 100% Online Gemini 2.5 Audio (Voice Analysis + Persona Re-Voicing + FFmpegKit Acoustic Mastering)
         if (!OnlineGuard.isOnline(context) || !NetworkImmunityManager.pingReachable(context)) {
             return@withContext UnifiedSpeechResult.Offline(OnlineGuard.offlineErrorMessage(language))
         }
@@ -270,11 +308,17 @@ object SonixUnifiedAIEngine {
             else "تعذر تجهيز المقطع الصوتي للمعالجة بالذكاء الاصطناعي.",
         )
 
+        val acousticStyleNote = when (acousticMode) {
+            TtsPersonaAcousticMode.DOCUMENTARY -> "مع إضافة التشكيل وعلامات الوقف الوثائقية (... و ،)"
+            TtsPersonaAcousticMode.PODCAST -> "مع إضافة الفواصل الطبيعية المناسبة لحديث البودكاست"
+            TtsPersonaAcousticMode.NATURAL -> "مع التشكيل الخفيف وعلامات الترقيم الدقيقة"
+        }
+
         // Step A: Analyze exact words, dialect, emotion & cadence via Gemini 2.5 Flash Multimodal Audio
         val analysisPrompt = """
             استمع إلى التسجيل الصوتي المرفق بدقة شديدة واستخرج JSON فقط بهذه الحقول:
             {
-              "transcript": "النص المنطوق حرفياً بالكامل مع التشكيل وعلامات الترقيم المناسبة للنطق الطبيعي",
+              "transcript": "النص المنطوق حرفياً بالكامل $acousticStyleNote",
               "emotion": "إحدى القيم: WARM | DRAMATIC | SAD | ENERGETIC | ANGRY | RADIO | STORYTELLING",
               "dialect": "اسم اللهجة العربية أو اللغة المنطوقة مثل: عراقي، سعودي، مصري، شامي، مغربي، فصحى، إنجليزي",
               "gender_hint": "MALE أو FEMALE",
@@ -344,16 +388,19 @@ object SonixUnifiedAIEngine {
 
         val targetCharacterSpec = buildVoiceCharacterCoaching(
             preset = targetPreset,
-            targetLabel = targetLabel,
+            targetPersona = targetPersona,
+            acousticMode = acousticMode,
+            targetLabel = targetPersona?.titleAr ?: targetLabel,
             pitchSemitones = pitchSemitones,
             formantShift = formantShift,
             detectedDialect = detectedDialect,
             detectedEmotion = detectedEmotion,
         )
         val renderPrompt =
-            "$targetCharacterSpec\n\nأعد نطق الكلام التالي حرفياً بنفس المعنى والنبرة والشعور الصوتي:\n\"$verbatimText\""
+            "$targetCharacterSpec\n\nأعد نطق الكلام التالي حرفياً بنفس المعنى والشعور الصوتي والوقفات المدروسة:\n\"$verbatimText\""
 
-        val targetVoiceName = pickCharacterPrebuiltVoice(targetPreset, pitchSemitones, formantShift)
+        val targetVoiceName = targetPersona?.geminiVoiceName
+            ?: pickCharacterPrebuiltVoice(targetPreset, pitchSemitones, formantShift)
         val rendered = requestGeminiAudioOutput(
             cacheDir = workingDir,
             prompt = renderPrompt,
@@ -363,16 +410,21 @@ object SonixUnifiedAIEngine {
         return@withContext when (rendered) {
             is UnifiedSpeechResult.Success -> {
                 val polished = polishConvertedVoiceWithFfmpeg(
+                    context = context,
                     cacheDir = workingDir,
                     buffer = rendered.buffer,
                     warmthDb = warmthDb,
                     presenceDb = presenceDb,
                     bassBoostDb = targetPreset?.bassBoostDb ?: 0f,
+                    acousticMode = acousticMode,
+                    style = targetPersona?.defaultStyle ?: TtsDeliveryStyle.NATURAL_WARM,
+                    gender = targetPersona?.gender
+                        ?: if (formantShift > 1.05f || pitchSemitones > 1.5f) TtsGender.FEMALE else TtsGender.MALE,
                 )
                 UnifiedSpeechResult.Success(
                     buffer = polished,
                     usedLocalOnnx = false,
-                    engineSummaryAr = "Gemini 2.5 Audio + FFmpegKit ($targetLabel)",
+                    engineSummaryAr = "Gemini 2.5 Audio ($targetVoiceName • ${acousticMode.titleAr}) + FFmpegKit",
                 )
             }
             is UnifiedSpeechResult.Offline -> rendered
@@ -816,25 +868,50 @@ object SonixUnifiedAIEngine {
     }
 
     private suspend fun polishConvertedVoiceWithFfmpeg(
+        context: Context,
         cacheDir: File,
         buffer: StereoAudioBuffer,
         warmthDb: Float,
         presenceDb: Float,
         bassBoostDb: Float,
+        acousticMode: TtsPersonaAcousticMode = TtsPersonaAcousticMode.NATURAL,
+        style: TtsDeliveryStyle = TtsDeliveryStyle.NATURAL_WARM,
+        gender: TtsGender = TtsGender.MALE,
     ): StereoAudioBuffer {
-        if (!FfmpegKitBridge.isAvailable() || buffer.frameCount <= 0) return buffer
+        if (buffer.frameCount <= 0) return buffer
+        // Use exact Acoustic Mastering FFmpegKit chains when Documentary or Podcast mode is active
+        if (acousticMode == TtsPersonaAcousticMode.DOCUMENTARY || acousticMode == TtsPersonaAcousticMode.PODCAST) {
+            return StudioLuxuryAudioFilter.applyAcousticMastering(
+                context = context,
+                decodedBuffer = buffer,
+                mode = acousticMode,
+                style = style,
+                gender = gender,
+                luxuryBoost = true,
+            )
+        }
+        if (abs(warmthDb) < 0.25f && abs(presenceDb) < 0.25f && abs(bassBoostDb) < 0.25f) {
+            return StudioLuxuryAudioFilter.applyAcousticMastering(
+                context = context,
+                decodedBuffer = buffer,
+                mode = TtsPersonaAcousticMode.NATURAL,
+                style = style,
+                gender = gender,
+                luxuryBoost = false,
+            )
+        }
+        if (!FfmpegKitBridge.isAvailable()) return buffer
         val rawWav = File(cacheDir, "v2v_raw_${UUID.randomUUID()}.wav")
         val outWav = File(cacheDir, "v2v_pol_${UUID.randomUUID()}.wav")
         return try {
             writeStereoWavFile(rawWav, buffer)
-            val totalWarmth = (warmthDb + bassBoostDb * 0.25f).coerceIn(-4f, 6f)
-            val pres = presenceDb.coerceIn(-4f, 6f)
+            val totalWarmth = (warmthDb + bassBoostDb * 0.2f).coerceIn(-3f, 5f)
+            val pres = presenceDb.coerceIn(-3f, 5f)
             val graph = listOf(
-                "highpass=f=68",
-                "equalizer=f=160:width_type=h:width=120:g=${fmt(totalWarmth)}",
-                "equalizer=f=2550:width_type=h:width=1100:g=${fmt(pres)}",
-                "acompressor=threshold=-18dB:ratio=3.0:attack=8:release=80:makeup=2.2",
-                "alimiter=limit=0.95",
+                "highpass=f=65",
+                "equalizer=f=150:width_type=h:width=115:g=${fmt(totalWarmth)}",
+                "equalizer=f=2600:width_type=h:width=1100:g=${fmt(pres)}",
+                "alimiter=limit=0.96",
             ).joinToString(",")
             val sr = buffer.sampleRate.coerceAtLeast(8000)
             val cmd = "-y -i \"${rawWav.absolutePath}\" -af \"$graph\" -ar $sr -ac 2 \"${outWav.absolutePath}\""
@@ -1075,19 +1152,23 @@ object SonixUnifiedAIEngine {
     ): String {
         return when (gender) {
             TtsGender.MALE -> when (style) {
-                TtsDeliveryStyle.DRAMATIC,
-                TtsDeliveryStyle.RADIO_ANCHOR,
-                -> "Charon"
+                TtsDeliveryStyle.DRAMATIC -> "Charon"
+                TtsDeliveryStyle.RADIO_ANCHOR -> if (dialect.id == "iraqi" || dialect.id == "saudi") "Orus" else "Charon"
                 TtsDeliveryStyle.ENERGETIC,
                 TtsDeliveryStyle.ANGRY,
                 -> "Fenrir"
-                else -> if (dialect.id == "iraqi" || dialect.id == "saudi") "Orus" else "Charon"
+                TtsDeliveryStyle.NATURAL_WARM -> "Orus"
+                TtsDeliveryStyle.STORYTELLING -> "Charon"
+                else -> "Puck"
             }
             TtsGender.FEMALE -> when (style) {
                 TtsDeliveryStyle.SAD,
                 TtsDeliveryStyle.STORYTELLING,
                 -> "Leda"
-                TtsDeliveryStyle.ENERGETIC -> "Kore"
+                TtsDeliveryStyle.DRAMATIC -> "Zephyr"
+                TtsDeliveryStyle.RADIO_ANCHOR,
+                TtsDeliveryStyle.ENERGETIC,
+                -> "Kore"
                 else -> "Aoede"
             }
         }
@@ -1104,7 +1185,7 @@ object SonixUnifiedAIEngine {
             id == "male_calm" -> "Orus"
             id == "female_soft" -> "Leda"
             id == "female_balanced" -> "Aoede"
-            id == "child" -> "Kore"
+            id == "child" -> "Puck"
             pitchSemitones <= -2.0f || formantShift <= 0.92f -> "Charon"
             pitchSemitones >= 2.0f || formantShift >= 1.12f -> "Aoede"
             else -> "Orus"
@@ -1116,6 +1197,8 @@ object SonixUnifiedAIEngine {
         gender: TtsGender,
         style: TtsDeliveryStyle,
         speechRate: Float,
+        persona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode = TtsPersonaAcousticMode.NATURAL,
     ): String {
         val dialectLine = when (dialect.id) {
             "iraqi" -> "تحدث بلكنة عراقية بغدادية أصيلة وطبيعية تماماً (كأنك مذيع أو متحدث عراقي حقيقي)"
@@ -1140,24 +1223,35 @@ object SonixUnifiedAIEngine {
             TtsDeliveryStyle.RADIO_ANCHOR -> "بصوت مذيع إذاعي محترف وواثق ورصين"
             TtsDeliveryStyle.STORYTELLING -> "بأسلوب سرد قصصي شائق وهادئ يجذب المستمع"
         }
+        val acousticGuidance = when (acousticMode) {
+            TtsPersonaAcousticMode.DOCUMENTARY ->
+                "أسلوب الإلقاء الوثائقي: تمهّل بثقة مع وقفات تنفس درامية واضحة وعزم عميق في الصوت."
+            TtsPersonaAcousticMode.PODCAST ->
+                "أسلوب البودكاست: حديث عفوي دافئ ومباشر كأنك تتكلم أمام مايكروفون استوديو قريب من المستمع."
+            TtsPersonaAcousticMode.NATURAL ->
+                "أسلوب إلقاء طبيعي نقي: انسيابية بشرية هادئة بدون مبالغة أو تصنّع."
+        }
         val paceHint = when {
             speechRate < 0.85f -> "بوتيرة هادئة ومتمهلة"
             speechRate > 1.15f -> "بوتيرة سريعة ورشيقة"
             else -> "بوتيرة كلامية طبيعية معتدلة"
         }
         val voiceType = if (gender == TtsGender.MALE) "صوت رجل بشري" else "صوت امرأة بشرية"
-        return "اقرأ النص التالي بصوت $voiceType حقيقي 100% بدون أي طابع آلي أو تقطيع: $dialectLine، $emotionLine، $paceHint. انطق النص المكتوب حرفياً فقط."
+        val personaLine = persona?.geminiDirectionPromptAr?.let { "\nالتوجيه الخاص بالشخصية: $it" }.orEmpty()
+        return "اقرأ النص التالي بصوت $voiceType حقيقي 100% بدون أي طابع آلي أو تقطيع: $dialectLine، $emotionLine، $paceHint.\n$acousticGuidance$personaLine\nانطق النص المكتوب حرفياً فقط واحترم التشكيل وعلامات الوقف."
     }
 
     private fun buildVoiceCharacterCoaching(
         preset: VoiceCharacterPreset?,
+        targetPersona: TtsVoicePersona?,
+        acousticMode: TtsPersonaAcousticMode,
         targetLabel: String,
         pitchSemitones: Float,
         formantShift: Float,
         detectedDialect: String,
         detectedEmotion: String,
     ): String {
-        val personaDesc = when (preset?.id) {
+        val personaDesc = targetPersona?.geminiDirectionPromptAr ?: when (preset?.id) {
             "male_luxury" -> "بصوت رجل وقور، جهوري فخم وعميق يشبه صوت المعلقين السينمائيين"
             "male_calm" -> "بصوت شاب هادئ، متزن ودافئ"
             "female_soft" -> "بصوت أنثوي ناعم، رقيق وواضح"
@@ -1171,7 +1265,12 @@ object SonixUnifiedAIEngine {
                 else -> "بشخصية صوتية طبيعية ($targetLabel)"
             }
         }
-        return "تقمص الشخصية التالية بالكامل وبصوت بشري حقيقي 100%: $personaDesc، مع الحفاظ على اللهجة ($detectedDialect) والانفعال ($detectedEmotion) دون أي طابع آلي."
+        val acousticHint = when (acousticMode) {
+            TtsPersonaAcousticMode.DOCUMENTARY -> "بإلقاء وثائقي عميق مع وقفات درامية مدروسة"
+            TtsPersonaAcousticMode.PODCAST -> "بأسلوب بودكاست حميمي قريب من المايكروفون"
+            TtsPersonaAcousticMode.NATURAL -> "بنقاء صوتي طبيعي وواضح"
+        }
+        return "تقمص الشخصية التالية بالكامل وبصوت بشري حقيقي 100%: $personaDesc ($acousticHint)، مع الحفاظ على اللهجة ($detectedDialect) والانفعال ($detectedEmotion) دون أي طابع آلي."
     }
 
     private data class JsonPostOutcome(val json: JSONObject?, val error: String? = null)

@@ -7,6 +7,8 @@ import com.example.model.StereoAudioBuffer
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
 import com.example.model.TtsGender
+import com.example.model.TtsPersonaAcousticMode
+import com.example.model.TtsVoicePersona
 import java.io.File
 
 internal data class GeminiTtsAttempt(
@@ -25,10 +27,14 @@ internal object GeminiNeuralTtsClient {
         context: Context,
         rawText: String,
         dialect: TtsDialect,
+        style: TtsDeliveryStyle = TtsDeliveryStyle.NATURAL_WARM,
+        acousticMode: TtsPersonaAcousticMode = TtsPersonaAcousticMode.NATURAL,
     ): String? = SonixUnifiedAIEngine.diacritizeArabicIfAvailable(
         context = context,
         rawText = rawText,
         dialect = dialect,
+        style = style,
+        acousticMode = acousticMode,
     )
 
     suspend fun synthesizeNaturalHumanSpeech(
@@ -40,6 +46,8 @@ internal object GeminiNeuralTtsClient {
         style: TtsDeliveryStyle,
         speechRate: Float,
         language: AppLanguage = AppLanguage.AR,
+        persona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode? = null,
     ): GeminiTtsAttempt {
         return when (
             val res = SonixUnifiedAIEngine.synthesizeHumanSpeech(
@@ -51,6 +59,8 @@ internal object GeminiNeuralTtsClient {
                 style = style,
                 speechRate = speechRate,
                 language = language,
+                persona = persona,
+                acousticMode = acousticMode,
             )
         ) {
             is SonixUnifiedAIEngine.UnifiedSpeechResult.Success ->

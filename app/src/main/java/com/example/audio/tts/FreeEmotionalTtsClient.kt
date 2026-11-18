@@ -24,6 +24,8 @@ import com.example.model.StereoAudioBuffer
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
 import com.example.model.TtsGender
+import com.example.model.TtsPersonaAcousticMode
+import com.example.model.TtsVoicePersona
 import com.example.util.SafeTextGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -90,6 +92,8 @@ object FreeEmotionalTtsClient {
         pitch: Float,
         language: AppLanguage = AppLanguage.AR,
         studioLuxuryEnhancement: Boolean = getSavedStudioLuxuryEnhancement(context),
+        persona: TtsVoicePersona? = null,
+        acousticMode: TtsPersonaAcousticMode? = null,
     ): FreeEmotionalTtsOutcome = withContext(Dispatchers.IO) {
         val rawClean = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim(), applyLightDiacritics = false)
         if (rawClean.isEmpty()) {
@@ -109,9 +113,20 @@ object FreeEmotionalTtsClient {
         val cacheDir = File(context.cacheDir, "free_emotional_tts").apply { mkdirs() }
         val collectedErrors = mutableListOf<String>()
 
-        // Enrich undiacritized Arabic text with natural dialectal Tashkeel when available
-        val neuralText = GeminiNeuralTtsClient.diacritizeArabicIfAvailable(context, rawClean, dialect)
-            ?: ArabicTextDiacritizer.normalizeAndHintForTts(rawClean, applyLightDiacritics = true)
+        val effectiveMode = acousticMode ?: persona?.defaultAcousticMode ?: when (style) {
+            TtsDeliveryStyle.DRAMATIC, TtsDeliveryStyle.STORYTELLING -> TtsPersonaAcousticMode.DOCUMENTARY
+            TtsDeliveryStyle.RADIO_ANCHOR -> TtsPersonaAcousticMode.PODCAST
+            else -> TtsPersonaAcousticMode.NATURAL
+        }
+
+        // Background Arabic pronunciation shaping: Tashkeel, punctuation & documentary/podcast pauses
+        val neuralText = GeminiNeuralTtsClient.diacritizeArabicIfAvailable(
+            context = context,
+            rawText = rawClean,
+            dialect = dialect,
+            style = style,
+            acousticMode = effectiveMode,
+        ) ?: ArabicTextDiacritizer.normalizeAndHintForTts(rawClean, applyLightDiacritics = true)
 
         // 1A. Primary: Hybrid Local ONNX Engine -> Gemini 2.5 Flash Native Human Audio TTS
         var attempt = run {
@@ -124,6 +139,8 @@ object FreeEmotionalTtsClient {
                 style = style,
                 speechRate = speechRate,
                 language = language,
+                persona = persona,
+                acousticMode = effectiveMode,
             )
             if (gem.failureReason != null) collectedErrors += gem.failureReason
             CloudTtsSynthesisAttempt(
@@ -210,6 +227,7 @@ object FreeEmotionalTtsClient {
             inputBuffer = stitchedBuffer,
             gender = gender,
             style = style,
+            acousticMode = effectiveMode,
             speechRate = speechRate,
             pitch = pitch,
             prosodyAlreadyAppliedInEngine = attempt.prosodyAppliedInEngine,
@@ -412,6 +430,7 @@ object FreeEmotionalTtsClient {
         inputBuffer: StereoAudioBuffer,
         gender: TtsGender,
         style: TtsDeliveryStyle,
+        acousticMode: TtsPersonaAcousticMode,
         speechRate: Float,
         pitch: Float,
         prosodyAlreadyAppliedInEngine: Boolean,
@@ -421,78 +440,40 @@ object FreeEmotionalTtsClient {
 
         val sr = inputBuffer.sampleRate.coerceAtLeast(8000)
 
-        // When prosodyAlreadyAppliedInEngine == true (Gemini / Edge Neural), preserve the authentic
-        // neural voice timbre with zero offline pitch/tempo warping.
-        // Even for emergency fallback streams, avoid heavy semitone shifting (-3.4st caused robotic sound).
+        // Preserve authentic Gemini / Edge Neural voice timbre with zero offline pitch/tempo warping
         val sliderSemitones = (12.0 * ln(pitch.coerceIn(0.65f, 1.45f).toDouble()) / ln(2.0)).toFloat()
-        val totalSemitones = if (prosodyAlreadyAppliedInEngine) {
-            0f
-        } else {
-            clamp(sliderSemitones, -4.5f, 4.5f)
-        }
-        val targetTempo = if (prosodyAlreadyAppliedInEngine) {
-            1.0f
-        } else {
-            1.0f
-        }
+        val totalSemitones = if (prosodyAlreadyAppliedInEngine) 0f else clamp(sliderSemitones, -4.5f, 4.5f)
+        val targetTempo = 1.0f
 
         val needsPitchOrTempo = abs(totalSemitones) >= 0.08f || abs(targetTempo - 1.0f) >= 0.03f
 
-        // Skip extra EQ/compression when Edge Neural generated natively and Studio Luxury Warmth toggle is OFF.
-        if (!studioLuxuryEnhancement && !needsPitchOrTempo) {
-            return@withContext normalizeAudio(inputBuffer, -1.5f)
+        if (!needsPitchOrTempo) {
+            return@withContext StudioLuxuryAudioFilter.applyAcousticMastering(
+                context = context,
+                decodedBuffer = inputBuffer,
+                mode = acousticMode,
+                style = style,
+                gender = gender,
+                luxuryBoost = studioLuxuryEnhancement,
+            )
         }
 
-        val warmthDb = clamp(
-            style.warmthDb + (if (gender == TtsGender.MALE) 1.1f else 0.4f) + 0.7f,
-            1.4f,
-            5.0f,
+        val (rubberbandChain, soxrFallbackChain) = buildPitchAndSpeedFfmpegChains(
+            semitones = totalSemitones,
+            tempoRatio = targetTempo,
         )
-        // Presence tuned around 2.4–2.8 kHz for crystal-clear Arabic articulation (مخارج الحروف مثل الهاء والخاء)
-        val presenceDb = when (style) {
-            TtsDeliveryStyle.DRAMATIC -> 2.3f
-            TtsDeliveryStyle.RADIO_ANCHOR -> 2.6f
-            TtsDeliveryStyle.ENERGETIC -> 2.2f
-            TtsDeliveryStyle.ANGRY -> 2.4f
-            TtsDeliveryStyle.SAD -> 1.3f
-            TtsDeliveryStyle.STORYTELLING -> 1.9f
-            TtsDeliveryStyle.NATURAL_WARM -> 2.0f
-        }
-        val airDb = when (style) {
-            TtsDeliveryStyle.SAD -> 1.0f
-            TtsDeliveryStyle.DRAMATIC -> 1.5f
-            else -> 1.8f
-        }
-
-        val warmthChain = if (studioLuxuryEnhancement) {
-            listOf(
-                "highpass=f=65",
-                "equalizer=f=155:width_type=h:width=115:g=${fmt(warmthDb)}",
-                "equalizer=f=315:width_type=h:width=180:g=1.4",
-                "equalizer=f=2450:width_type=h:width=1100:g=${fmt(presenceDb)}",
-                "equalizer=f=4800:width_type=h:width=1500:g=-1.5",
-                "equalizer=f=9200:width_type=h:width=2600:g=${fmt(airDb)}",
-                "acompressor=threshold=-18dB:ratio=3.2:attack=8:release=75:makeup=2.8",
-                "alimiter=limit=0.95",
-            )
-        } else {
-            listOf(
-                "highpass=f=65",
-                "equalizer=f=2450:width_type=h:width=1100:g=1.0",
-                "alimiter=limit=0.96",
-            )
-        }
-
-        val ffmpegCandidates: List<String> = if (needsPitchOrTempo) {
-            val (rubberbandChain, soxrFallbackChain) = buildPitchAndSpeedFfmpegChains(
-                semitones = totalSemitones,
-                tempoRatio = targetTempo,
-            )
-            listOf(rubberbandChain, soxrFallbackChain).map { chain ->
-                (listOf(chain) + warmthChain).joinToString(",")
+        val acousticCandidates = StudioLuxuryAudioFilter.buildAcousticMasteringFfmpegGraphCandidates(
+            mode = acousticMode,
+            style = style,
+            gender = gender,
+            luxuryBoost = studioLuxuryEnhancement,
+        )
+        val ffmpegCandidates: List<String> = buildList {
+            for (pitchChain in listOf(rubberbandChain, soxrFallbackChain)) {
+                for (acGraph in acousticCandidates) {
+                    add("$pitchChain,$acGraph")
+                }
             }
-        } else {
-            listOf(warmthChain.joinToString(","))
         }
 
         val ffmpegResult = tryExecuteFfmpegKit(
@@ -506,32 +487,18 @@ object FreeEmotionalTtsClient {
         }
 
         // Pure-Kotlin click-free fallback if FFmpegKit is unavailable
-        val pitchedAndTimed = if (needsPitchOrTempo) {
-            applyPitchAndSpeedOffline(
-                buffer = inputBuffer,
-                semitones = totalSemitones,
-                tempoRatio = targetTempo,
-            )
-        } else {
-            inputBuffer
-        }
-
-        if (!studioLuxuryEnhancement) {
-            return@withContext normalizeAudio(pitchedAndTimed, -1.5f)
-        }
-
-        val eqSmoothed = applyEmotionalToneEqualizer(
-            buffer = pitchedAndTimed,
-            warmthDb = warmthDb,
-            presenceDb = presenceDb,
-            airDb = airDb,
+        val pitchedAndTimed = applyPitchAndSpeedOffline(
+            buffer = inputBuffer,
+            semitones = totalSemitones,
+            tempoRatio = targetTempo,
         )
-
-        StudioLuxuryAudioFilter.applyLuxuryStudioEnhancement(
+        StudioLuxuryAudioFilter.applyAcousticMastering(
             context = context,
-            inputAudioFile = null,
-            decodedBuffer = eqSmoothed,
+            decodedBuffer = pitchedAndTimed,
+            mode = acousticMode,
             style = style,
+            gender = gender,
+            luxuryBoost = studioLuxuryEnhancement,
         )
     }
 
