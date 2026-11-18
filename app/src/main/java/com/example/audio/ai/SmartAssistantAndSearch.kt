@@ -775,7 +775,10 @@ object SmartAssistantAndSearch {
                 providerLabel = "ArchiveDownload",
             )
             val bytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes ?: return@withContext null
-            tmpFile.writeBytes(bytes)
+            java.io.BufferedOutputStream(java.io.FileOutputStream(tmpFile), 8192).use { out ->
+                out.write(bytes)
+                out.flush()
+            }
             SmartCacheManager.pruneManagedBuckets(context)
             AudioDecoder.decodeFile(tmpFile) ?: run {
                 val cmd = "-y -i \"${tmpFile.absolutePath}\" -vn -ac 2 -ar 44100 -c:a pcm_s16le \"${wavFallback.absolutePath}\""

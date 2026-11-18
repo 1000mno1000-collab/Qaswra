@@ -12,8 +12,9 @@ import com.example.model.PlatformLoudnessTarget
 import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
@@ -107,74 +108,77 @@ private fun buildFlacFrameHeader(
     return raw
 }
 
-private fun encodeFlacBytes(
+private fun encodeFlacToFile(
     buffer: StereoAudioBuffer,
+    outputFile: File,
     onProgress: ((Float) -> Unit)?,
-): ByteArray {
+) {
     val totalSamples = buffer.frameCount
     val sampleRate = clamp(buffer.sampleRate, 1, 655350)
     val blockSize = 4096
-    val stream = ByteArrayOutputStream()
+    outputFile.parentFile?.mkdirs()
 
-    val intro = ByteArray(42)
-    intro[0] = 0x66
-    intro[1] = 0x4c
-    intro[2] = 0x61
-    intro[3] = 0x43
-    intro[4] = 0x80.toByte()
-    intro[5] = 0x00
-    intro[6] = 0x00
-    intro[7] = 34
+    BufferedOutputStream(FileOutputStream(outputFile), 8192).use { stream ->
+        val intro = ByteArray(42)
+        intro[0] = 0x66
+        intro[1] = 0x4c
+        intro[2] = 0x61
+        intro[3] = 0x43
+        intro[4] = 0x80.toByte()
+        intro[5] = 0x00
+        intro[6] = 0x00
+        intro[7] = 34
 
-    val minBlock = if (totalSamples in 16 until blockSize) totalSamples else blockSize
-    intro[8] = ((minBlock shr 8) and 0xff).toByte()
-    intro[9] = (minBlock and 0xff).toByte()
-    intro[10] = ((blockSize shr 8) and 0xff).toByte()
-    intro[11] = (blockSize and 0xff).toByte()
+        val minBlock = if (totalSamples in 16 until blockSize) totalSamples else blockSize
+        intro[8] = ((minBlock shr 8) and 0xff).toByte()
+        intro[9] = (minBlock and 0xff).toByte()
+        intro[10] = ((blockSize shr 8) and 0xff).toByte()
+        intro[11] = (blockSize and 0xff).toByte()
 
-    val packed = ((sampleRate.toLong() and 0xfffffL) shl 44) or
-        (1L shl 41) or
-        (15L shl 36) or
-        (totalSamples.toLong() and 0xffffffffL)
-    for (i in 0 until 8) {
-        intro[18 + i] = ((packed ushr ((7 - i) * 8)) and 0xffL).toByte()
-    }
-    stream.write(intro)
-
-    var offset = 0
-    var frameNumber = 0
-    while (offset < totalSamples) {
-        val count = min(blockSize, totalSamples - offset)
-        val header = buildFlacFrameHeader(frameNumber, count, sampleRate)
-        val frameData = ByteArray(header.size + 2 + count * 4)
-        System.arraycopy(header, 0, frameData, 0, header.size)
-        var p = header.size
-
-        frameData[p++] = 0x02
-        for (i in 0 until count) {
-            val s = (clamp(buffer.left[offset + i], -1f, 1f) * 32767f).roundToInt()
-            frameData[p++] = ((s shr 8) and 0xff).toByte()
-            frameData[p++] = (s and 0xff).toByte()
+        val packed = ((sampleRate.toLong() and 0xfffffL) shl 44) or
+            (1L shl 41) or
+            (15L shl 36) or
+            (totalSamples.toLong() and 0xffffffffL)
+        for (i in 0 until 8) {
+            intro[18 + i] = ((packed ushr ((7 - i) * 8)) and 0xffL).toByte()
         }
+        stream.write(intro)
 
-        frameData[p++] = 0x02
-        for (i in 0 until count) {
-            val s = (clamp(buffer.right[offset + i], -1f, 1f) * 32767f).roundToInt()
-            frameData[p++] = ((s shr 8) and 0xff).toByte()
-            frameData[p++] = (s and 0xff).toByte()
+        var offset = 0
+        var frameNumber = 0
+        while (offset < totalSamples) {
+            val count = min(blockSize, totalSamples - offset)
+            val header = buildFlacFrameHeader(frameNumber, count, sampleRate)
+            val frameData = ByteArray(header.size + 2 + count * 4)
+            System.arraycopy(header, 0, frameData, 0, header.size)
+            var p = header.size
+
+            frameData[p++] = 0x02
+            for (i in 0 until count) {
+                val s = (clamp(buffer.left[offset + i], -1f, 1f) * 32767f).roundToInt()
+                frameData[p++] = ((s shr 8) and 0xff).toByte()
+                frameData[p++] = (s and 0xff).toByte()
+            }
+
+            frameData[p++] = 0x02
+            for (i in 0 until count) {
+                val s = (clamp(buffer.right[offset + i], -1f, 1f) * 32767f).roundToInt()
+                frameData[p++] = ((s shr 8) and 0xff).toByte()
+                frameData[p++] = (s and 0xff).toByte()
+            }
+
+            val crc16 = computeFlacCrc16(frameData)
+            stream.write(frameData)
+            stream.write((crc16 shr 8) and 0xff)
+            stream.write(crc16 and 0xff)
+
+            offset += count
+            frameNumber++
+            onProgress?.invoke(min(0.99f, offset.toFloat() / maxOf(1, totalSamples)))
         }
-
-        val crc16 = computeFlacCrc16(frameData)
-        stream.write(frameData)
-        stream.write((crc16 shr 8) and 0xff)
-        stream.write(crc16 and 0xff)
-
-        offset += count
-        frameNumber++
-        onProgress?.invoke(min(0.99f, offset.toFloat() / maxOf(1, totalSamples)))
+        stream.flush()
     }
     onProgress?.invoke(1f)
-    return stream.toByteArray()
 }
 
 private fun encodeM4aFile(
@@ -314,13 +318,13 @@ suspend fun exportRenderedAudioToFile(
     val result = when (format) {
         ExportAudioFormat.WAV -> {
             val out = File(exportDir, "${cleanBase}_$safeStamp.wav")
-            out.writeBytes(encodeStereoWavBytes(prepared))
+            writeStereoWavFile(out, prepared)
             onProgress?.invoke(1f)
             ExportedAudioResult(out, "wav", "audio/wav")
         }
         ExportAudioFormat.FLAC -> {
             val out = File(exportDir, "${cleanBase}_$safeStamp.flac")
-            out.writeBytes(encodeFlacBytes(prepared, onProgress))
+            encodeFlacToFile(prepared, out, onProgress)
             ExportedAudioResult(out, "flac", "audio/flac")
         }
         ExportAudioFormat.MP3 -> {
@@ -348,7 +352,7 @@ suspend fun exportRenderedAudioToFile(
                     ExportedAudioResult(m4aFile, "m4a", "audio/mp4")
                 } else {
                     val wavFallback = File(exportDir, "${cleanBase}_$safeStamp.wav")
-                    wavFallback.writeBytes(encodeStereoWavBytes(prepared))
+                    writeStereoWavFile(wavFallback, prepared)
                     onProgress?.invoke(1f)
                     ExportedAudioResult(wavFallback, "wav", "audio/wav")
                 }
@@ -361,7 +365,7 @@ suspend fun exportRenderedAudioToFile(
                 ExportedAudioResult(m4aFile, "m4a", "audio/mp4")
             } else {
                 val wavFallback = File(exportDir, "${cleanBase}_$safeStamp.wav")
-                wavFallback.writeBytes(encodeStereoWavBytes(prepared))
+                writeStereoWavFile(wavFallback, prepared)
                 onProgress?.invoke(1f)
                 ExportedAudioResult(wavFallback, "wav", "audio/wav")
             }

@@ -209,11 +209,33 @@ fun InAppAudioPickerScreen(
         stopPreview()
         previewingUri = item.uriString
         previewCopyName = item.displayName
-        previewCopyProgress = 0f
 
         previewCopyJob = scope.launch {
             try {
                 val uri = Uri.parse(item.uriString)
+                val directMp = MediaPlayer()
+                val directOk = runCatching {
+                    directMp.setDataSource(context, uri)
+                    directMp.setOnPreparedListener { prepared -> runCatching { prepared.start() } }
+                    directMp.setOnCompletionListener { stopPreview() }
+                    directMp.setOnErrorListener { _, what, extra ->
+                        stopPreview()
+                        viewModel.showStatusBanner("MediaPlayerError: what=$what extra=$extra")
+                        true
+                    }
+                    previewPlayer = directMp
+                    directMp.prepareAsync()
+                    true
+                }.getOrElse {
+                    runCatching { directMp.release() }
+                    false
+                }
+                if (directOk) {
+                    previewCopyProgress = null
+                    return@launch
+                }
+
+                previewCopyProgress = 0f
                 val uploadOutcome = AudioFileUploader.copyAudioUriToCacheDetailed(context, uri) { info ->
                     previewCopyProgress = info.fraction.coerceIn(0f, 1f)
                 }
@@ -229,7 +251,6 @@ fun InAppAudioPickerScreen(
                 previewCachedFile = uploaded.file
                 val mp = MediaPlayer()
                 try {
-                    // Open MediaPlayer strictly via local cacheDir file.absolutePath after 100% copy
                     mp.setDataSource(uploaded.file.absolutePath)
                     mp.setOnPreparedListener { prepared ->
                         runCatching { prepared.start() }

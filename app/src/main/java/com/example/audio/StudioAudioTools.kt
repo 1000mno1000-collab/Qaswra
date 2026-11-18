@@ -958,9 +958,10 @@ suspend fun stageLargeFileToCleanAsciiCache(
     if (uploadedFile.renameTo(target) && target.exists() && target.length() > 0L) {
         return@withContext target
     }
-    uploadedFile.inputStream().buffered(65_536).use { inp ->
-        target.outputStream().buffered(65_536).use { out ->
-            inp.copyTo(out, 65_536)
+    uploadedFile.inputStream().buffered(8192).use { inp ->
+        java.io.BufferedOutputStream(java.io.FileOutputStream(target), 8192).use { out ->
+            inp.copyTo(out, 8192)
+            out.flush()
         }
     }
     runCatching { uploadedFile.delete() }
@@ -1243,6 +1244,9 @@ suspend fun processBatchItemWithDsp(
     }
 
     // Pure-Kotlin offline path (used for Active Studio DSP chain or when FFmpeg is unavailable)
+    if (AudioDecoder.shouldStreamOnDisk(sourceFile)) {
+        return@withContext null
+    }
     val decoded = AudioDecoder.decodeFileWithProgress(sourceFile) { dec ->
         onProgress((0.10f + dec * 0.25f).coerceIn(0.10f, 0.35f))
     } ?: return@withContext null

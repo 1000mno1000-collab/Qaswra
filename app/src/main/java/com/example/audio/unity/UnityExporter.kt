@@ -6,6 +6,7 @@ import com.example.audio.resampleStereo
 import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -148,30 +149,42 @@ object UnityExporter {
         val byteRate = UNITY_SAMPLE_RATE * numChannels * (bitsPerSample / 8)
         val blockAlign = numChannels * (bitsPerSample / 8)
         val dataSize = numFrames * blockAlign
-        val totalBytes = 44 + dataSize
 
-        val out = ByteArray(totalBytes)
-        val bb = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+        val header = ByteArray(44)
+        val hb = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+        hb.put("RIFF".toByteArray(Charsets.US_ASCII))
+        hb.putInt(36 + dataSize)
+        hb.put("WAVE".toByteArray(Charsets.US_ASCII))
+        hb.put("fmt ".toByteArray(Charsets.US_ASCII))
+        hb.putInt(16)
+        hb.putShort(1) // PCM s16le
+        hb.putShort(numChannels.toShort())
+        hb.putInt(UNITY_SAMPLE_RATE)
+        hb.putInt(byteRate)
+        hb.putShort(blockAlign.toShort())
+        hb.putShort(bitsPerSample.toShort())
+        hb.put("data".toByteArray(Charsets.US_ASCII))
+        hb.putInt(dataSize)
 
-        bb.put("RIFF".toByteArray(Charsets.US_ASCII))
-        bb.putInt(36 + dataSize)
-        bb.put("WAVE".toByteArray(Charsets.US_ASCII))
-        bb.put("fmt ".toByteArray(Charsets.US_ASCII))
-        bb.putInt(16)
-        bb.putShort(1) // PCM s16le
-        bb.putShort(numChannels.toShort())
-        bb.putInt(UNITY_SAMPLE_RATE)
-        bb.putInt(byteRate)
-        bb.putShort(blockAlign.toShort())
-        bb.putShort(bitsPerSample.toShort())
-        bb.put("data".toByteArray(Charsets.US_ASCII))
-        bb.putInt(dataSize)
+        val chunkBytes = ByteArray(8192)
+        val bb = ByteBuffer.wrap(chunkBytes).order(ByteOrder.LITTLE_ENDIAN)
+        val framesPerChunk = chunkBytes.size / 2
 
-        for (i in 0 until numFrames) {
-            val mono = (buffer.left[i] + buffer.right[i]) * 0.5f
-            val sample = (clamp(mono, -1f, 1f) * 32767f).roundToInt().coerceIn(-32768, 32767)
-            bb.putShort(sample.toShort())
+        BufferedOutputStream(FileOutputStream(outputFile), 8192).use { out ->
+            out.write(header)
+            var offset = 0
+            while (offset < numFrames) {
+                val count = minOf(framesPerChunk, numFrames - offset)
+                bb.clear()
+                for (i in 0 until count) {
+                    val mono = (buffer.left[offset + i] + buffer.right[offset + i]) * 0.5f
+                    val sample = (clamp(mono, -1f, 1f) * 32767f).roundToInt().coerceIn(-32768, 32767)
+                    bb.putShort(sample.toShort())
+                }
+                out.write(chunkBytes, 0, count * 2)
+                offset += count
+            }
+            out.flush()
         }
-        outputFile.writeBytes(out)
     }
 }

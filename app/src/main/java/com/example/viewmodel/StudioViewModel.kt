@@ -26,9 +26,12 @@ import com.example.audio.MergeStudioParams
 import com.example.audio.NativeSpeechState
 import com.example.audio.OnlineGuard
 import com.example.audio.ReelsTemplateParams
+import com.example.audio.ai.LocalModelStatus
+import com.example.audio.ai.LocalNeuralVoiceEngine
 import com.example.audio.ai.OnlineSoundHistoryItem
 import com.example.audio.ai.OnlineSoundItem
 import com.example.audio.ai.SmartAssistantAndSearch
+import com.example.audio.ai.SonixUnifiedAIEngine
 import com.example.audio.ai.ToolGuideResult
 import com.example.audio.fx.VoiceEffect
 import com.example.audio.fx.VoiceProcessor
@@ -99,7 +102,7 @@ import com.example.data.RecentEditsCacheManager
 import com.example.data.StudioRepository
 import com.example.data.ai.AiRepository
 import com.example.data.ai.AiResponse
-import com.example.data.ai.FirebaseUnprovisionedAiRepository
+import com.example.data.ai.SonixUnifiedAiRepository
 import com.example.data.remote.FirestoreStudioRepository
 import com.example.diagnostics.AppDiagnosticEntry
 import com.example.diagnostics.AppDiagnosticLog
@@ -145,6 +148,7 @@ import com.example.model.TtsEngineMode
 import com.example.model.TtsGender
 import com.example.model.TtsStudioUiState
 import com.example.model.VocalSplitMode
+import com.example.model.VoiceCharacterPreset
 import com.example.model.VoicePurifyPreset
 import com.example.network.AppUpdateCheckResult
 import com.example.network.AppUpdateManager
@@ -291,6 +295,11 @@ data class StudioUiState(
     val updateCheckResult: AppUpdateCheckResult? = null,
     val updateCheckError: String? = null,
     val batchQueueState: BatchQueueUiState = BatchQueueUiState(),
+    val localModelStatus: LocalModelStatus = LocalModelStatus(),
+    val isVoiceAiConverting: Boolean = false,
+    val voiceAiStatusNote: String? = null,
+    val smartMasterAnalyzingAi: Boolean = false,
+    val transcriptionProgressLabel: String? = null,
 ) {
     val allPresets: List<StudioPreset> get() = customPresets + BUILT_IN_PRESETS
 }
@@ -298,7 +307,7 @@ data class StudioUiState(
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = StudioRepository(application)
     private val firestoreRepo = FirestoreStudioRepository(application)
-    private val aiRepository: AiRepository = FirebaseUnprovisionedAiRepository()
+    private val aiRepository: AiRepository = SonixUnifiedAiRepository(application)
     private val smartVoiceRouter = SmartVoiceRouter()
     private val voiceProcessor = VoiceProcessor()
     private var ttsPreviewPlayer: MediaPlayer? = null
@@ -509,6 +518,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update {
             it.copy(
                 studioLuxuryEnhancement = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(appCtx),
+                localModelStatus = LocalNeuralVoiceEngine.detectLocalModels(appCtx),
             )
         }
 
@@ -1492,9 +1502,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 val title = uploaded.displayName.substringBeforeLast('.').ifEmpty { "ملف مستورد" }
-                if (uploaded.file.length() > LARGE_AUDIO_THRESHOLD_BYTES) {
-                    // > 10 MB Guard: Never decode full file/WAV into RAM; stream waveform via 64 KB chunks
-                    // and pass original cacheDir file path directly to player & FFmpegKit.
+                if (withContext(Dispatchers.IO) { AudioDecoder.shouldStreamOnDisk(uploaded.file) }) {
+                    // Zero-RAM Guard: Never decode full large/long audio files into RAM;
+                    // inspect <1s via 8192-byte streaming & pass file.absolutePath to player/FFmpegKit.
                     val stagedFile = stageLargeFileToCleanAsciiCache(app, uploaded.file, prefix = "main")
                     tempCachedFile = null // Ownership transferred to staged activeSourceFile
                     val meta = AudioDecoder.inspectLargeAudioStreaming(stagedFile, buckets = 120) { frac ->
@@ -1989,7 +1999,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
 
-                if (uploaded.file.length() > LARGE_AUDIO_THRESHOLD_BYTES) {
+                if (withContext(Dispatchers.IO) { AudioDecoder.shouldStreamOnDisk(uploaded.file) }) {
                     val stagedBg = stageLargeFileToCleanAsciiCache(app, uploaded.file, prefix = "bg")
                     cachedFile = null // Ownership transferred to mixBgSourceFile
                     val meta = AudioDecoder.inspectLargeAudioStreaming(stagedBg, buckets = 96) { frac ->
@@ -2456,7 +2466,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
 
-                if (srcFile != null || uploaded.file.length() > LARGE_AUDIO_THRESHOLD_BYTES) {
+                if (srcFile != null || withContext(Dispatchers.IO) { AudioDecoder.shouldStreamOnDisk(uploaded.file) }) {
                     val (f1, del1) = resolveAsDiskSourceFile(src, srcFile, "ap_1")
                     val stagedExtra = stageLargeFileToCleanAsciiCache(app, uploaded.file, prefix = "ap_2")
                     try {
@@ -3189,7 +3199,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // AI Studio (100% Online Only — guarded by OnlineGuard & 6-Layer NetworkImmunityManager)
+    // AI Studio (100% Online Only — SonixUnifiedAIEngine via Gemini 2.5 Audio API)
     fun transcribeActiveAudio() {
         val lang = _uiState.value.language
         val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), lang)
@@ -3206,7 +3216,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         val src = activeBuffer
-        if (src == null) {
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
             _uiState.update {
                 it.copy(
                     transcriptionState = AiStreamState(
@@ -3223,6 +3234,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     isOnlineTaskRunning = true,
                     onlineTaskLabel = "AI Transcription",
+                    transcriptionProgressLabel = null,
                     transcriptionState = AiStreamState(isLoading = true),
                 )
             }
@@ -3240,7 +3252,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     postBanner(netErr)
                     return@launch
                 }
-                when (val res = aiRepository.transcribeAudio(src, lang)) {
+                val res = aiRepository.transcribeAudioSource(
+                    buffer = src,
+                    sourceFile = srcFile,
+                    language = lang,
+                ) { progressMsg ->
+                    _uiState.update { it.copy(transcriptionProgressLabel = progressMsg) }
+                }
+                when (res) {
                     is AiResponse.Success -> _uiState.update {
                         it.copy(
                             transcriptionState = AiStreamState(
@@ -3263,6 +3282,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         isOnlineTaskRunning = false,
                         onlineTaskLabel = "",
+                        transcriptionProgressLabel = null,
                         transcriptionState = it.transcriptionState.copy(isLoading = false),
                     )
                 }
@@ -3271,7 +3291,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun clearTranscription() {
-        _uiState.update { it.copy(transcriptionState = AiStreamState()) }
+        _uiState.update { it.copy(transcriptionState = AiStreamState(), transcriptionProgressLabel = null) }
     }
 
     fun runSmartAutoMaster() {
@@ -3290,13 +3310,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 return@launchSingleFlightProcessing
             }
             pushUndoSnapshot(debounced = false)
-            val analysis = withContext(Dispatchers.Default) {
+            val acousticAnalysis = withContext(Dispatchers.Default) {
                 analyzeAndOptimizeAudio(sampleBuf, _uiState.value.dspConfig)
             }
+            val lang = _uiState.value.language
             _uiState.update {
                 it.copy(
-                    smartMasterState = analysis,
-                    dspConfig = analysis.optimizedConfig,
+                    smartMasterState = acousticAnalysis,
+                    smartMasterAnalyzingAi = OnlineGuard.isOnline(getApplication()),
+                    dspConfig = acousticAnalysis.optimizedConfig,
                     activePresetId = null,
                     selectedPresetLabel = "Smart Auto-Master",
                     canUndoEdit = undoStack.isNotEmpty(),
@@ -3304,14 +3326,91 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     hasUnsavedChanges = true,
                 )
             }
-            syncPlayerConfig(analysis.optimizedConfig)
+            syncPlayerConfig(acousticAnalysis.optimizedConfig)
             scheduleTempPreviewRender()
             postBanner("تم تحليل الصوت وتطبيق الماسترينغ الذكي تلقائياً")
+
+            // Enrich with Gemini 2.5 Flash Multimodal Audio Engineer diagnosis & 1-tap FFmpegKit filter chain
+            if (OnlineGuard.isOnline(getApplication())) {
+                try {
+                    val aiRec = SonixUnifiedAIEngine.analyzeAudioForSmartEngineer(
+                        context = getApplication(),
+                        sourceBuffer = src,
+                        sourceFile = srcFile,
+                        acousticMetrics = acousticAnalysis,
+                        language = lang,
+                    )
+                    if (aiRec != null) {
+                        val combinedActions = (aiRec.recommendations + acousticAnalysis.appliedActions).distinct()
+                        _uiState.update { cur ->
+                            cur.copy(
+                                smartMasterAnalyzingAi = false,
+                                smartMasterState = (cur.smartMasterState ?: acousticAnalysis).copy(
+                                    detectedProfile = aiRec.detectedProfile,
+                                    appliedActions = combinedActions,
+                                    aiDiagnosticNotes = aiRec.diagnosticNotes,
+                                    recommendedFfmpegFilter = aiRec.recommendedFfmpegFilter,
+                                    isAiCloudAnalyzed = true,
+                                    ffmpegFilterApplied = false,
+                                ),
+                            )
+                        }
+                    } else {
+                        _uiState.update { it.copy(smartMasterAnalyzingAi = false) }
+                    }
+                } catch (_: Throwable) {
+                    _uiState.update { it.copy(smartMasterAnalyzingAi = false) }
+                }
+            }
+        }
+    }
+
+    fun applyAiEngineerFfmpegFilter() {
+        val analysis = _uiState.value.smartMasterState ?: return
+        val filterGraph = analysis.recommendedFfmpegFilter?.takeIf { it.isNotBlank() } ?: return
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
+            postBanner("قم بتحميل أو تسجيل مقطع صوتي أولاً")
+            return
+        }
+        launchSingleFlightProcessing(purifyInitProgress = 0.2f) {
+            val (newBuf, newFile) = SonixUnifiedAIEngine.applyRecommendedFfmpegFilter(
+                context = getApplication(),
+                sourceBuffer = src,
+                sourceFile = srcFile,
+                filterGraph = filterGraph,
+            )
+            when {
+                newBuf != null && newBuf.frameCount > 0 -> {
+                    setActiveBuffer(newBuf, recordUndo = true)
+                    _uiState.update { cur ->
+                        cur.copy(
+                            purifyProgress = 1.0f,
+                            smartMasterState = cur.smartMasterState?.copy(ffmpegFilterApplied = true),
+                        )
+                    }
+                    postBanner("تم تطبيق سلسلة فلاتر مهندس الصوت الذكي عبر FFmpegKit بنجاح")
+                }
+                newFile != null && newFile.exists() -> {
+                    applyProcessedDiskSourceFile(newFile, appliedToolLabel = "SmartAiFfmpegMaster")
+                    _uiState.update { cur ->
+                        cur.copy(
+                            purifyProgress = 1.0f,
+                            smartMasterState = cur.smartMasterState?.copy(ffmpegFilterApplied = true),
+                        )
+                    }
+                    postBanner("تم تطبيق سلسلة فلاتر مهندس الصوت الذكي على الملف الكبير عبر FFmpegKit بنجاح")
+                }
+                else -> {
+                    postBanner("تعذر تنفيذ سلسلة FFmpegKit المقترحة، إعدادات الماسترينغ الصوتية مفعلة بالفعل")
+                }
+            }
         }
     }
 
     fun clearSmartMasterAnalysis() {
-        _uiState.update { it.copy(smartMasterState = null) }
+        _uiState.update { it.copy(smartMasterState = null, smartMasterAnalyzingAi = false) }
     }
 
     fun askSearchAssistant(query: String) {
@@ -4021,17 +4120,43 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     postBanner("انتهت صلاحية الجلسة المؤقتة لهذا التعديل")
                     return@launch
                 }
-                val decoded = withContext(Dispatchers.IO) { AudioDecoder.decodeFile(file) }
-                if (decoded == null || decoded.frameCount <= 0) {
-                    postBanner("تعذر استرجاع الملف المؤقت")
-                    return@launch
-                }
-                setActiveBuffer(decoded, recordUndo = false, resetDspOnNewEntry = false)
-                _uiState.update {
-                    it.copy(
-                        activeProjectName = entry.audioName,
-                        restoredToolSession = entry,
-                    )
+                if (withContext(Dispatchers.IO) { AudioDecoder.shouldStreamOnDisk(file) }) {
+                    val staged = stageLargeFileToCleanAsciiCache(getApplication(), file, prefix = "recent")
+                    val meta = AudioDecoder.inspectLargeAudioStreaming(staged, buckets = 120) {}
+                    if (meta == null) {
+                        runCatching { staged.delete() }
+                        postBanner("تعذر استرجاع الملف المؤقت")
+                        return@launch
+                    }
+                    undoStack.clear()
+                    redoStack.clear()
+                    activeBuffer = null
+                    replaceActiveSourceFile(staged)
+                    activeSourceSampleRate = meta.sampleRate
+                    player.setSourceFile(staged, meta.durationMs, meta.sampleRate, resetPosition = true)
+                    _uiState.update {
+                        it.copy(
+                            hasAudio = true,
+                            durationMs = meta.durationMs,
+                            waveformPeaks = meta.waveformPeaks,
+                            originalPeakDbfs = meta.peakDbfs,
+                            activeProjectName = entry.audioName,
+                            restoredToolSession = entry,
+                        )
+                    }
+                } else {
+                    val decoded = withContext(Dispatchers.IO) { AudioDecoder.decodeFile(file) }
+                    if (decoded == null || decoded.frameCount <= 0) {
+                        postBanner("تعذر استرجاع الملف المؤقت")
+                        return@launch
+                    }
+                    setActiveBuffer(decoded, recordUndo = false, resetDspOnNewEntry = false)
+                    _uiState.update {
+                        it.copy(
+                            activeProjectName = entry.audioName,
+                            restoredToolSession = entry,
+                        )
+                    }
                 }
                 val route = when (entry.toolId) {
                     "editor" -> StudioRoute.Editor
@@ -4610,6 +4735,131 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
             setActiveBuffer(transformed, recordUndo = true)
             postBanner("تم تحويل الصوت إلى شخصية \"$characterLabel\" بجودة الاستوديو بنجاح")
+        }
+    }
+
+    /**
+     * تحويل صوت بشري ذكي (Voice-to-Voice) عبر المحرك الهجين:
+     * 1. نموذج ONNX المحلي في حال توفره داخل `assets/models/`
+     * 2. Gemini 2.5 Audio Multimodal + إعادة الصياغة الصوتي بالشخصية المستهدفة + تلميع FFmpegKit
+     */
+    fun convertVoiceWithAi(
+        preset: VoiceCharacterPreset?,
+        targetLabel: String,
+        pitchSemitones: Float,
+        formantShift: Float,
+        warmthDb: Float,
+        presenceDb: Float,
+    ) {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
+            postBanner("سجّل أو استورد مقطعاً صوتياً أولاً لتحويل الشخصية بالذكاء الاصطناعي")
+            return
+        }
+        val lang = _uiState.value.language
+        activeOnlineJob?.cancel()
+        activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
+            stopToolPreview()
+            player.pause()
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    isVoiceAiConverting = true,
+                    isOnlineTaskRunning = true,
+                    onlineTaskLabel = "AI Voice-to-Voice",
+                    voiceAiStatusNote = null,
+                )
+            }
+            try {
+                when (
+                    val res = SonixUnifiedAIEngine.convertVoiceToVoice(
+                        context = getApplication(),
+                        sourceBuffer = src,
+                        sourceFile = srcFile,
+                        targetPreset = preset,
+                        targetLabel = targetLabel,
+                        pitchSemitones = pitchSemitones,
+                        formantShift = formantShift,
+                        warmthDb = warmthDb,
+                        presenceDb = presenceDb,
+                        language = lang,
+                    )
+                ) {
+                    is SonixUnifiedAIEngine.UnifiedSpeechResult.Success -> {
+                        setActiveBuffer(res.buffer, recordUndo = src != null)
+                        _uiState.update {
+                            it.copy(voiceAiStatusNote = res.engineSummaryAr)
+                        }
+                        postBanner("تم تحويل الشخصية الصوتية بالذكاء الاصطناعي ($targetLabel) بنجاح")
+                    }
+                    is SonixUnifiedAIEngine.UnifiedSpeechResult.Offline -> {
+                        _uiState.update { it.copy(voiceAiStatusNote = res.message) }
+                        postBanner(res.message)
+                    }
+                    is SonixUnifiedAIEngine.UnifiedSpeechResult.Error -> {
+                        _uiState.update { it.copy(voiceAiStatusNote = res.message) }
+                        postBanner(res.message)
+                    }
+                }
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isVoiceAiConverting = false,
+                        isOnlineTaskRunning = false,
+                        onlineTaskLabel = "",
+                    )
+                }
+            }
+        }
+    }
+
+    fun previewVoiceWithAi(
+        preset: VoiceCharacterPreset?,
+        targetLabel: String,
+        pitchSemitones: Float,
+        formantShift: Float,
+        warmthDb: Float,
+        presenceDb: Float,
+    ) {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
+            postBanner(t(_uiState.value.language, "no_audio_loaded"))
+            return
+        }
+        val lang = _uiState.value.language
+        toggleToolBufferPreview("AiVoiceToVoicePreview") {
+            when (
+                val res = SonixUnifiedAIEngine.convertVoiceToVoice(
+                    context = getApplication(),
+                    sourceBuffer = src,
+                    sourceFile = srcFile,
+                    targetPreset = preset,
+                    targetLabel = targetLabel,
+                    pitchSemitones = pitchSemitones,
+                    formantShift = formantShift,
+                    warmthDb = warmthDb,
+                    presenceDb = presenceDb,
+                    language = lang,
+                )
+            ) {
+                is SonixUnifiedAIEngine.UnifiedSpeechResult.Success -> {
+                    _uiState.update { it.copy(voiceAiStatusNote = res.engineSummaryAr) }
+                    res.buffer
+                }
+                is SonixUnifiedAIEngine.UnifiedSpeechResult.Offline -> {
+                    _uiState.update { it.copy(voiceAiStatusNote = res.message) }
+                    postBanner(res.message)
+                    null
+                }
+                is SonixUnifiedAIEngine.UnifiedSpeechResult.Error -> {
+                    _uiState.update { it.copy(voiceAiStatusNote = res.message) }
+                    postBanner(res.message)
+                    null
+                }
+            }
         }
     }
 
@@ -5707,7 +5957,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         }
 
                         // Index lighter outputs into Studio Recordings library for convenience
-                        if (result.file.length() <= LARGE_AUDIO_THRESHOLD_BYTES) {
+                        if (!withContext(Dispatchers.IO) { AudioDecoder.shouldStreamOnDisk(result.file) }) {
                             runCatching {
                                 AudioDecoder.decodeFile(result.file)?.let { buf ->
                                     if (buf.frameCount > 0) {

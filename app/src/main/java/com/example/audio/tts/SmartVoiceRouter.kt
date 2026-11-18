@@ -14,8 +14,9 @@ import com.example.model.TtsGender
 import com.example.util.SafeTextGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.net.URLEncoder
 import java.util.Locale
 
@@ -93,7 +94,10 @@ class SmartVoiceRouter {
         )
         if (edgeBytes != null && NetworkImmunityManager.isValidAudioPayload(edgeBytes, "audio/mpeg")) {
             val wrote = runCatching {
-                outputFile.writeBytes(edgeBytes)
+                BufferedOutputStream(FileOutputStream(outputFile), 8192).use { out ->
+                    out.write(edgeBytes)
+                    out.flush()
+                }
                 outputFile.length() > 512L
             }.getOrDefault(false)
             if (wrote) return@withContext true
@@ -136,29 +140,32 @@ class SmartVoiceRouter {
     ): Boolean {
         val tl = localeTag.substringBefore('-').lowercase(Locale.US).ifBlank { "ar" }
         val chunks = splitTextIntoChunks(text, maxChars = 180)
-        val combined = ByteArrayOutputStream()
-        for (chunk in chunks) {
-            val encoded = URLEncoder.encode(chunk, "UTF-8")
-            val urls = listOf(
-                "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$encoded",
-                "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$encoded",
-                "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=$tl&q=$encoded",
-            )
-            val outcome = NetworkImmunityManager.fetchAudioWithFallback(
-                urls = urls,
-                context = context,
-                headers = mapOf("Referer" to "https://translate.google.com/"),
-                providerLabel = "GoogleCloudTTS($tl)",
-            )
-            val chunkBytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes ?: return false
-            combined.write(chunkBytes)
-        }
-        val payload = combined.toByteArray()
-        if (payload.size <= 512) return false
-        return runCatching {
-            out.writeBytes(payload)
-            true
+        var totalWritten = 0L
+        val wrote = runCatching {
+            BufferedOutputStream(FileOutputStream(out), 8192).use { stream ->
+                for (chunk in chunks) {
+                    val encoded = URLEncoder.encode(chunk, "UTF-8")
+                    val urls = listOf(
+                        "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$encoded",
+                        "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$encoded",
+                        "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=$tl&q=$encoded",
+                    )
+                    val outcome = NetworkImmunityManager.fetchAudioWithFallback(
+                        urls = urls,
+                        context = context,
+                        headers = mapOf("Referer" to "https://translate.google.com/"),
+                        providerLabel = "GoogleCloudTTS($tl)",
+                    )
+                    val chunkBytes = (outcome as? NetworkFetchOutcome.Success)?.value?.bytes ?: return false
+                    stream.write(chunkBytes)
+                    totalWritten += chunkBytes.size
+                }
+                stream.flush()
+            }
+            totalWritten > 512L
         }.getOrDefault(false)
+        if (!wrote) runCatching { out.delete() }
+        return wrote
     }
 
     private fun splitTextIntoChunks(text: String, maxChars: Int): List<String> {

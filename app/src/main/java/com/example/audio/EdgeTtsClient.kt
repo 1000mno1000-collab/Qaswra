@@ -9,9 +9,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
@@ -22,6 +24,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
+import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 import kotlin.math.roundToInt
@@ -56,12 +59,12 @@ object EdgeTtsClient {
     @Volatile
     private var clockSkewSeconds: Long = 0L
 
-    private fun generateSecMsGec(): String {
+    private fun generateSecMsGec(token: String = TRUSTED_CLIENT_TOKEN): String {
         val unixSeconds = (System.currentTimeMillis() / 1000L) + clockSkewSeconds
         var ticksSeconds = unixSeconds + WIN_EPOCH_SEC
         ticksSeconds -= (ticksSeconds % 300L)
         val ticks100Ns = ticksSeconds * 10_000_000L
-        val payload = "${ticks100Ns}$TRUSTED_CLIENT_TOKEN"
+        val payload = "${ticks100Ns}$token"
         val digest = MessageDigest.getInstance("SHA-256").digest(payload.toByteArray(Charsets.US_ASCII))
         return digest.joinToString("") { "%02X".format(it) }
     }
@@ -80,10 +83,12 @@ object EdgeTtsClient {
         .replace("'", "&apos;")
 
     private fun formatNaturalSsmlText(rawText: String): String {
-        return escapeXml(rawText)
-            .replace(Regex("\\s*([،,;؛])\\s*"), "$1 ")
-            .replace(Regex("\\s*([.!؟?])\\s*"), "$1 ")
+        val escaped = escapeXml(rawText)
             .replace(Regex("\\s+"), " ")
+            .trim()
+        return escaped
+            .replace(Regex("([،,;؛])\\s*"), "$1 <break time='105ms'/> ")
+            .replace(Regex("([.!؟?])\\s+"), "$1 <break time='185ms'/> ")
             .trim()
     }
 
@@ -148,14 +153,16 @@ object EdgeTtsClient {
             }
 
             var lastError: String? = null
+            val versions = listOf(CHROMIUM_FULL_VERSION, "131.0.2903.112")
             for (attempt in 0..1) {
-                val attemptOutcome = executeSingleWebSocketAttempt(cleanSsml)
+                val ver = versions[attempt.coerceIn(0, versions.lastIndex)]
+                val attemptOutcome = executeSingleWebSocketAttempt(cleanSsml, ver)
                 if (attemptOutcome.bytes != null) {
                     return@withContext attemptOutcome
                 }
                 lastError = attemptOutcome.failureReason
-                val shouldRetryClockSkew = attempt == 0 && (lastError?.contains("403") == true)
-                if (!shouldRetryClockSkew) {
+                val shouldRetry = attempt == 0 && (lastError?.contains("403") == true || lastError?.contains("EOF") == true)
+                if (!shouldRetry) {
                     break
                 }
             }
@@ -163,15 +170,21 @@ object EdgeTtsClient {
         }
     } ?: EdgeTtsRawOutcome(null, "Edge Neural TTS timed out")
 
-    private fun executeSingleWebSocketAttempt(cleanSsml: String): EdgeTtsRawOutcome {
+    private fun executeSingleWebSocketAttempt(
+        cleanSsml: String,
+        chromiumVersion: String = CHROMIUM_FULL_VERSION,
+    ): EdgeTtsRawOutcome {
         val connectionId = UUID.randomUUID().toString().replace("-", "")
         val requestId = UUID.randomUUID().toString().replace("-", "")
         val secMsGec = generateSecMsGec()
+        val secMsGecVersion = "1-$chromiumVersion"
+        val userAgent =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chromiumVersion Safari/537.36 Edg/$chromiumVersion"
         val path =
             "/consumer/speech/synthesize/readaloud/edge/v1" +
                 "?TrustedClientToken=$TRUSTED_CLIENT_TOKEN" +
                 "&Sec-MS-GEC=$secMsGec" +
-                "&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION" +
+                "&Sec-MS-GEC-Version=$secMsGecVersion" +
                 "&ConnectionId=$connectionId"
 
         var socket: SSLSocket? = null
@@ -179,7 +192,11 @@ object EdgeTtsClient {
         return try {
             val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
             socket = (factory.createSocket(HOST, PORT) as SSLSocket).apply {
-                soTimeout = 13_000
+                soTimeout = 14_000
+                val params = sslParameters
+                params.serverNames = listOf(SNIHostName(HOST))
+                params.endpointIdentificationAlgorithm = "HTTPS"
+                sslParameters = params
                 val supported = supportedProtocols?.filter { it == "TLSv1.3" || it == "TLSv1.2" }
                 if (!supported.isNullOrEmpty()) {
                     enabledProtocols = supported.toTypedArray()
@@ -200,7 +217,7 @@ object EdgeTtsClient {
                 append("Sec-WebSocket-Key: $wsKey\r\n")
                 append("Sec-WebSocket-Version: 13\r\n")
                 append("Origin: $ORIGIN_HEADER\r\n")
-                append("User-Agent: $USER_AGENT\r\n")
+                append("User-Agent: $userAgent\r\n")
                 append("Pragma: no-cache\r\n")
                 append("Cache-Control: no-cache\r\n")
                 append("\r\n")
@@ -219,7 +236,7 @@ object EdgeTtsClient {
                 "X-Timestamp:$timestamp\r\n" +
                     "Content-Type:application/json; charset=utf-8\r\n" +
                     "Path:speech.config\r\n\r\n" +
-                    """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
+                    """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-96kbitrate-mono-mp3"}}}}"""
             sendTextFrame(output, configMsg)
 
             val ssmlMsg =
@@ -306,7 +323,10 @@ object EdgeTtsClient {
 
         val cacheDir = File(context.cacheDir, "edge_tts").apply { mkdirs() }
         val mp3File = File(cacheDir, "tts_${UUID.randomUUID()}.mp3")
-        mp3File.writeBytes(mp3Bytes)
+        BufferedOutputStream(FileOutputStream(mp3File), 8192).use { out ->
+            out.write(mp3Bytes)
+            out.flush()
+        }
         val decoded = AudioDecoder.decodeFile(mp3File) ?: run {
             mp3File.delete()
             return@withContext null

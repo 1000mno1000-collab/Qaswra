@@ -76,6 +76,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -285,22 +286,31 @@ fun AiToolDetailScreen(
                         }
 
                         if (st.isLoading) {
-                            val cancelInt = remember { MutableInteractionSource() }
-                            OutlinedButton(
-                                onClick = { viewModel.cancelActiveOnlineRequest() },
-                                interactionSource = cancelInt,
-                                border = BorderStroke(1.dp, StudioColors.RoseBright),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .defaultMinSize(minHeight = 48.dp)
-                                    .lit(cancelInt, StudioColors.RoseBright, cornerRadius = 12.dp)
-                                    .testTag("ai_transcribe_cancel_button"),
-                            ) {
-                                Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(t(lang, "cancel_request"))
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                uiState.transcriptionProgressLabel?.takeIf { it.isNotBlank() }?.let { progLabel ->
+                                    Text(
+                                        text = progLabel,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = StudioColors.Cyan,
+                                    )
+                                }
+                                val cancelInt = remember { MutableInteractionSource() }
+                                OutlinedButton(
+                                    onClick = { viewModel.cancelActiveOnlineRequest() },
+                                    interactionSource = cancelInt,
+                                    border = BorderStroke(1.dp, StudioColors.RoseBright),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .lit(cancelInt, StudioColors.RoseBright, cornerRadius = 12.dp)
+                                        .testTag("ai_transcribe_cancel_button"),
+                                ) {
+                                    Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(t(lang, "cancel_request"))
+                                }
                             }
                         }
 
@@ -391,6 +401,29 @@ fun AiToolDetailScreen(
                             )
                         }
 
+                        if (uiState.smartMasterAnalyzingAi) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                CircularProgressIndicator(
+                                    color = StudioColors.Cyan,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Text(
+                                    text = if (lang == AppLanguage.EN) {
+                                        "Gemini 2.5 AI Audio Engineer analyzing acoustics & building FFmpeg chain..."
+                                    } else {
+                                        "مهندس الصوت الذكي (Gemini 2.5) يحلل الترددات ويجهز فلاتر FFmpegKit..."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioColors.Cyan,
+                                )
+                            }
+                        }
+
                         if (analysis != null) {
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
@@ -415,6 +448,31 @@ fun AiToolDetailScreen(
                                 }
                             }
 
+                            if (!analysis.aiDiagnosticNotes.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = StudioColors.Cyan.copy(alpha = 0.10f),
+                                    border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        Text(
+                                            text = if (lang == AppLanguage.EN) "AI Engineer Diagnosis" else "تشخيص مهندس الصوت الذكي",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = StudioColors.Cyan,
+                                        )
+                                        Text(
+                                            text = analysis.aiDiagnosticNotes,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = StudioColors.TextPrimary,
+                                        )
+                                    }
+                                }
+                            }
+
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -428,6 +486,65 @@ fun AiToolDetailScreen(
                             ) {
                                 MetricTile("Crest", "${"%.1f".format(analysis.crestFactorDb)} dB", StudioColors.Violet, Modifier.weight(1f))
                                 MetricTile("Noise", "${"%.1f".format(analysis.noiseFloorDb)} dB", StudioColors.Emerald, Modifier.weight(1f))
+                            }
+
+                            if (!analysis.recommendedFfmpegFilter.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = StudioColors.BgMid,
+                                    border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.45f)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Text(
+                                            text = if (lang == AppLanguage.EN) {
+                                                "Recommended FFmpegKit Master Chain"
+                                            } else {
+                                                "سلسلة فلاتر FFmpegKit الموصى بها"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = StudioColors.Violet,
+                                        )
+                                        Text(
+                                            text = analysis.recommendedFfmpegFilter,
+                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                            color = StudioColors.TextSecondary,
+                                        )
+                                        val applyFfmpegInt = remember { MutableInteractionSource() }
+                                        Button(
+                                            onClick = { viewModel.applyAiEngineerFfmpegFilter() },
+                                            enabled = !uiState.isBusy && !uiState.isProcessing && !analysis.ffmpegFilterApplied,
+                                            interactionSource = applyFfmpegInt,
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (analysis.ffmpegFilterApplied) StudioColors.Emerald else StudioColors.Violet,
+                                                contentColor = StudioColors.BgTop,
+                                            ),
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .defaultMinSize(minHeight = 48.dp)
+                                                .lit(applyFfmpegInt, StudioColors.Violet, cornerRadius = 12.dp)
+                                                .testTag("ai_smart_master_apply_ffmpeg_button"),
+                                        ) {
+                                            Icon(
+                                                imageVector = if (analysis.ffmpegFilterApplied) Icons.Rounded.CheckCircle else Icons.Rounded.GraphicEq,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(
+                                                text = if (analysis.ffmpegFilterApplied) {
+                                                    if (lang == AppLanguage.EN) "FFmpegKit Filter Applied" else "تم تطبيق فلاتر FFmpegKit بنجاح"
+                                                } else {
+                                                    if (lang == AppLanguage.EN) "Apply Recommended FFmpegKit Filters (1-Tap)" else "تطبيق فلاتر FFmpegKit المقترحة بضغطة زر"
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -822,6 +939,23 @@ fun TextToSpeechStudioScreen(
                                 text = t(lang, "tts_engine_free_desc"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = StudioColors.TextSecondary,
+                            )
+                            Text(
+                                text = if (uiState.localModelStatus.isTtsReady) {
+                                    if (lang == AppLanguage.EN) {
+                                        "Hybrid Route: Local ONNX Ready + Gemini 2.5 Audio Cloud"
+                                    } else {
+                                        "المسار الهجين: محرك ONNX المحلي جاهز + سحابة Gemini 2.5"
+                                    }
+                                } else {
+                                    if (lang == AppLanguage.EN) {
+                                        "Hybrid Route: Gemini 2.5 Audio Cloud (ONNX slot ready in assets/models/)"
+                                    } else {
+                                        "المسار الهجين: Gemini 2.5 Audio سحابياً (جاهز لاستقبال نماذج ONNX المحلية)"
+                                    }
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioColors.Cyan,
                             )
                         }
                         Icon(
@@ -1970,6 +2104,169 @@ fun VoiceTransformerScreen(
                         )
                     },
                 )
+            }
+        }
+
+        // Sonix Hybrid AI Voice-to-Voice Transformer (Local ONNX -> Gemini 2.5 Audio + FFmpegKit)
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.55f)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        tint = StudioColors.Cyan,
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (lang == AppLanguage.EN) {
+                                "Sonix AI Voice-to-Voice (Realistic Human)"
+                            } else {
+                                "تحويل الصوت البشري بالذكاء الاصطناعي (Voice-to-Voice)"
+                            },
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = StudioColors.Cyan,
+                        )
+                        Text(
+                            text = if (uiState.localModelStatus.isVoiceChangerReady) {
+                                if (lang == AppLanguage.EN) {
+                                    "Hybrid ONNX Local Model Active + Cloud Fallback"
+                                } else {
+                                    "المحرك الهجين: نموذج ONNX المحلي نشط مع دعم Gemini 2.5"
+                                }
+                            } else {
+                                if (lang == AppLanguage.EN) {
+                                    "Gemini 2.5 Audio Re-Voicing preserving words, dialect & emotion + FFmpegKit"
+                                } else {
+                                    "يعيد أداء كلامك بصوت بشري واقعي مع حفظ اللهجة والانفعال عبر Gemini 2.5 و FFmpegKit"
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioColors.TextSecondary,
+                        )
+                    }
+                }
+
+                uiState.voiceAiStatusNote?.takeIf { it.isNotBlank() }?.let { note ->
+                    AiStatusCard(message = note, isAmber = true)
+                }
+
+                if (uiState.isVoiceAiConverting) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LinearProgressIndicator(
+                            color = StudioColors.Cyan,
+                            trackColor = StudioColors.BgTop,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(CircleShape),
+                        )
+                        val cancelAiVcInt = remember { MutableInteractionSource() }
+                        OutlinedButton(
+                            onClick = { viewModel.cancelActiveOnlineRequest() },
+                            interactionSource = cancelAiVcInt,
+                            border = BorderStroke(1.dp, StudioColors.RoseBright),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                                .lit(cancelAiVcInt, StudioColors.RoseBright, cornerRadius = 12.dp)
+                                .testTag("voice_ai_cancel_button"),
+                        ) {
+                            Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(t(lang, "cancel_request"))
+                        }
+                    }
+                }
+
+                val targetCharacterLabel = selectedPreset?.let { t(lang, it.titleKey) }
+                    ?: if (lang == AppLanguage.EN) "Realistic Studio Voice" else "شخصية استوديو طبيعية"
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val previewAiInt = remember { MutableInteractionSource() }
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.previewVoiceWithAi(
+                                preset = selectedPreset,
+                                targetLabel = targetCharacterLabel,
+                                pitchSemitones = pitchSemitones,
+                                formantShift = formantShift,
+                                warmthDb = warmthDb,
+                                presenceDb = presenceDb,
+                            )
+                        },
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isVoiceAiConverting,
+                        interactionSource = previewAiInt,
+                        border = BorderStroke(1.dp, StudioColors.Cyan),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(previewAiInt, StudioColors.Cyan, cornerRadius = 14.dp)
+                            .testTag("voice_ai_preview_button"),
+                    ) {
+                        Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (lang == AppLanguage.EN) "Preview AI" else "معاينة ذكية",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+
+                    val applyAiInt = remember { MutableInteractionSource() }
+                    Button(
+                        onClick = {
+                            preferVmUndo = true
+                            viewModel.convertVoiceWithAi(
+                                preset = selectedPreset,
+                                targetLabel = targetCharacterLabel,
+                                pitchSemitones = pitchSemitones,
+                                formantShift = formantShift,
+                                warmthDb = warmthDb,
+                                presenceDb = presenceDb,
+                            )
+                        },
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isVoiceAiConverting,
+                        interactionSource = applyAiInt,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.Cyan,
+                            contentColor = StudioColors.BgTop,
+                        ),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(applyAiInt, StudioColors.Cyan, cornerRadius = 14.dp)
+                            .testTag("voice_ai_apply_button"),
+                    ) {
+                        Icon(Icons.Rounded.RecordVoiceOver, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (lang == AppLanguage.EN) "Convert with AI" else "تحويل AI بشري",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
         }
     }

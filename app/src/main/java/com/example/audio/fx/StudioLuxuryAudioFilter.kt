@@ -207,18 +207,6 @@ object StudioLuxuryAudioFilter {
             off += blockSize
         }
 
-        // Tight 16ms studio vocal air depth
-        val delayL = max(1, (0.016f * sr).roundToInt())
-        val delayR = max(1, (0.019f * sr).roundToInt())
-        val finalL = FloatArray(n)
-        val finalR = FloatArray(n)
-        for (i in 0 until n) {
-            val wetL = if (i >= delayL) outR[i - delayL] * 0.11f else 0f
-            val wetR = if (i >= delayR) outL[i - delayR] * 0.11f else 0f
-            finalL[i] = clamp(outL[i] * 0.90f + wetL, -1f, 1f)
-            finalR[i] = clamp(outR[i] * 0.90f + wetR, -1f, 1f)
-        }
-
-        return normalizeAudio(StereoAudioBuffer(finalL, finalR, sr), limiterTargetDb)
+        return normalizeAudio(StereoAudioBuffer(outL, outR, sr), limiterTargetDb)
     }
 }

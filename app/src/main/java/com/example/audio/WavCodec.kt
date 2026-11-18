@@ -16,7 +16,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 const val TARGET_SAMPLE_RATE = 44100
-private const val WAV_STREAM_CHUNK_BYTES = 65_536 // 64KB fixed streaming buffer
+private const val WAV_STREAM_CHUNK_BYTES = 8192 // 8KB fixed streaming buffer
 private const val WAV_FRAMES_PER_CHUNK = WAV_STREAM_CHUNK_BYTES / 4 // 16-bit stereo = 4 bytes/frame
 
 fun buildWavHeaderBytes(

@@ -806,6 +806,10 @@ data class SmartMasterAnalysis(
     val detectedProfile: String,
     val appliedActions: List<String>,
     val optimizedConfig: DspConfig,
+    val aiDiagnosticNotes: String? = null,
+    val recommendedFfmpegFilter: String? = null,
+    val ffmpegFilterApplied: Boolean = false,
+    val isAiCloudAnalyzed: Boolean = false,
 )
 
 @Immutable

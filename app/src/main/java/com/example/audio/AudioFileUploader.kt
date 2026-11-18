@@ -43,7 +43,7 @@ sealed interface AudioUploadOutcome {
  * `MediaPlayer` / `FFmpegKit` only ever open completed local files via `file.absolutePath`.
  */
 object AudioFileUploader {
-    private const val COPY_BUFFER_SIZE = 65_536
+    private const val COPY_BUFFER_SIZE = 8192
 
     suspend fun copyAudioUriToCache(
         context: Context,
@@ -132,7 +132,7 @@ object AudioFileUploader {
         return@withContext try {
             var copiedBytes = 0L
             inputStream.use { input ->
-                destFile.outputStream().buffered(COPY_BUFFER_SIZE).use { out ->
+                java.io.BufferedOutputStream(java.io.FileOutputStream(destFile), COPY_BUFFER_SIZE).use { out ->
                     val buf = ByteArray(COPY_BUFFER_SIZE)
                     var lastEmittedMs = 0L
                     var lastEmittedPct = -1
@@ -151,7 +151,7 @@ object AudioFileUploader {
                         }
                         val pct = (fraction * 100f).roundToInt().coerceIn(0, 100)
                         val now = System.currentTimeMillis()
-                        if (pct != lastEmittedPct || now - lastEmittedMs >= 25L || (effectiveTotal > 0L && copiedBytes >= effectiveTotal)) {
+                        if ((pct != lastEmittedPct && now - lastEmittedMs >= 35L) || now - lastEmittedMs >= 90L || (effectiveTotal > 0L && copiedBytes >= effectiveTotal)) {
                             lastEmittedPct = pct
                             lastEmittedMs = now
                             onProgress(

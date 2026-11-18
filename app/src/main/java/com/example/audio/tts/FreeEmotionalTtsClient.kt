@@ -28,12 +28,16 @@ import com.example.util.SafeTextGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
@@ -87,8 +91,8 @@ object FreeEmotionalTtsClient {
         language: AppLanguage = AppLanguage.AR,
         studioLuxuryEnhancement: Boolean = getSavedStudioLuxuryEnhancement(context),
     ): FreeEmotionalTtsOutcome = withContext(Dispatchers.IO) {
-        val cleanText = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim(), applyLightDiacritics = true)
-        if (cleanText.isEmpty()) {
+        val rawClean = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim(), applyLightDiacritics = false)
+        if (rawClean.isEmpty()) {
             return@withContext FreeEmotionalTtsOutcome.Error(
                 when (language) {
                     AppLanguage.EN -> "Please enter text first."
@@ -105,26 +109,53 @@ object FreeEmotionalTtsClient {
         val cacheDir = File(context.cacheDir, "free_emotional_tts").apply { mkdirs() }
         val collectedErrors = mutableListOf<String>()
 
-        // 1. Primary: Microsoft Edge Neural TTS with selected dialect, gender, rate %, pitch & emotion
-        val primaryVoice = if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
-        var attempt = synthesizeViaEdgeNeural(
-            cacheDir = cacheDir,
-            text = cleanText,
-            voiceName = primaryVoice,
-            localeTag = dialect.localeTag,
-            style = style,
-            speechRate = speechRate,
-            pitch = pitch,
-        )
-        collectedErrors += attempt.errors
+        // Enrich undiacritized Arabic text with natural dialectal Tashkeel when available
+        val neuralText = GeminiNeuralTtsClient.diacritizeArabicIfAvailable(context, rawClean, dialect)
+            ?: ArabicTextDiacritizer.normalizeAndHintForTts(rawClean, applyLightDiacritics = true)
 
-        // 1b. Regional Neural Voice fallback (e.g., ar-SA neural) if specific regional Edge voice fails
+        // 1A. Primary: Hybrid Local ONNX Engine -> Gemini 2.5 Flash Native Human Audio TTS
+        var attempt = run {
+            val gem = GeminiNeuralTtsClient.synthesizeNaturalHumanSpeech(
+                context = context,
+                cacheDir = cacheDir,
+                text = neuralText,
+                dialect = dialect,
+                gender = gender,
+                style = style,
+                speechRate = speechRate,
+                language = language,
+            )
+            if (gem.failureReason != null) collectedErrors += gem.failureReason
+            CloudTtsSynthesisAttempt(
+                buffer = gem.buffer,
+                prosodyAppliedInEngine = true,
+                errors = if (gem.failureReason != null) listOf(gem.failureReason) else emptyList(),
+            )
+        }
+
+        // 1B. Primary/High-Availability Neural: Microsoft Azure/Edge 96kbps HD Neural Voices
         if (attempt.buffer == null || attempt.buffer.frameCount <= 0) {
+            val primaryVoice = if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
+            attempt = synthesizeViaEdgeNeural(
+                cacheDir = cacheDir,
+                text = neuralText,
+                voiceName = primaryVoice,
+                localeTag = dialect.localeTag,
+                style = style,
+                speechRate = speechRate,
+                pitch = pitch,
+            )
+            collectedErrors += attempt.errors
+        }
+
+        // 1C. Regional Neural Voice fallback (e.g., ar-SA neural) if specific regional Edge voice fails
+        if (attempt.buffer == null || attempt.buffer.frameCount <= 0) {
+            val primaryVoice = if (gender == TtsGender.MALE) dialect.maleVoiceName else dialect.femaleVoiceName
             val backupVoice = resolveBackupEdgeVoice(dialect, gender)
             if (backupVoice != null && backupVoice != primaryVoice) {
                 attempt = synthesizeViaEdgeNeural(
                     cacheDir = cacheDir,
-                    text = cleanText,
+                    text = neuralText,
                     voiceName = backupVoice,
                     localeTag = dialect.fallbackLocaleTag,
                     style = style,
@@ -135,12 +166,12 @@ object FreeEmotionalTtsClient {
             }
         }
 
-        // 2. Fallback: 100% Free HTTPS Google Translate Neural TTS HD (zero 404/402 servers)
+        // 2. Last-resort Online Fallback: Google Cloud Translate TTS HD (without harsh robotic pitch warping)
         if (attempt.buffer == null || attempt.buffer.frameCount <= 0) {
             attempt = synthesizeViaGoogleTranslateHd(
                 context = context,
                 cacheDir = cacheDir,
-                text = cleanText,
+                text = neuralText,
                 dialect = dialect,
                 style = style,
                 speechRate = speechRate,
@@ -232,14 +263,15 @@ object FreeEmotionalTtsClient {
         pitch: Float,
     ): CloudTtsSynthesisAttempt {
         val errors = mutableListOf<String>()
-        val chunks = splitSentencesSmoothly(text, maxChars = 420)
+        // Large 1050-char paragraph slices keep human intonation continuous instead of choppy micro-clips
+        val chunks = splitSentencesSmoothly(text, maxChars = 1050)
         if (chunks.isEmpty()) {
             return CloudTtsSynthesisAttempt(null, true, listOf("EdgeNeural: Empty chunks"))
         }
 
-        val pauseMs = (style.breathPauseMs * 0.55f).roundToInt().coerceIn(80, 260)
+        val pauseMs = (style.breathPauseMs * 0.45f).roundToInt().coerceIn(70, 220)
         val decodedChunks = ArrayList<StereoAudioBuffer>(chunks.size)
-        val combinedRate = clamp(speechRate * style.rateFactor, 0.55f, 1.75f)
+        val combinedRate = clamp(speechRate * style.rateFactor, 0.65f, 1.55f)
 
         for ((index, chunk) in chunks.withIndex()) {
             coroutineContext.ensureActive()
@@ -259,7 +291,10 @@ object FreeEmotionalTtsClient {
 
             val chunkFile = File(cacheDir, "edge_chunk_${UUID.randomUUID()}.mp3")
             val decoded = try {
-                chunkFile.writeBytes(bytes)
+                BufferedOutputStream(FileOutputStream(chunkFile), 8192).use { out ->
+                    out.write(bytes)
+                    out.flush()
+                }
                 AudioDecoder.decodeFile(chunkFile)
             } catch (e: Exception) {
                 errors += "Edge decode ${e.javaClass.simpleName}: ${e.message ?: "decode failed"}"
@@ -278,7 +313,7 @@ object FreeEmotionalTtsClient {
             } else {
                 resampleStereo(decoded, TARGET_SAMPLE_RATE)
             }
-            decodedChunks += trimSilenceEdgesAndFade(unified, keepPadMs = 26)
+            decodedChunks += trimSilenceEdgesAndFade(unified, keepPadMs = 55)
         }
 
         val stitched = stitchSentenceBuffersSmoothly(decodedChunks, pauseMs)
@@ -334,7 +369,10 @@ object FreeEmotionalTtsClient {
 
             val chunkFile = File(cacheDir, "gtts_chunk_${UUID.randomUUID()}.mp3")
             val decoded = try {
-                chunkFile.writeBytes(bytes)
+                BufferedOutputStream(FileOutputStream(chunkFile), 8192).use { out ->
+                    out.write(bytes)
+                    out.flush()
+                }
                 AudioDecoder.decodeFile(chunkFile)
             } catch (e: Exception) {
                 errors += "GoogleTTS decode ${e.javaClass.simpleName}: ${e.message ?: "decode failed"}"
@@ -353,7 +391,7 @@ object FreeEmotionalTtsClient {
             } else {
                 resampleStereo(decoded, TARGET_SAMPLE_RATE)
             }
-            decodedChunks += trimSilenceEdgesAndFade(unified, keepPadMs = 24)
+            decodedChunks += trimSilenceEdgesAndFade(unified, keepPadMs = 50)
         }
 
         val stitched = stitchSentenceBuffersSmoothly(decodedChunks, pauseMs)
@@ -383,20 +421,19 @@ object FreeEmotionalTtsClient {
 
         val sr = inputBuffer.sampleRate.coerceAtLeast(8000)
 
-        // When prosodyAlreadyAppliedInEngine == true (Edge Neural TTS), Edge already rendered dialect,
-        // gender, pitch, and speed natively — avoid double pitch/tempo shifting.
+        // When prosodyAlreadyAppliedInEngine == true (Gemini / Edge Neural), preserve the authentic
+        // neural voice timbre with zero offline pitch/tempo warping.
+        // Even for emergency fallback streams, avoid heavy semitone shifting (-3.4st caused robotic sound).
         val sliderSemitones = (12.0 * ln(pitch.coerceIn(0.65f, 1.45f).toDouble()) / ln(2.0)).toFloat()
-        val styleSemitones = style.pitchOffsetHz / 14.0f
-        val genderFallbackSemitones = if (!prosodyAlreadyAppliedInEngine && gender == TtsGender.MALE) -3.4f else 0f
         val totalSemitones = if (prosodyAlreadyAppliedInEngine) {
             0f
         } else {
-            clamp(sliderSemitones + styleSemitones + genderFallbackSemitones, -9.0f, 9.0f)
+            clamp(sliderSemitones, -4.5f, 4.5f)
         }
         val targetTempo = if (prosodyAlreadyAppliedInEngine) {
             1.0f
         } else {
-            clamp(speechRate * style.rateFactor, 0.55f, 1.75f)
+            1.0f
         }
 
         val needsPitchOrTempo = abs(totalSemitones) >= 0.08f || abs(targetTempo - 1.0f) >= 0.03f
@@ -576,7 +613,8 @@ object FreeEmotionalTtsClient {
         val n = buffer.frameCount
         if (n <= 64) return buffer
         val sr = buffer.sampleRate.coerceAtLeast(8000)
-        val thresh = 0.008f
+        // Soft -58 dB threshold preserves natural Arabic breath consonants (هـ، ح، س، ش، ف)
+        val thresh = 0.0012f
 
         var firstActive = 0
         while (firstActive < n && max(abs(buffer.left[firstActive]), abs(buffer.right[firstActive])) < thresh) {
@@ -596,9 +634,10 @@ object FreeEmotionalTtsClient {
         val outL = buffer.left.copyOfRange(start, end)
         val outR = buffer.right.copyOfRange(start, end)
 
-        val fadeFrames = min(outLen / 6, ((10.0 / 1000.0) * sr).roundToInt())
+        val fadeFrames = min(outLen / 8, ((20.0 / 1000.0) * sr).roundToInt())
         for (i in 0 until fadeFrames) {
-            val g = i.toFloat() / max(1, fadeFrames)
+            val phase = (i.toDouble() / max(1, fadeFrames)) * PI
+            val g = (0.5 * (1.0 - cos(phase))).toFloat()
             outL[i] *= g
             outR[i] *= g
             val tail = outLen - 1 - i
