@@ -522,6 +522,12 @@ private val AR_STRINGS = mapOf(
     "tool_ai_voice_studio_short" to "استوديو الأصوات الذكي",
     "tool_ai_voice_studio_subtitle" to "VoxCPM2 + Audar-TTS • تصميم شخصيات، مشاعر، استنساخ، وحوار متعدد الشخصيات",
     "tool_ai_voice_studio_badge" to "VoxCPM2 • Audar",
+    "more_and_help_title" to "المزيد والمساعدة",
+    "more_and_help_subtitle" to "تحديثات التطبيق • الإبلاغ عن مشكلة • التواصل مع الدعم",
+    "app_updates_short_title" to "تحديثات التطبيق",
+    "report_problem_title" to "الإبلاغ عن مشكلة",
+    "contact_support_title" to "التواصل مع الدعم",
+    "studio_utilities_title" to "أدوات وإعدادات الاستوديو",
 )
 
 private val EN_STRINGS = mapOf(
@@ -1044,6 +1050,12 @@ private val EN_STRINGS = mapOf(
     "tool_ai_voice_studio_short" to "AI Voice Studio",
     "tool_ai_voice_studio_subtitle" to "VoxCPM2 + Audar-TTS • Voice design, 11 emotions, cloning & multi-speaker dialogue",
     "tool_ai_voice_studio_badge" to "VoxCPM2 • Audar",
+    "more_and_help_title" to "More & Help",
+    "more_and_help_subtitle" to "App Updates • Report a Problem • Contact Support",
+    "app_updates_short_title" to "App Updates",
+    "report_problem_title" to "Report a Problem",
+    "contact_support_title" to "Contact Support",
+    "studio_utilities_title" to "Studio Utilities & Settings",
 )
 
 private val FA_STRINGS = mapOf(
@@ -1566,6 +1578,12 @@ private val FA_STRINGS = mapOf(
     "tool_ai_voice_studio_short" to "استودیو صداهای هوشمند",
     "tool_ai_voice_studio_subtitle" to "VoxCPM2 + Audar-TTS • طراحی صدا، احساسات، کلونینگ و گفت‌وگوی چندشخصیتی",
     "tool_ai_voice_studio_badge" to "VoxCPM2 • Audar",
+    "more_and_help_title" to "بیشتر و پشتیبانی",
+    "more_and_help_subtitle" to "به‌روزرسانی برنامه • گزارش مشکل • ارتباط با پشتیبانی",
+    "app_updates_short_title" to "به‌روزرسانی برنامه",
+    "report_problem_title" to "گزارش مشکل",
+    "contact_support_title" to "ارتباط با پشتیبانی",
+    "studio_utilities_title" to "ابزارها و تنظیمات استودیو",
 )
 
 fun t(lang: AppLanguage, key: String): String {

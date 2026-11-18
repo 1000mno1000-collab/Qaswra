@@ -15,7 +15,7 @@ enum class AiVoiceEngineKind(
 ) {
     VOXCPM_2(
         id = "voxcpm2",
-        modelRepoId = "FenomAI/VoxCPM2",
+        modelRepoId = "openbmb/VoxCPM2",
         titleAr = "VoxCPM2 (المحرك الأساسي العالمي)",
         titleEn = "VoxCPM2 (Primary Multilingual)",
         badgeAr = "48kHz • تصميم + استنساخ • 30 لغة",
@@ -47,6 +47,15 @@ enum class AiVoiceEngineKind(
         titleEn = "Local Studio Engine (Offline Fallback)",
         badgeAr = "محلي • بدون GPU خارجي",
         badgeEn = "On-Device • No GPU Server Needed",
+        requiresRemoteGpu = false,
+    ),
+    EDGE_NEURAL_FREE(
+        id = "edge_neural_free",
+        modelRepoId = "edge/neural-readaloud",
+        titleAr = "Edge Neural Arabic TTS (سحابي مجاني)",
+        titleEn = "Edge Neural TTS (Free Cloud Arabic)",
+        badgeAr = "24kHz • 32 صوتاً عربياً + لهجات • بدون GPU أو بطاقة",
+        badgeEn = "24kHz • 32 Arabic Voices + Dialects • Free No Card",
         requiresRemoteGpu = false,
     ),
 }
@@ -241,8 +250,14 @@ data class AiVoiceBackendHealth(
     val serverReachable: Boolean = false,
     val voxCpm2Ready: Boolean = false,
     val audarTurboReady: Boolean = false,
+    val voxcpm2PackageInstalled: Boolean = false,
+    val voxcpm2Loaded: Boolean = false,
+    val cudaAvailable: Boolean = false,
+    val authRequired: Boolean = false,
+    val voxcpm2LoadError: String = "",
     val voxCpmPublicSpaceChecked: Boolean = false,
     val voxCpmPublicSpaceAvailable: Boolean = false,
+    val edgeNeuralReady: Boolean = true,
     val statusDetail: String = "",
     val serverGpuInfo: String = "",
 )
@@ -282,6 +297,7 @@ data class AiVoiceStudioUiState(
     val savedCharacters: List<AiVoiceCharacter> = emptyList(),
     val dialogueTurns: List<AiDialogueTurn> = DEFAULT_DIALOGUE_TURNS,
     val backendServerUrl: String = "",
+    val backendBearerToken: String = "",
     val backendHealth: AiVoiceBackendHealth = AiVoiceBackendHealth(),
 ) {
     val allCharacters: List<AiVoiceCharacter>
@@ -296,7 +312,7 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         category = AiVoiceCategory.MALE,
         language = AiVoiceLanguage.AR,
         dialect = AiArabicDialect.IRAQI,
-        preferredEngine = AiVoiceEngineKind.AUDAR_TTS_V1_TURBO,
+        preferredEngine = AiVoiceEngineKind.AUDAR_TTS_V1_FLASH,
         voiceDescriptionPrompt = "رجل عراقي في الأربعين من عمره، صوته عميق وخشن قليلاً، يتحدث ببطء وبنبرة مؤثرة ووقورة.",
         defaultEmotion = AiVoiceEmotion.SAD,
         defaultEmotionIntensity = 0.70f,
@@ -386,7 +402,7 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         category = AiVoiceCategory.FEMALE,
         language = AiVoiceLanguage.AR,
         dialect = AiArabicDialect.GULF,
-        preferredEngine = AiVoiceEngineKind.AUDAR_TTS_V1_TURBO,
+        preferredEngine = AiVoiceEngineKind.AUDAR_TTS_V1_FLASH,
         voiceDescriptionPrompt = "امرأة خليجية لبقة بصوت دافئ رصين وهادئ يناسب البودكاست والحوار الثقافي.",
         defaultEmotion = AiVoiceEmotion.CALM,
         defaultEmotionIntensity = 0.60f,

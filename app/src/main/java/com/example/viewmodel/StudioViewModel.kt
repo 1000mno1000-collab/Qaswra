@@ -390,6 +390,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         scope = viewModelScope,
         coordinator = aiVoiceCoordinator,
         getBackendUrl = { _aiVoiceUiState.value.backendServerUrl },
+        getBackendBearerToken = { _aiVoiceUiState.value.backendBearerToken },
     )
     val developerPanelUiState: StateFlow<DeveloperPanelUiState> = developerPanelController.uiState
 
@@ -672,6 +673,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(safeCoroutineHandler) {
             repository.aiVoiceBackendUrlFlow.collect { url ->
                 _aiVoiceUiState.update { it.copy(backendServerUrl = url) }
+            }
+        }
+        viewModelScope.launch(safeCoroutineHandler) {
+            repository.aiVoiceBackendBearerFlow.collect { token ->
+                _aiVoiceUiState.update { it.copy(backendBearerToken = token) }
             }
         }
 
@@ -2751,7 +2757,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val newPeaks = if (bufferChanged && cachedPeaks.isNotEmpty()) cachedPeaks else cur.waveformPeaks
             cur.copy(
                 hasAudio = targetBuf != null || cur.hasAudio,
-                durationMs = if (bufferChanged && targetBuf != null) targetBuf.durationMs else cur.durationMs,
+                durationMs = if (bufferChanged) targetBuf!!.durationMs else cur.durationMs,
                 waveformPeaks = newPeaks,
                 trimStart = if (bufferChanged) 0f else cur.trimStart,
                 trimEnd = if (bufferChanged) 1f else cur.trimEnd,
@@ -2763,10 +2769,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 hasUnsavedChanges = true,
             )
         }
-        if (bufferChanged && targetBuf != null && cachedPeaks.isEmpty()) {
+        if (bufferChanged && cachedPeaks.isEmpty()) {
+            val nonNullBuf = targetBuf!!
             viewModelScope.launch(Dispatchers.Default) {
-                val asyncPeaks = computeWaveformPeaksAsync(targetBuf, 120)
-                if (activeBuffer === targetBuf) {
+                val asyncPeaks = computeWaveformPeaksAsync(nonNullBuf, 120)
+                if (activeBuffer === nonNullBuf) {
                     _uiState.update { it.copy(waveformPeaks = asyncPeaks) }
                 }
             }
@@ -2794,7 +2801,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val newPeaks = if (bufferChanged && cachedPeaks.isNotEmpty()) cachedPeaks else cur.waveformPeaks
             cur.copy(
                 hasAudio = targetBuf != null || cur.hasAudio,
-                durationMs = if (bufferChanged && targetBuf != null) targetBuf.durationMs else cur.durationMs,
+                durationMs = if (bufferChanged) targetBuf!!.durationMs else cur.durationMs,
                 waveformPeaks = newPeaks,
                 trimStart = if (bufferChanged) 0f else cur.trimStart,
                 trimEnd = if (bufferChanged) 1f else cur.trimEnd,
@@ -2806,10 +2813,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 hasUnsavedChanges = true,
             )
         }
-        if (bufferChanged && targetBuf != null && cachedPeaks.isEmpty()) {
+        if (bufferChanged && cachedPeaks.isEmpty()) {
+            val nonNullBuf = targetBuf!!
             viewModelScope.launch(Dispatchers.Default) {
-                val asyncPeaks = computeWaveformPeaksAsync(targetBuf, 120)
-                if (activeBuffer === targetBuf) {
+                val asyncPeaks = computeWaveformPeaksAsync(nonNullBuf, 120)
+                if (activeBuffer === nonNullBuf) {
                     _uiState.update { it.copy(waveformPeaks = asyncPeaks) }
                 }
             }
@@ -6496,7 +6504,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // =========================================================================
-    // AI VOICE STUDIO – استوديو الأصوات الذكي (VoxCPM2 + Audar-TTS-V1-Turbo)
+    // AI VOICE STUDIO – استوديو الأصوات الذكي (VoxCPM2 + Audar-TTS-V1-Flash)
     // =========================================================================
 
     fun setAiVoiceTab(tab: Int) {
@@ -6741,23 +6749,55 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun saveAiVoiceBackendUrl(url: String) {
-        val clean = url.trim().trimEnd('/')
+        val trimmed = url.trim().trimEnd('/')
+        val normalized = if (trimmed.isEmpty()) "" else com.example.audio.network.NetworkImmunityManager.enforceHttps(trimmed)
         viewModelScope.launch(safeCoroutineHandler) {
-            repository.saveAiVoiceBackendUrl(clean)
-            _aiVoiceUiState.update { it.copy(backendServerUrl = clean) }
-            postBanner(if (clean.isEmpty()) "تم مسح رابط السيرفر" else "تم حفظ رابط سيرفر GPU بنجاح")
+            repository.saveAiVoiceBackendUrl(normalized)
+            _aiVoiceUiState.update { it.copy(backendServerUrl = normalized) }
+            postBanner(if (normalized.isEmpty()) "تم مسح رابط السيرفر" else "تم حفظ رابط سيرفر GPU بنجاح ($normalized)")
         }
     }
 
-    fun checkAiVoiceBackendHealth() {
+    fun saveAiVoiceBackendBearer(token: String) {
+        val clean = token.trim()
         viewModelScope.launch(safeCoroutineHandler) {
+            repository.saveAiVoiceBackendBearer(clean)
+            _aiVoiceUiState.update { it.copy(backendBearerToken = clean) }
+            postBanner(if (clean.isEmpty()) "تم مسح رمز المصادقة للخادم" else "تم حفظ رمز المصادقة (X-Sonix-Bearer) بنجاح")
+        }
+    }
+
+    fun checkAiVoiceBackendHealth(
+        pendingUrl: String? = null,
+        pendingToken: String? = null,
+    ) {
+        viewModelScope.launch(safeCoroutineHandler) {
+            val resolvedUrl = if (pendingUrl != null) {
+                val t = pendingUrl.trim().trimEnd('/')
+                if (t.isEmpty()) "" else com.example.audio.network.NetworkImmunityManager.enforceHttps(t)
+            } else {
+                _aiVoiceUiState.value.backendServerUrl
+            }
+            val resolvedToken = pendingToken?.trim() ?: _aiVoiceUiState.value.backendBearerToken
+
+            if (pendingUrl != null) {
+                repository.saveAiVoiceBackendUrl(resolvedUrl)
+            }
+            if (pendingToken != null) {
+                repository.saveAiVoiceBackendBearer(resolvedToken)
+            }
             _aiVoiceUiState.update {
                 it.copy(
+                    backendServerUrl = resolvedUrl,
+                    backendBearerToken = resolvedToken,
                     backendHealth = it.backendHealth.copy(isChecking = true),
                 )
             }
-            val url = _aiVoiceUiState.value.backendServerUrl
-            val health = aiVoiceCoordinator.checkBackendHealth(getApplication(), url)
+            val health = aiVoiceCoordinator.checkBackendHealth(
+                context = getApplication(),
+                backendUrl = resolvedUrl,
+                bearerToken = resolvedToken,
+            )
             _aiVoiceUiState.update { it.copy(backendHealth = health) }
         }
     }
@@ -6819,6 +6859,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 request = req,
                 backendUrl = cur.backendServerUrl,
                 outputDir = outDir,
+                bearerToken = cur.backendBearerToken,
             ) { progress, label ->
                 _aiVoiceUiState.update {
                     it.copy(synthesisProgress = progress, synthesisStatusLabel = label)
@@ -6859,9 +6900,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 context = app,
                 turns = cur.dialogueTurns,
                 characters = cur.allCharacters,
-                selectedEngineOverride = overrideEngine ?: if (cur.selectedEngine == AiVoiceEngineKind.SONIX_LOCAL_STUDIO) AiVoiceEngineKind.SONIX_LOCAL_STUDIO else null,
+                selectedEngineOverride = overrideEngine ?: when (cur.selectedEngine) {
+                    AiVoiceEngineKind.SONIX_LOCAL_STUDIO -> AiVoiceEngineKind.SONIX_LOCAL_STUDIO
+                    AiVoiceEngineKind.EDGE_NEURAL_FREE -> AiVoiceEngineKind.EDGE_NEURAL_FREE
+                    else -> null
+                },
                 backendUrl = cur.backendServerUrl,
                 outputDir = outDir,
+                bearerToken = cur.backendBearerToken,
             ) { progress, label ->
                 _aiVoiceUiState.update {
                     it.copy(synthesisProgress = progress, synthesisStatusLabel = label)

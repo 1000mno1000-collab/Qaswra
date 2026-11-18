@@ -68,6 +68,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.audio.aivoice.AiDeliveryPace
@@ -834,9 +835,11 @@ fun AiVoiceServerSetupTab(
     state: AiVoiceStudioUiState,
     isEnglish: Boolean,
     onSaveBackendUrl: (String) -> Unit,
-    onCheckHealth: () -> Unit,
+    onSaveBackendToken: (String) -> Unit = {},
+    onCheckHealth: (String, String) -> Unit,
 ) {
     var urlInput by remember(state.backendServerUrl) { mutableStateOf(state.backendServerUrl) }
+    var tokenInput by remember(state.backendBearerToken) { mutableStateOf(state.backendBearerToken) }
     val health = state.backendHealth
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -860,12 +863,12 @@ fun AiVoiceServerSetupTab(
                 }
                 Text(
                     text = if (isEnglish) {
-                        "• FenomAI/VoxCPM2 (2B diffusion-AR, 48kHz) and audarai/Audar-TTS-V1-Turbo (1.64B Arabic-first) both have NO managed serverless Hugging Face Inference Provider.\n" +
-                            "• Never embed HF tokens inside the APK. Deploy the included `/backend` FastAPI GPU server (RunPod, Modal, or HF Dedicated Endpoint) with HF_TOKEN stored strictly in server env vars, then enter the HTTPS URL below.\n" +
+                        "• openbmb/VoxCPM2 (2B diffusion-AR, 48kHz) and audarai/Audar-TTS-V1-Flash (AudarAI Open License v1.0, 24kHz Arabic-first) both have NO managed serverless Hugging Face Inference Provider.\n" +
+                            "• Never embed HF tokens inside the APK. Deploy the included `/backend` FastAPI GPU server (RunPod, Modal, or Docker CUDA 12+) with HF_TOKEN and optional SONIX_SERVER_BEARER set strictly in server env vars, then enter the HTTPS URL below.\n" +
                             "• Without a custom URL, VoxCPM2 probes the official public demo Space (`openbmb-voxcpm-demo.hf.space`) for prompt design when awake."
                     } else {
-                        "• بعد فحص صفحات النماذج الرسمية وخدمات Hugging Face Inference Providers: كلا النموذجين FenomAI/VoxCPM2 (2B باراميتر) و audarai/Audar-TTS-V1-Turbo (1.64B) لا يتوفر لهما مزود Inference Serverless عام مجاني، كما لا يمكن تشغيلهما محلياً داخل معالج الهاتف.\n" +
-                            "• لذلك يتضمن المشروع خادم GPU خلفي جاهز في مجلد `/backend` (FastAPI + Docker + VoxCPM2 + Audar-TTS) يحتفظ بأي توكن HF_TOKEN على الخادم فقط دون وضع أي مفاتيح داخل التطبيق.\n" +
+                        "• بعد فحص صفحات النماذج الرسمية وخدمات Hugging Face Inference Providers: كلا النموذجين openbmb/VoxCPM2 (2B باراميتر) و audarai/Audar-TTS-V1-Flash (الترخيص المفتوح) لا يتوفر لهما مزود Inference Serverless عام مجاني، كما لا يمكن تشغيلهما محلياً داخل معالج الهاتف.\n" +
+                            "• لذلك يتضمن المشروع خادم GPU خلفي جاهز في مجلد `/backend` (FastAPI + Docker CUDA 12 + openbmb/VoxCPM2 + Audar-TTS-V1-Flash) يحتفظ بأي توكن HF_TOKEN على الخادم فقط دون وضع أي مفاتيح داخل التطبيق.\n" +
                             "• بدون رابط خادم مخصص: يحاول VoxCPM2 الفضاء الرسمي العام مؤقتاً عند توفره، بينما يتوفر «محرك الاستوديو المحلي» فوراً كبديل مباشر على الهاتف."
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -895,12 +898,27 @@ fun AiVoiceServerSetupTab(
                         .testTag("ai_voice_backend_url_input"),
                 )
 
+                OutlinedTextField(
+                    value = tokenInput,
+                    onValueChange = { tokenInput = it },
+                    label = { Text(if (isEnglish) "Server Access Token (Optional SONIX_SERVER_BEARER)" else "رمز الوصول للخادم (اختياري SONIX_SERVER_BEARER)") },
+                    placeholder = { Text(if (isEnglish) "Leave empty if using Firebase sign-in only" else "اتركه فارغاً عند الاعتماد على حساب Firebase فقط") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("ai_voice_backend_token_input"),
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Button(
-                        onClick = { onSaveBackendUrl(urlInput) },
+                        onClick = {
+                            onSaveBackendUrl(urlInput)
+                            onSaveBackendToken(tokenInput)
+                        },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Cyan,
                             contentColor = StudioColors.BgTop,
@@ -911,10 +929,10 @@ fun AiVoiceServerSetupTab(
                             .defaultMinSize(minHeight = 48.dp)
                             .testTag("ai_voice_save_backend_url_button"),
                     ) {
-                        Text(if (isEnglish) "Save URL" else "حفظ الرابط", fontWeight = FontWeight.Bold)
+                        Text(if (isEnglish) "Save Settings" else "حفظ الإعدادات", fontWeight = FontWeight.Bold)
                     }
                     OutlinedButton(
-                        onClick = onCheckHealth,
+                        onClick = { onCheckHealth(urlInput, tokenInput) },
                         enabled = !health.isChecking,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -950,7 +968,7 @@ fun AiVoiceServerSetupTab(
                                         Icons.Rounded.CloudOff
                                     },
                                     contentDescription = null,
-                                    tint = if (health.serverReachable) StudioColors.Emerald else StudioColors.Amber,
+                                    tint = if (health.serverReachable && health.voxCpm2Ready) StudioColors.Emerald else StudioColors.Amber,
                                 )
                                 Text(
                                     text = health.statusDetail,
@@ -961,14 +979,30 @@ fun AiVoiceServerSetupTab(
                             if (health.serverReachable) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                     Text(
-                                        text = "VoxCPM2: ${if (health.voxCpm2Ready) "جاهز" else "غير مفعل"}",
+                                        text = "VoxCPM2: ${if (health.voxCpm2Ready) (if (health.voxcpm2Loaded) "محمّل بالذاكرة" else "جاهز") else "غير جاهز"}",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (health.voxCpm2Ready) StudioColors.Emerald else StudioColors.TextMuted,
+                                        color = if (health.voxCpm2Ready) StudioColors.Emerald else StudioColors.Amber,
                                     )
                                     Text(
-                                        text = "Audar-TTS: ${if (health.audarTurboReady) "جاهز" else "غير مفعل"}",
+                                        text = "Audar-Flash: ${if (health.audarTurboReady) "جاهز" else "غير مفعل"}",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = if (health.audarTurboReady) StudioColors.Emerald else StudioColors.TextMuted,
+                                    )
+                                }
+                                Text(
+                                    text = buildString {
+                                        append("CUDA: ${if (health.cudaAvailable) "متاح" else "غير متاح"}")
+                                        append(" • حزمة voxcpm: ${if (health.voxcpm2PackageInstalled) "مثبتة" else "غير مثبتة"}")
+                                        append(" • الحماية: ${if (health.authRequired) "مفعلة" else "مفتوحة"}")
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioColors.TextSecondary,
+                                )
+                                if (health.voxcpm2LoadError.isNotBlank()) {
+                                    Text(
+                                        text = health.voxcpm2LoadError,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = StudioColors.RoseBright,
                                     )
                                 }
                             }

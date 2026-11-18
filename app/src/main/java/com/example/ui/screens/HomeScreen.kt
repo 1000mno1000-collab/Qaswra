@@ -396,8 +396,8 @@ fun HomeScreen(
                 .fillMaxHeight()
                 .fillMaxWidth()
                 .widthIn(max = 640.dp),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item(key = "hero_banner", contentType = "hero_banner") {
                 val heroBgBrush = remember {
@@ -941,58 +941,85 @@ fun HomeScreen(
                 }
             }
 
-            // 4 Families ("كل أب وأبناؤه - شبكة مربعات 3 أعمدة")
+            // 4 Clear Independent Group Cards ("مجموعات واضحة داخل بطاقات مستقلة")
             families.forEach { family ->
-                item(key = "family_header_${family.id}", contentType = "family_header") {
-                    FamilyParentHeader(
-                        title = t(lang, family.titleKey),
-                        icon = family.icon,
-                        accent = family.accent,
-                        toolCount = family.tools.size,
-                    )
-                }
-
                 val columns = if (family.id == "ai_voice") 2 else 3
                 val rows = family.tools.chunked(columns)
-                rows.forEachIndexed { rowIdx, rowTools ->
-                    item(key = "family_${family.id}_row_$rowIdx", contentType = "family_tools_row") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                item(key = "family_card_${family.id}", contentType = "family_card") {
+                    Card(
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                        border = BorderStroke(1.dp, family.accent.copy(alpha = 0.28f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("home_family_card_${family.id}"),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            rowTools.forEach { tile ->
-                                ToolSquareTile(
-                                    title = t(lang, tile.titleKey),
-                                    icon = tile.icon,
-                                    accent = tile.accent,
-                                    testTag = "home_tile_${tile.id}",
-                                    hasInfo = tile.infoKey != null,
-                                    aspectRatio = if (columns == 2) 1.38f else 1f,
-                                    onInfoClick = {
-                                        tile.infoKey?.let { key ->
-                                            activeToolInfo = t(lang, tile.titleKey) to t(lang, key)
-                                        }
-                                    },
-                                    onClick = { onNavigate(tile.route) },
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                            repeat(columns - rowTools.size) {
-                                Spacer(modifier = Modifier.weight(1f))
+                            FamilyParentHeader(
+                                title = t(lang, family.titleKey),
+                                icon = family.icon,
+                                accent = family.accent,
+                                toolCount = family.tools.size,
+                            )
+                            rows.forEach { rowTools ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    rowTools.forEach { tile ->
+                                        ToolSquareTile(
+                                            title = t(lang, tile.titleKey),
+                                            icon = tile.icon,
+                                            accent = tile.accent,
+                                            testTag = "home_tile_${tile.id}",
+                                            hasInfo = tile.infoKey != null,
+                                            aspectRatio = if (columns == 2) 1.52f else 1.05f,
+                                            onInfoClick = {
+                                                tile.infoKey?.let { key ->
+                                                    activeToolInfo = t(lang, tile.titleKey) to t(lang, key)
+                                                }
+                                            },
+                                            onClick = { onNavigate(tile.route) },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                    repeat(columns - rowTools.size) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Secondary studio utilities strip (AI Tools, 3D Echo Pad, Full Effects Chain, Settings)
+            // Secondary studio utilities grouped inside an independent Card
             item(key = "studio_extras_strip", contentType = "extras_strip") {
-                Column(
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                    border = BorderStroke(1.dp, StudioColors.BorderBright),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                        .testTag("home_studio_utilities_card"),
                 ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        FamilyParentHeader(
+                            title = t(lang, "studio_utilities_title"),
+                            icon = Icons.Rounded.Settings,
+                            accent = StudioColors.Cyan,
+                            toolCount = if (showDeveloperPanelEntry) 6 else 5,
+                        )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1122,6 +1149,7 @@ fun HomeScreen(
                             }
                         }
                     }
+                    }
                 }
             }
 
@@ -1130,11 +1158,13 @@ fun HomeScreen(
                     uiState = uiState,
                     viewModel = viewModel,
                     onOpenFullLab = { onNavigate(StudioRoute.SmartQaLab) },
+                    collapsible = true,
+                    initiallyExpanded = false,
                 )
             }
 
             item(key = "home_bottom_spacer", contentType = "spacer") {
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(6.dp))
             }
         }
     }

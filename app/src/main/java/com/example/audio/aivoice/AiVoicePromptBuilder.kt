@@ -50,7 +50,7 @@ object AiVoicePromptBuilder {
     }
 
     /**
-     * Formats text with Audar-TTS-V1-Turbo native inline expressive tags
+     * Formats text with Audar-TTS-V1-Flash / V1-Turbo native inline expressive tags
      * ([laughs], [whispers], [excited], [curious], [sighs]) while preserving Arabic text integrity.
      */
     fun buildAudarExpressiveText(

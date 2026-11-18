@@ -1,7 +1,7 @@
 """
 Sonix AI Voice Studio — Secure Cloud GPU Inference & Owner Telemetry Backend
 Hosts:
-  1. FenomAI/VoxCPM2 (Apache-2.0 • multilingual 48kHz Voice Design & Controllable Cloning)
+  1. openbmb/VoxCPM2 (Apache-2.0 • multilingual 48kHz Voice Design & Controllable Cloning)
   2. audarai/Audar-TTS-V1-Flash (AudarAI Open License v1.0 • Arabic dialects, inline expressive tags, 24kHz)
 
 Security:
@@ -13,8 +13,11 @@ Security:
 from __future__ import annotations
 
 import base64
+import binascii
+import hmac
 import io
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -22,6 +25,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -31,17 +35,19 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Sonix AI Voice Studio GPU Backend", version="1.1.0")
-
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip() or None
-VOXCPM_REPO = os.getenv("VOXCPM_MODEL_REPO", "FenomAI/VoxCPM2")
+VOXCPM_REPO = os.getenv("VOXCPM_MODEL_REPO", "openbmb/VoxCPM2").strip() or "openbmb/VoxCPM2"
+VOXCPM_LOAD_DENOISER = os.getenv("VOXCPM_LOAD_DENOISER", "false").lower() == "true"
+VOXCPM_ALLOW_CPU = os.getenv("VOXCPM_ALLOW_CPU", "false").lower() == "true"
 AUDAR_FLASH_REPO = os.getenv("AUDAR_FLASH_MODEL_REPO", "audarai/Audar-TTS-V1-Flash")
 AUDAR_FLASH_GGUF_FILE = os.getenv("AUDAR_FLASH_GGUF_FILE", "audar-tts-v1-flash-q8_0.gguf")
 AUDAR_CODEC_REPO = os.getenv("AUDAR_CODEC_REPO", "neuphonic/neucodec")
 AUDAR_TURBO_REPO = os.getenv("AUDAR_MODEL_REPO", "audarai/Audar-TTS-V1-Turbo")
 
 SERVER_BEARER = os.getenv("SONIX_SERVER_BEARER", "").strip()
+REQUIRE_AUTH = os.getenv("SONIX_REQUIRE_AUTH", "false").lower() == "true"
 PRELOAD_MODELS = os.getenv("SONIX_PRELOAD_MODELS", "false").lower() == "true"
+MAX_REF_AUDIO_BYTES = 16 * 1024 * 1024
 
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "gen-lang-client-0021883952").strip()
 OWNER_EMAILS = {
@@ -57,9 +63,13 @@ OWNER_UIDS = {
 GPU_HOURLY_RATE_USD = float(os.getenv("GPU_HOURLY_RATE_USD", "0.0") or "0.0")
 
 _voxcpm_model = None
+_voxcpm_load_error: Optional[str] = None
 _audar_flash_bundle = None
 _audar_turbo_pipeline = None
 
+_voxcpm_lock = threading.Lock()
+_audar_flash_lock = threading.Lock()
+_audar_turbo_lock = threading.Lock()
 _telemetry_lock = threading.Lock()
 _server_start_epoch = time.time()
 _telemetry: Dict[str, Any] = {
@@ -77,6 +87,14 @@ _telemetry: Dict[str, Any] = {
         },
         "audar_tts_flash": {
             "repo_id": AUDAR_FLASH_REPO,
+            "generations": 0,
+            "failures": 0,
+            "last_latency_ms": None,
+            "last_sample_rate": None,
+            "last_error": None,
+        },
+        "edge_neural_free": {
+            "repo_id": "edge/neural-readaloud",
             "generations": 0,
             "failures": 0,
             "last_latency_ms": None,
@@ -102,7 +120,11 @@ def _record_engine_outcome(
         slot = _telemetry["engines"].setdefault(
             engine_key,
             {
-                "repo_id": AUDAR_FLASH_REPO if engine_key == "audar_tts_flash" else VOXCPM_REPO,
+                "repo_id": (
+                    "edge/neural-readaloud"
+                    if engine_key == "edge_neural_free"
+                    else (AUDAR_FLASH_REPO if engine_key == "audar_tts_flash" else VOXCPM_REPO)
+                ),
                 "generations": 0,
                 "failures": 0,
                 "last_latency_ms": None,
@@ -160,14 +182,34 @@ def _verify_firebase_id_token(token: str) -> Dict[str, Any]:
     return data
 
 
-def verify_auth(authorization: Optional[str] = Header(default=None)) -> None:
+def verify_auth(
+    authorization: Optional[str] = Header(default=None),
+    x_sonix_bearer: Optional[str] = Header(default=None, alias="X-Sonix-Bearer"),
+) -> None:
+    provided_key = (x_sonix_bearer or "").strip()
+    bearer_token = (
+        authorization.removeprefix("Bearer ").strip()
+        if authorization and authorization.startswith("Bearer ")
+        else ""
+    )
+
     if SERVER_BEARER:
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Missing Bearer token")
-        token = authorization.removeprefix("Bearer ").strip()
-        if token != SERVER_BEARER:
-            # Also permit valid Firebase signed-in users
-            _verify_firebase_id_token(token)
+        if provided_key and hmac.compare_digest(provided_key, SERVER_BEARER):
+            return
+        if bearer_token and hmac.compare_digest(bearer_token, SERVER_BEARER):
+            return
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: provide valid X-Sonix-Bearer or Bearer token matching SONIX_SERVER_BEARER",
+        )
+
+    if REQUIRE_AUTH:
+        if not bearer_token:
+            raise HTTPException(status_code=401, detail="Missing Firebase ID Bearer token")
+        _verify_firebase_id_token(bearer_token)
+    elif bearer_token:
+        # Validate optional Firebase ID token if caller supplied one
+        _verify_firebase_id_token(bearer_token)
 
 
 def verify_owner_admin(authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
@@ -204,6 +246,7 @@ def _inspect_packages() -> Dict[str, bool]:
         "neucodec": False,
         "transformers": False,
         "psutil": False,
+        "edge_tts": False,
     }
     for name in list(pkgs.keys()):
         try:
@@ -273,7 +316,7 @@ def _collect_system_metrics() -> Dict[str, Any]:
 class SynthesizeRequest(BaseModel):
     engine: str = Field(
         default="voxcpm2",
-        description="voxcpm2 | audar_tts_flash | audar_tts_v1_turbo",
+        description="voxcpm2 | audar_tts_flash | audar_tts_v1_turbo | edge_neural_free",
     )
     text: str = Field(..., min_length=1, max_length=4000)
     raw_text: Optional[str] = None
@@ -301,9 +344,14 @@ class DialogueLine(BaseModel):
     engine: str = "voxcpm2"
     language: str = "ar"
     dialect: str = "msa"
+    category: str = "male"
+    voice_description: str = ""
     style_instruction: str = ""
     emotion: str = "neutral"
-    emotion_intensity: float = 0.65
+    emotion_intensity: float = Field(default=0.65, ge=0.0, le=1.0)
+    pace: str = "normal"
+    speaking_rate: float = Field(default=1.0, ge=0.5, le=2.0)
+    pitch_semitones: float = Field(default=0.0, ge=-12.0, le=12.0)
     pause_after_ms: int = Field(default=450, ge=0, le=5000)
     reference_audio_base64: Optional[str] = None
     reference_transcript: Optional[str] = None
@@ -314,17 +362,32 @@ class DialogueRequest(BaseModel):
     normalize: bool = True
 
 
-def _get_voxcpm():
-    global _voxcpm_model
+def _resample_mono_np(arr: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
+    if arr.size == 0 or src_sr <= 0 or src_sr == dst_sr:
+        return arr.astype(np.float32, copy=False)
+    ratio = float(dst_sr) / float(src_sr)
+    new_len = max(1, int(round(arr.size * ratio)))
+    return np.interp(np.linspace(0, arr.size - 1, new_len), np.arange(arr.size), arr).astype(np.float32)
+
+
+def _get_voxcpm_unlocked():
+    global _voxcpm_model, _voxcpm_load_error
     if _voxcpm_model is not None:
         return _voxcpm_model
-    from voxcpm import VoxCPM
+    try:
+        if HF_TOKEN:
+            os.environ["HF_TOKEN"] = HF_TOKEN
+        from voxcpm import VoxCPM
 
-    _voxcpm_model = VoxCPM.from_pretrained(VOXCPM_REPO, load_denoiser=False)
-    return _voxcpm_model
+        _voxcpm_model = VoxCPM.from_pretrained(VOXCPM_REPO, load_denoiser=VOXCPM_LOAD_DENOISER)
+        _voxcpm_load_error = None
+        return _voxcpm_model
+    except Exception as exc:
+        _voxcpm_load_error = f"{type(exc).__name__}: {exc}"[:400]
+        raise RuntimeError(f"VoxCPM2 load failed for {VOXCPM_REPO}: {exc}") from exc
 
 
-def _get_audar_flash():
+def _get_audar_flash_unlocked():
     global _audar_flash_bundle
     if _audar_flash_bundle is not None:
         return _audar_flash_bundle
@@ -350,7 +413,7 @@ def _get_audar_flash():
     return _audar_flash_bundle
 
 
-def _get_audar_turbo():
+def _get_audar_turbo_unlocked():
     global _audar_turbo_pipeline
     if _audar_turbo_pipeline is not None:
         return _audar_turbo_pipeline
@@ -371,18 +434,38 @@ def _get_audar_turbo():
 def _decode_b64_wav_to_temp(b64_data: Optional[str]) -> Optional[str]:
     if not b64_data:
         return None
-    raw = base64.b64decode(b64_data)
+    try:
+        raw = base64.b64decode(b64_data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 reference audio: {exc}") from exc
+    if len(raw) <= 44:
+        raise HTTPException(status_code=400, detail="Reference audio clip is empty or corrupted")
+    if len(raw) > MAX_REF_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="Reference audio exceeds 16 MB limit")
     fd, path = tempfile.mkstemp(suffix=".wav")
     os.close(fd)
-    with open(path, "wb") as f:
-        f.write(raw)
-    return path
+    try:
+        with open(path, "wb") as f:
+            f.write(raw)
+        info = sf.info(path)
+        if info.frames <= 0 or info.samplerate <= 0:
+            raise HTTPException(status_code=400, detail="Reference WAV contains no audio frames")
+        return path
+    except HTTPException:
+        if os.path.exists(path):
+            os.remove(path)
+        raise
+    except Exception as exc:
+        if os.path.exists(path):
+            os.remove(path)
+        raise HTTPException(status_code=400, detail=f"Unsupported or unreadable reference audio: {exc}") from exc
 
 
 def _to_wav_bytes(samples: np.ndarray, sample_rate: int, normalize: bool = True) -> bytes:
     arr = np.asarray(samples, dtype=np.float32)
     if arr.ndim > 1:
         arr = np.mean(arr, axis=-1)
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
     if normalize and arr.size > 0:
         peak = float(np.max(np.abs(arr)))
         if peak > 1e-5:
@@ -392,37 +475,101 @@ def _to_wav_bytes(samples: np.ndarray, sample_rate: int, normalize: bool = True)
     return buf.getvalue()
 
 
-def _run_voxcpm2(req: SynthesizeRequest) -> tuple[np.ndarray, int]:
-    t0 = time.perf_counter()
-    ref_path = _decode_b64_wav_to_temp(req.reference_audio_base64)
-    try:
-        model = _get_voxcpm()
-        instruction = (req.style_instruction or req.voice_description).strip()
-        if ref_path:
-            wav = model.generate(
+def _invoke_voxcpm_generate(model: Any, req: SynthesizeRequest, ref_path: Optional[str]):
+    instruction = (req.style_instruction or req.voice_description).strip()
+    ref_transcript = (req.reference_transcript or "").strip()
+
+    if ref_path and ref_transcript:
+        # Official OpenBMB VoxCPM2 Ultimate Cloning: pass both prompt_* and reference_wav_path
+        try:
+            return model.generate(
                 text=req.text,
                 prompt_wav_path=ref_path,
-                prompt_text=req.reference_transcript or None,
+                prompt_text=ref_transcript,
+                reference_wav_path=ref_path,
                 cfg_value=req.cfg_value,
                 inference_timesteps=req.inference_timesteps,
                 normalize=req.normalize,
                 denoise=True,
             )
-        else:
-            formatted = f"({instruction}) {req.text}" if instruction else req.text
-            wav = model.generate(
+        except TypeError:
+            return model.generate(
+                text=req.text,
+                prompt_wav_path=ref_path,
+                prompt_text=ref_transcript,
+                cfg_value=req.cfg_value,
+                inference_timesteps=req.inference_timesteps,
+                normalize=req.normalize,
+                denoise=True,
+            )
+
+    if ref_path:
+        # Official OpenBMB VoxCPM2 Controllable / Zero-shot Timbre Cloning (no transcript needed)
+        formatted = f"({instruction}) {req.text}" if instruction else req.text
+        try:
+            return model.generate(
                 text=formatted,
-                prompt_wav_path=None,
+                reference_wav_path=ref_path,
+                cfg_value=req.cfg_value,
+                inference_timesteps=req.inference_timesteps,
+                normalize=req.normalize,
+                denoise=True,
+            )
+        except TypeError:
+            return model.generate(
+                text=req.text,
+                prompt_wav_path=ref_path,
                 prompt_text=None,
                 cfg_value=req.cfg_value,
                 inference_timesteps=req.inference_timesteps,
                 normalize=req.normalize,
-                denoise=False,
+                denoise=True,
             )
+
+    # Voice Design (natural language timbre/emotion prompt)
+    formatted = f"({instruction}) {req.text}" if instruction else req.text
+    return model.generate(
+        text=formatted,
+        prompt_wav_path=None,
+        prompt_text=None,
+        cfg_value=req.cfg_value,
+        inference_timesteps=req.inference_timesteps,
+        normalize=req.normalize,
+        denoise=False,
+    )
+
+
+def _run_voxcpm2(req: SynthesizeRequest) -> tuple[np.ndarray, int]:
+    t0 = time.perf_counter()
+    ref_path = _decode_b64_wav_to_temp(req.reference_audio_base64)
+    try:
+        with _voxcpm_lock:
+            if not torch.cuda.is_available() and not VOXCPM_ALLOW_CPU:
+                raise HTTPException(
+                    status_code=503,
+                    detail="CUDA GPU is not available on this server (set VOXCPM_ALLOW_CPU=true only for CPU debug).",
+                )
+            model = _get_voxcpm_unlocked()
+            wav = _invoke_voxcpm_generate(model, req, ref_path)
         sr = int(getattr(getattr(model, "tts_model", None), "sample_rate", 48000))
-        arr = np.asarray(wav, dtype=np.float32)
+        arr = np.asarray(wav, dtype=np.float32).reshape(-1)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        if arr.size == 0:
+            raise RuntimeError("VoxCPM2 generated an empty waveform.")
         _record_engine_outcome("voxcpm2", True, int((time.perf_counter() - t0) * 1000), sample_rate=sr)
         return arr, sr
+    except torch.cuda.OutOfMemoryError as exc:
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        _record_engine_outcome("voxcpm2", False, int((time.perf_counter() - t0) * 1000), error="CUDA OOM")
+        raise HTTPException(
+            status_code=503,
+            detail="GPU out of memory during VoxCPM2 synthesis. Retry with shorter text or lower concurrency.",
+        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         _record_engine_outcome("voxcpm2", False, int((time.perf_counter() - t0) * 1000), error=str(exc))
         raise
@@ -435,40 +582,45 @@ def _run_audar_flash(req: SynthesizeRequest) -> tuple[np.ndarray, int]:
     t0 = time.perf_counter()
     ref_path = _decode_b64_wav_to_temp(req.reference_audio_base64)
     try:
-        llm, codec = _get_audar_flash()
-        ref_codes = []
-        if ref_path:
-            wav_np, sr_in = sf.read(ref_path, dtype="float32")
-            if wav_np.ndim > 1:
-                wav_np = np.mean(wav_np, axis=-1)
-            wav_tensor = torch.from_numpy(wav_np).unsqueeze(0).unsqueeze(0)
-            if torch.cuda.is_available():
-                wav_tensor = wav_tensor.to("cuda")
-            with torch.no_grad():
-                encoded = codec.encode_code(wav_tensor)
-            ref_codes = encoded.squeeze().tolist() if hasattr(encoded, "squeeze") else []
+        with _audar_flash_lock:
+            llm, codec = _get_audar_flash_unlocked()
+            ref_codes: List[int] = []
+            if ref_path:
+                wav_np, sr_in = sf.read(ref_path, dtype="float32")
+                if wav_np.ndim > 1:
+                    wav_np = np.mean(wav_np, axis=-1)
+                # NeuCodec expects 16 kHz mono audio; Android studio exports 24 kHz WAVs
+                wav_16k = _resample_mono_np(wav_np, int(sr_in), 16000)
+                wav_tensor = torch.from_numpy(wav_16k).unsqueeze(0).unsqueeze(0)
+                if torch.cuda.is_available():
+                    wav_tensor = wav_tensor.to("cuda")
+                with torch.no_grad():
+                    encoded = codec.encode_code(wav_tensor)
+                if hasattr(encoded, "reshape"):
+                    ref_codes = [int(c) for c in encoded.reshape(-1).detach().cpu().tolist()]
 
-        prompt_prefix = "".join(f"<|speech_{int(c)}|>" for c in ref_codes)
-        ref_transcript = (req.reference_transcript or "").strip()
-        full_prompt = (
-            f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_transcript} {req.text}<|TEXT_PROMPT_END|>\n"
-            f"assistant:<|SPEECH_GENERATION_START|>{prompt_prefix}"
-        )
-        out = llm(full_prompt, max_tokens=1536, stop=["<|SPEECH_GENERATION_END|>"], temperature=0.8)
-        raw_tokens = out["choices"][0]["text"]
-        speech_ids = [
-            int(part.split("|>")[0])
-            for part in raw_tokens.split("<|speech_")
-            if part and part[0].isdigit() and "|>" in part
-        ]
-        if not speech_ids:
-            raise RuntimeError("Audar-TTS-V1-Flash generated no acoustic codec tokens.")
-        codes_tensor = torch.tensor(speech_ids, dtype=torch.long).unsqueeze(0).unsqueeze(0)
-        if torch.cuda.is_available():
-            codes_tensor = codes_tensor.to("cuda")
-        with torch.no_grad():
-            audio_out = codec.decode_code(codes_tensor)
-        arr = audio_out.squeeze().detach().cpu().numpy().astype(np.float32)
+            prompt_prefix = "".join(f"<|speech_{int(c)}|>" for c in ref_codes)
+            ref_transcript = (req.reference_transcript or "").strip()
+            prompt_text = f"{ref_transcript} {req.text}".strip() if ref_transcript else req.text
+            full_prompt = (
+                f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{prompt_text}<|TEXT_PROMPT_END|>\n"
+                f"assistant:<|SPEECH_GENERATION_START|>{prompt_prefix}"
+            )
+            out = llm(full_prompt, max_tokens=1536, stop=["<|SPEECH_GENERATION_END|>"], temperature=0.8)
+            raw_tokens = out["choices"][0]["text"]
+            speech_ids = [
+                int(part.split("|>")[0])
+                for part in raw_tokens.split("<|speech_")
+                if part and part[0].isdigit() and "|>" in part
+            ]
+            if not speech_ids:
+                raise RuntimeError("Audar-TTS-V1-Flash generated no acoustic codec tokens.")
+            codes_tensor = torch.tensor(speech_ids, dtype=torch.long).unsqueeze(0).unsqueeze(0)
+            if torch.cuda.is_available():
+                codes_tensor = codes_tensor.to("cuda")
+            with torch.no_grad():
+                audio_out = codec.decode_code(codes_tensor)
+            arr = audio_out.reshape(-1).detach().cpu().numpy().astype(np.float32)
         _record_engine_outcome("audar_tts_flash", True, int((time.perf_counter() - t0) * 1000), sample_rate=24000)
         return arr, 24000
     except Exception as exc:
@@ -480,51 +632,98 @@ def _run_audar_flash(req: SynthesizeRequest) -> tuple[np.ndarray, int]:
 
 
 def _run_audar_turbo(req: SynthesizeRequest) -> tuple[np.ndarray, int]:
-    tokenizer, model = _get_audar_turbo()
     ref_path = _decode_b64_wav_to_temp(req.reference_audio_base64)
     try:
-        if hasattr(model, "synthesize"):
-            wav, sr = model.synthesize(
-                text=req.text,
-                tokenizer=tokenizer,
-                reference_audio_path=ref_path,
-                reference_text=req.reference_transcript,
-                dialect=req.dialect,
-            )
-            return np.asarray(wav, dtype=np.float32), int(sr)
-        raise RuntimeError("Audar-TTS-V1-Turbo disabled for commercial use; route Arabic requests to Audar-TTS-V1-Flash.")
+        with _audar_turbo_lock:
+            tokenizer, model = _get_audar_turbo_unlocked()
+            if hasattr(model, "synthesize"):
+                wav, sr = model.synthesize(
+                    text=req.text,
+                    tokenizer=tokenizer,
+                    reference_audio_path=ref_path,
+                    reference_text=req.reference_transcript,
+                    dialect=req.dialect,
+                )
+                return np.asarray(wav, dtype=np.float32), int(sr)
+            raise RuntimeError("Audar-TTS-V1-Turbo disabled for commercial use; route Arabic requests to Audar-TTS-V1-Flash.")
     finally:
         if ref_path and os.path.exists(ref_path):
             os.remove(ref_path)
 
 
-@app.on_event("startup")
-def _startup() -> None:
+def _run_edge_neural_free(req: SynthesizeRequest) -> tuple[np.ndarray, int]:
+    t0 = time.perf_counter()
+    try:
+        from edge_tts_client import mp3_bytes_to_mono_pcm, synthesize_edge_neural_mp3
+
+        mp3_bytes, _voice = synthesize_edge_neural_mp3(
+            text=req.text,
+            language=req.language,
+            dialect=req.dialect,
+            category=req.category,
+            speaking_rate=req.speaking_rate,
+            pitch_semitones=req.pitch_semitones,
+        )
+        arr, sr = mp3_bytes_to_mono_pcm(mp3_bytes)
+        if arr.size == 0:
+            raise RuntimeError("Edge Neural TTS returned empty PCM frames.")
+        _record_engine_outcome("edge_neural_free", True, int((time.perf_counter() - t0) * 1000), sample_rate=sr)
+        return arr, sr
+    except Exception as exc:
+        _record_engine_outcome("edge_neural_free", False, int((time.perf_counter() - t0) * 1000), error=str(exc))
+        raise
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if not SERVER_BEARER and not REQUIRE_AUTH:
+        logging.getLogger("uvicorn.error").warning(
+            "SONIX SECURITY NOTICE: Neither SONIX_SERVER_BEARER nor SONIX_REQUIRE_AUTH=true is set; /v1/voice-studio/* is unauthenticated."
+        )
     if PRELOAD_MODELS:
-        try:
-            _get_voxcpm()
-        except Exception:
-            pass
-        try:
-            _get_audar_flash()
-        except Exception:
-            pass
+        with _voxcpm_lock:
+            try:
+                _get_voxcpm_unlocked()
+            except Exception:
+                pass
+        with _audar_flash_lock:
+            try:
+                _get_audar_flash_unlocked()
+            except Exception:
+                pass
+    yield
+
+
+app = FastAPI(title="Sonix AI Voice Studio GPU Backend", version="1.1.0", lifespan=lifespan)
 
 
 @app.get("/health")
 def health():
     pkgs = _inspect_packages()
     sys_metrics = _collect_system_metrics()
+    vox_pkg_ok = pkgs["voxcpm"]
+    vox_hw_ok = bool(sys_metrics["cuda_available"] or VOXCPM_ALLOW_CPU)
+    vox_loaded = _voxcpm_model is not None
+    vox_ready = bool(vox_pkg_ok and vox_hw_ok and _voxcpm_load_error is None)
     return {
         "status": "ok",
         "cuda_available": sys_metrics["cuda_available"],
         "gpu_name": sys_metrics["gpu_name"],
+        "vram_total_mb": sys_metrics["vram_total_mb"],
+        "vram_used_mb": sys_metrics["vram_used_mb"],
+        "preload_models": PRELOAD_MODELS,
+        "auth_required": bool(SERVER_BEARER or REQUIRE_AUTH),
         "voxcpm2_repo": VOXCPM_REPO,
-        "voxcpm2_ready": pkgs["voxcpm"],
+        "voxcpm2_package_installed": vox_pkg_ok,
+        "voxcpm2_loaded": vox_loaded,
+        "voxcpm2_load_error": _voxcpm_load_error,
+        "voxcpm2_ready": vox_ready,
         "audar_flash_repo": AUDAR_FLASH_REPO,
         "audar_flash_ready": pkgs["llama_cpp"] and pkgs["neucodec"],
         "audar_repo": AUDAR_FLASH_REPO,
         "audar_tts_ready": pkgs["llama_cpp"] and pkgs["neucodec"],
+        "edge_neural_free_ready": True,
+        "edge_tts_package_installed": pkgs["edge_tts"],
     }
 
 
@@ -567,6 +766,7 @@ def admin_overview(owner: Dict[str, Any] = Depends(verify_owner_admin)):
                 **vox_stats,
                 "package_installed": pkgs["voxcpm"],
                 "loaded_in_memory": _voxcpm_model is not None,
+                "load_error": _voxcpm_load_error,
                 "license": "Apache-2.0",
             },
             "audar_tts_flash": {
@@ -580,6 +780,8 @@ def admin_overview(owner: Dict[str, Any] = Depends(verify_owner_admin)):
 
 
 def _dispatch_engine(req: SynthesizeRequest) -> tuple[np.ndarray, int]:
+    if req.engine == "edge_neural_free":
+        return _run_edge_neural_free(req)
     if req.engine == "audar_tts_flash":
         return _run_audar_flash(req)
     if req.engine == "audar_tts_v1_turbo":
@@ -610,31 +812,39 @@ def synthesize(req: SynthesizeRequest):
 def synthesize_dialogue(req: DialogueRequest):
     if not req.lines:
         raise HTTPException(status_code=400, detail="Dialogue lines cannot be empty")
-    target_sr = 48000
-    chunks: List[np.ndarray] = []
-    for idx, line in enumerate(req.lines):
-        sub_req = SynthesizeRequest(
-            engine=line.engine,
-            text=line.text,
-            language=line.language,
-            dialect=line.dialect,
-            style_instruction=line.style_instruction,
-            emotion=line.emotion,
-            emotion_intensity=line.emotion_intensity,
-            reference_audio_base64=line.reference_audio_base64,
-            reference_transcript=line.reference_transcript,
-            normalize=True,
-        )
-        wav, sr = _dispatch_engine(sub_req)
-        if sr != target_sr and wav.size > 0:
-            ratio = target_sr / float(sr)
-            new_len = max(1, int(round(wav.size * ratio)))
-            wav = np.interp(np.linspace(0, wav.size - 1, new_len), np.arange(wav.size), wav).astype(np.float32)
-        chunks.append(wav)
-        if idx < len(req.lines) - 1 and line.pause_after_ms > 0:
-            pause_samples = int(target_sr * (line.pause_after_ms / 1000.0))
-            chunks.append(np.zeros(pause_samples, dtype=np.float32))
+    try:
+        target_sr = 48000
+        chunks: List[np.ndarray] = []
+        for idx, line in enumerate(req.lines):
+            sub_req = SynthesizeRequest(
+                engine=line.engine,
+                text=line.text,
+                language=line.language,
+                dialect=line.dialect,
+                category=line.category,
+                voice_description=line.voice_description,
+                style_instruction=line.style_instruction,
+                emotion=line.emotion,
+                emotion_intensity=line.emotion_intensity,
+                pace=line.pace,
+                speaking_rate=line.speaking_rate,
+                pitch_semitones=line.pitch_semitones,
+                reference_audio_base64=line.reference_audio_base64,
+                reference_transcript=line.reference_transcript,
+                normalize=True,
+            )
+            wav, sr = _dispatch_engine(sub_req)
+            if sr != target_sr and wav.size > 0:
+                wav = _resample_mono_np(wav, sr, target_sr)
+            chunks.append(wav)
+            if idx < len(req.lines) - 1 and line.pause_after_ms > 0:
+                pause_samples = int(target_sr * (line.pause_after_ms / 1000.0))
+                chunks.append(np.zeros(pause_samples, dtype=np.float32))
 
-    merged = np.concatenate(chunks) if chunks else np.zeros(target_sr // 4, dtype=np.float32)
-    wav_bytes = _to_wav_bytes(merged, target_sr, normalize=req.normalize)
-    return Response(content=wav_bytes, media_type="audio/wav", headers={"X-Sonix-Sample-Rate": str(target_sr)})
+        merged = np.concatenate(chunks) if chunks else np.zeros(target_sr // 4, dtype=np.float32)
+        wav_bytes = _to_wav_bytes(merged, target_sr, normalize=req.normalize)
+        return Response(content=wav_bytes, media_type="audio/wav", headers={"X-Sonix-Sample-Rate": str(target_sr)})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc

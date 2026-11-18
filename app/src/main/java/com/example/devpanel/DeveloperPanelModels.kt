@@ -219,7 +219,7 @@ data class DeveloperPanelUiState(
     val voxCpmEngine: EngineTelemetrySnapshot = EngineTelemetrySnapshot(
         engineId = "voxcpm2",
         displayName = "VoxCPM2 (المحرك الأساسي متعدد اللغات)",
-        repoId = "FenomAI/VoxCPM2",
+        repoId = "openbmb/VoxCPM2",
         licenseLabel = "Apache-2.0",
         clientIntegrated = true,
     ),

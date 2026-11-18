@@ -5,12 +5,16 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,6 +32,9 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Email
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Science
@@ -114,6 +121,8 @@ fun SupportUpdatesQaSection(
     uiState: StudioUiState,
     viewModel: StudioViewModel,
     onOpenFullLab: (() -> Unit)? = null,
+    collapsible: Boolean = false,
+    initiallyExpanded: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val lang = uiState.language
@@ -121,317 +130,170 @@ fun SupportUpdatesQaSection(
     val qaState by viewModel.qaScanState.collectAsStateWithLifecycle()
     val currentVersion = remember(context) { AppUpdateManager.getCurrentAppVersionName(context) }
 
+    var expanded by rememberSaveable(collapsible, initiallyExpanded) {
+        mutableStateOf(if (collapsible) initiallyExpanded else true)
+    }
     var supportMessage by rememberSaveable { mutableStateOf("") }
     var attachDiagnostics by rememberSaveable { mutableStateOf(true) }
     var inlineFeedback by remember { mutableStateOf<String?>(null) }
 
-    val classicAccentBrush = remember {
-        Brush.horizontalGradient(
-            colors = listOf(
-                StudioColors.Cyan.copy(alpha = 0.65f),
-                StudioColors.Amber.copy(alpha = 0.55f),
-                StudioColors.Violet.copy(alpha = 0.65f),
-            ),
-        )
-    }
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag("support_updates_qa_section"),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        // Classic Elegant Header with Version & Optional Full-Lab Expand Action
+    val innerContent: @Composable () -> Unit = {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = StudioColors.Cyan.copy(alpha = 0.14f),
-                        border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.4f)),
-                        modifier = Modifier.size(32.dp),
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Rounded.VerifiedUser,
-                                contentDescription = t(lang, "support_lab_section_title"),
-                                tint = StudioColors.Cyan,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                    }
-                    Text(
-                        text = t(lang, "support_lab_section_title"),
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = StudioColors.TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(999.dp),
-                        color = StudioColors.ElevatedSurface,
-                        border = BorderStroke(1.dp, StudioColors.BorderBright),
-                    ) {
-                        Text(
-                            text = "v$currentVersion",
-                            style = TelemetryTextStyle.copy(fontSize = 11.sp),
-                            color = StudioColors.Amber,
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                        )
-                    }
-                    if (onOpenFullLab != null) {
-                        val openLabInt = remember { MutableInteractionSource() }
-                        IconButton(
-                            onClick = onOpenFullLab,
-                            interactionSource = openLabInt,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .lit(openLabInt, StudioColors.Cyan, cornerRadius = 24.dp)
-                                .testTag("open_smart_qa_lab_button"),
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                contentDescription = t(lang, "qa_card_title"),
-                                tint = StudioColors.Cyan,
-                            )
-                        }
-                    }
-                }
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(1.5.dp)
-                    .background(classicAccentBrush),
-            )
-        }
-
-        inlineFeedback?.let { msg ->
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = StudioColors.Emerald.copy(alpha = 0.14f),
-                border = BorderStroke(1.dp, StudioColors.Emerald.copy(alpha = 0.55f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("support_qa_feedback_banner"),
-            ) {
-                Row(
+            inlineFeedback?.let { msg ->
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = StudioColors.Emerald.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, StudioColors.Emerald.copy(alpha = 0.55f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                        .testTag("support_qa_feedback_banner"),
                 ) {
-                    Text(
-                        text = msg,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = StudioColors.Emerald,
-                        modifier = Modifier.weight(1f),
-                    )
-                    IconButton(
-                        onClick = { inlineFeedback = null },
-                        modifier = Modifier.size(48.dp),
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Close,
-                            contentDescription = "Dismiss",
-                            tint = StudioColors.Emerald,
-                            modifier = Modifier.size(16.dp),
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = StudioColors.Emerald,
+                            modifier = Modifier.weight(1f),
                         )
+                        IconButton(
+                            onClick = { inlineFeedback = null },
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Dismiss",
+                                tint = StudioColors.Emerald,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
                     }
                 }
             }
-        }
 
-        // Side-by-Side Classic Cards: App Updates (GitHub Releases) + Direct Customer Support
-        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            val sideBySide = maxWidth >= 340.dp
-            if (sideBySide) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    AppUpdateClassicCard(
-                        uiState = uiState,
-                        currentVersion = currentVersion,
-                        viewModel = viewModel,
-                        lang = lang,
-                        compactMode = true,
-                        modifier = Modifier.weight(1f),
-                    )
-                    CustomerSupportClassicCard(
-                        lang = lang,
-                        supportMessage = supportMessage,
-                        onMessageChange = { supportMessage = it },
-                        attachDiagnostics = attachDiagnostics,
-                        onAttachChange = { attachDiagnostics = it },
-                        compactMode = true,
-                        onSendEmail = {
-                            val body = buildSupportEmailBody(
-                                lang = lang,
-                                userMessage = supportMessage,
-                                attachDiagnostics = attachDiagnostics,
-                                qaReport = viewModel.getSmartQaFullReport(),
-                                currentVersion = currentVersion,
-                            )
-                            val subject = if (lang == AppLanguage.EN) {
-                                "Sonix ✦ Studio Support (v$currentVersion)"
-                            } else {
-                                "دعم تطبيق Sonix ✦ (إصدار $currentVersion)"
-                            }
-                            inlineFeedback = launchSupportEmail(
-                                context = context,
-                                subject = subject,
-                                body = body,
-                                lang = lang,
-                            )
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            } else {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    AppUpdateClassicCard(
-                        uiState = uiState,
-                        currentVersion = currentVersion,
-                        viewModel = viewModel,
-                        lang = lang,
-                        compactMode = false,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    CustomerSupportClassicCard(
-                        lang = lang,
-                        supportMessage = supportMessage,
-                        onMessageChange = { supportMessage = it },
-                        attachDiagnostics = attachDiagnostics,
-                        onAttachChange = { attachDiagnostics = it },
-                        compactMode = false,
-                        onSendEmail = {
-                            val body = buildSupportEmailBody(
-                                lang = lang,
-                                userMessage = supportMessage,
-                                attachDiagnostics = attachDiagnostics,
-                                qaReport = viewModel.getSmartQaFullReport(),
-                                currentVersion = currentVersion,
-                            )
-                            val subject = if (lang == AppLanguage.EN) {
-                                "Sonix ✦ Studio Support (v$currentVersion)"
-                            } else {
-                                "دعم تطبيق Sonix ✦ (إصدار $currentVersion)"
-                            }
-                            inlineFeedback = launchSupportEmail(
-                                context = context,
-                                subject = subject,
-                                body = body,
-                                lang = lang,
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
-        }
+            // 1. تحديثات التطبيق (App Updates)
+            AppUpdateClassicCard(
+                uiState = uiState,
+                currentVersion = currentVersion,
+                viewModel = viewModel,
+                lang = lang,
+                compactMode = false,
+                modifier = Modifier.fillMaxWidth(),
+            )
 
-        // Classic Card: Smart QA Bot & Open-Ended Full Diagnostics Lab
-        Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-            border = BorderStroke(
-                1.dp,
-                when {
-                    qaState.isRunning -> StudioColors.Cyan.copy(alpha = 0.7f)
-                    qaState.completed && qaState.issues.isEmpty() -> StudioColors.Emerald.copy(alpha = 0.55f)
-                    qaState.issues.isNotEmpty() -> StudioColors.Amber.copy(alpha = 0.6f)
-                    else -> StudioColors.BorderBright
-                },
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("smart_qa_lab_card"),
-        ) {
-            Column(
+            // 2. الإبلاغ عن مشكلة (Report a Problem & Smart QA Lab)
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = StudioColors.ElevatedSurface),
+                border = BorderStroke(
+                    1.dp,
+                    when {
+                        qaState.isRunning -> StudioColors.Cyan.copy(alpha = 0.7f)
+                        qaState.completed && qaState.issues.isEmpty() -> StudioColors.Emerald.copy(alpha = 0.55f)
+                        qaState.issues.isNotEmpty() -> StudioColors.Amber.copy(alpha = 0.6f)
+                        else -> StudioColors.BorderBright
+                    },
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .testTag("smart_qa_lab_card"),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = StudioColors.Cyan.copy(alpha = 0.14f),
-                            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.4f)),
-                            modifier = Modifier.size(38.dp),
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f),
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Science,
-                                    contentDescription = t(lang, "qa_card_title"),
-                                    tint = StudioColors.Cyan,
-                                    modifier = Modifier.size(20.dp),
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = StudioColors.Cyan.copy(alpha = 0.14f),
+                                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.4f)),
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Science,
+                                        contentDescription = t(lang, "report_problem_title"),
+                                        tint = StudioColors.Cyan,
+                                        modifier = Modifier.size(19.dp),
+                                    )
+                                }
+                            }
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = t(lang, "report_problem_title"),
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = StudioColors.TextPrimary,
+                                )
+                                Text(
+                                    text = t(lang, "qa_card_title"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioColors.Cyan,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = t(lang, "qa_card_title"),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = StudioColors.TextPrimary,
-                            )
-                            Text(
-                                text = t(lang, "qa_card_desc"),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = StudioColors.TextSecondary,
-                            )
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = StudioColors.BgMid,
+                                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.5f)),
+                            ) {
+                                Text(
+                                    text = "#${qaState.scenariosChecked}",
+                                    style = TelemetryTextStyle.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                                    color = StudioColors.Cyan,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                )
+                            }
+                            if (onOpenFullLab != null) {
+                                val openLabInt = remember { MutableInteractionSource() }
+                                IconButton(
+                                    onClick = onOpenFullLab,
+                                    interactionSource = openLabInt,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .lit(openLabInt, StudioColors.Cyan, cornerRadius = 24.dp)
+                                        .testTag("open_smart_qa_lab_button"),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                                        contentDescription = t(lang, "qa_card_title"),
+                                        tint = StudioColors.Cyan,
+                                    )
+                                }
+                            }
                         }
                     }
 
-                    Spacer(Modifier.width(8.dp))
-
-                    Surface(
-                        shape = RoundedCornerShape(999.dp),
-                        color = StudioColors.BgMid,
-                        border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.5f)),
-                    ) {
-                        Text(
-                            text = "#${qaState.scenariosChecked}",
-                            style = TelemetryTextStyle.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
-                            color = StudioColors.Cyan,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        )
-                    }
-                }
+                    Text(
+                        text = t(lang, "qa_card_desc"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.TextSecondary,
+                    )
 
                 // Side-by-Side Consent Start & Immediate Stop Buttons
                 Row(
@@ -705,6 +567,152 @@ fun SupportUpdatesQaSection(
                     }
                 }
             }
+            }
+
+            // 3. التواصل مع الدعم (Customer Support)
+            CustomerSupportClassicCard(
+                lang = lang,
+                supportMessage = supportMessage,
+                onMessageChange = { supportMessage = it },
+                attachDiagnostics = attachDiagnostics,
+                onAttachChange = { attachDiagnostics = it },
+                compactMode = false,
+                onSendEmail = {
+                    val body = buildSupportEmailBody(
+                        lang = lang,
+                        userMessage = supportMessage,
+                        attachDiagnostics = attachDiagnostics,
+                        qaReport = viewModel.getSmartQaFullReport(),
+                        currentVersion = currentVersion,
+                    )
+                    val subject = if (lang == AppLanguage.EN) {
+                        "Sonix ✦ Studio Support (v$currentVersion)"
+                    } else {
+                        "دعم تطبيق Sonix ✦ (إصدار $currentVersion)"
+                    }
+                    inlineFeedback = launchSupportEmail(
+                        context = context,
+                        subject = subject,
+                        body = body,
+                        lang = lang,
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+
+    if (collapsible) {
+        val toggleInteraction = remember { MutableInteractionSource() }
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(
+                1.dp,
+                if (expanded) StudioColors.Cyan.copy(alpha = 0.5f) else StudioColors.BorderBright,
+            ),
+            modifier = modifier
+                .fillMaxWidth()
+                .testTag("more_and_help_card"),
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Surface(
+                    onClick = { expanded = !expanded },
+                    interactionSource = toggleInteraction,
+                    color = Color.Transparent,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 62.dp)
+                        .lit(toggleInteraction, StudioColors.Cyan, cornerRadius = 20.dp)
+                        .testTag("more_and_help_toggle"),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = StudioColors.Cyan.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.4f)),
+                            modifier = Modifier.size(38.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Rounded.HelpOutline,
+                                    contentDescription = t(lang, "more_and_help_title"),
+                                    tint = StudioColors.Cyan,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = t(lang, "more_and_help_title"),
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = t(lang, "more_and_help_subtitle"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioColors.TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = StudioColors.ElevatedSurface,
+                            border = BorderStroke(1.dp, StudioColors.Border),
+                        ) {
+                            Text(
+                                text = "v$currentVersion",
+                                style = TelemetryTextStyle.copy(fontSize = 10.sp),
+                                color = StudioColors.Amber,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                        Icon(
+                            imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                            contentDescription = t(lang, "more_and_help_title"),
+                            tint = StudioColors.Cyan,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = expanded,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut(),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 12.dp, bottom = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        HorizontalDivider(color = StudioColors.Border)
+                        innerContent()
+                    }
+                }
+            }
+        }
+    } else {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .testTag("support_updates_qa_section"),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            innerContent()
         }
     }
 }
@@ -758,16 +766,18 @@ private fun AppUpdateClassicCard(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = t(lang, "update_card_title"),
+                        text = t(lang, "app_updates_short_title"),
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = StudioColors.TextPrimary,
                         maxLines = if (compactMode) 2 else 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = "v$currentVersion",
+                        text = t(lang, "update_card_title") + " • v$currentVersion",
                         style = TelemetryTextStyle.copy(fontSize = 11.sp),
                         color = StudioColors.Amber,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -965,7 +975,7 @@ private fun CustomerSupportClassicCard(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = t(lang, "support_card_title"),
+                        text = t(lang, "contact_support_title"),
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = StudioColors.TextPrimary,
                         maxLines = if (compactMode) 2 else 1,

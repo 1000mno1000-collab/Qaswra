@@ -615,20 +615,30 @@ internal fun TestRunnerTab(
             },
             accent = StudioColors.Cyan,
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 FilterChip(
                     selected = devState.selectedTestEngineId == "voxcpm2",
                     onClick = { onSelectEngine("voxcpm2") },
-                    label = { Text("VoxCPM2") },
+                    label = { Text("VoxCPM2", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingIcon = { Icon(Icons.Rounded.Memory, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                    modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_voxcpm2"),
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_voxcpm2"),
                 )
                 FilterChip(
                     selected = devState.selectedTestEngineId == "audar_tts_flash",
                     onClick = { onSelectEngine("audar_tts_flash") },
-                    label = { Text("Audar-TTS-V1-Flash") },
+                    label = { Text("Audar-Flash", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingIcon = { Icon(Icons.Rounded.Memory, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                    modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_audar_flash"),
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_audar_flash"),
+                )
+                FilterChip(
+                    selected = devState.selectedTestEngineId == "edge_neural_free",
+                    onClick = { onSelectEngine("edge_neural_free") },
+                    label = { Text("Edge Free", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    leadingIcon = { Icon(Icons.Rounded.Memory, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_edge_neural"),
                 )
             }
 

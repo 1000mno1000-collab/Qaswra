@@ -238,7 +238,7 @@ class DeveloperPanelRepository(context: Context) {
             val voxSnap = EngineTelemetrySnapshot(
                 engineId = "voxcpm2",
                 displayName = "VoxCPM2 (المحرك الأساسي متعدد اللغات)",
-                repoId = vox.optString("repo_id", "FenomAI/VoxCPM2"),
+                repoId = vox.optString("repo_id", "openbmb/VoxCPM2"),
                 licenseLabel = vox.optString("license", "Apache-2.0"),
                 clientIntegrated = true,
                 backendConnected = true,

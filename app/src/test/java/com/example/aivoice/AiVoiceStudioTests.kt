@@ -143,6 +143,8 @@ class AiVoiceStudioTests {
         assertTrue(decodedChars.any { it.category == AiVoiceCategory.CHILD })
         assertTrue(decodedChars.any { it.category == AiVoiceCategory.CARTOON })
         assertTrue(decodedChars.any { it.category == AiVoiceCategory.NARRATOR })
+        assertTrue(decodedChars.none { it.preferredEngine == AiVoiceEngineKind.AUDAR_TTS_V1_TURBO })
+        assertTrue(decodedChars.any { it.preferredEngine == AiVoiceEngineKind.AUDAR_TTS_V1_FLASH })
 
         val turn = AiDialogueTurn(
             id = "t1",
@@ -171,5 +173,24 @@ class AiVoiceStudioTests {
         assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.SURPRISED))
         assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.WHISPER))
         assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.LAUGH))
+    }
+
+    @Test
+    fun voxCpm2OfficialRepoAndHealthUiStateDefaultsMatchSpec() {
+        assertEquals("openbmb/VoxCPM2", AiVoiceEngineKind.VOXCPM_2.modelRepoId)
+        assertEquals("voxcpm2", AiVoiceEngineKind.VOXCPM_2.id)
+        assertTrue(AiVoiceEngineKind.VOXCPM_2.requiresRemoteGpu)
+
+        val defaultHealth = com.example.audio.aivoice.AiVoiceBackendHealth()
+        assertEquals(false, defaultHealth.voxCpm2Ready)
+        assertEquals(false, defaultHealth.voxcpm2PackageInstalled)
+        assertEquals(false, defaultHealth.voxcpm2Loaded)
+        assertEquals(false, defaultHealth.cudaAvailable)
+        assertEquals("", defaultHealth.voxcpm2LoadError)
+
+        val defaultUi = com.example.audio.aivoice.AiVoiceStudioUiState()
+        assertEquals("", defaultUi.backendServerUrl)
+        assertEquals("", defaultUi.backendBearerToken)
+        assertEquals(AiVoiceEngineKind.VOXCPM_2, defaultUi.selectedEngine)
     }
 }

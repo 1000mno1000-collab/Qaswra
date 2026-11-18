@@ -192,13 +192,10 @@ class MainActivity : ComponentActivity() {
 
         try {
             if (FirebaseApp.getApps(this).isEmpty()) {
-                val options = FirebaseOptions.Builder()
-                    .setApplicationId("1:71794555883:android:4c65036e94f7e36e3b37ae")
-                    .setApiKey("AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo")
-                    .setProjectId("gen-lang-client-0021883952")
-                    .setStorageBucket("gen-lang-client-0021883952.firebasestorage.app")
-                    .build()
-                FirebaseApp.initializeApp(this, options)
+                val options = SonixCrashGuard.buildFallbackFirebaseOptions()
+                if (options != null) {
+                    FirebaseApp.initializeApp(this, options)
+                }
             }
         } catch (e: Exception) {
             Log.w("MainActivity", "Manual FirebaseApp initialization skipped safely: ${e.message}")

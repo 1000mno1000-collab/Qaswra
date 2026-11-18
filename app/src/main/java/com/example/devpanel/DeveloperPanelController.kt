@@ -35,6 +35,7 @@ class DeveloperPanelController(
     private val scope: CoroutineScope,
     private val coordinator: AiVoiceStudioCoordinator,
     private val getBackendUrl: () -> String,
+    private val getBackendBearerToken: () -> String = { "" },
 ) {
     private val repo = DeveloperPanelRepository(app)
 
@@ -353,6 +354,7 @@ class DeveloperPanelController(
         val engineId = _uiState.value.selectedTestEngineId
         val engineKind = when (engineId) {
             "audar_tts_flash" -> AiVoiceEngineKind.AUDAR_TTS_V1_FLASH
+            "edge_neural_free" -> AiVoiceEngineKind.EDGE_NEURAL_FREE
             else -> AiVoiceEngineKind.VOXCPM_2
         }
 
@@ -482,7 +484,7 @@ class DeveloperPanelController(
             emotionIntensity = 0.72f,
             pace = AiDeliveryPace.NORMAL,
         )
-        return when (val out = coordinator.synthesizeSingle(app, req, backendUrl, outDir)) {
+        return when (val out = coordinator.synthesizeSingle(app, req, backendUrl, outDir, getBackendBearerToken())) {
             is AiVoiceSynthOutcome.Success -> {
                 val f = File(out.audioFilePath)
                 val valid = f.exists() && f.length() > 44L && out.durationMs > 0L
@@ -547,6 +549,7 @@ class DeveloperPanelController(
                 selectedEngineOverride = engineKind,
                 backendUrl = backendUrl,
                 outputDir = outDir,
+                bearerToken = getBackendBearerToken(),
             )
         ) {
             is AiVoiceSynthOutcome.Success -> {

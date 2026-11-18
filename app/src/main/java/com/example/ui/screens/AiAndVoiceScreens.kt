@@ -3037,6 +3037,8 @@ fun SettingsScreen(
         SupportUpdatesQaSection(
             uiState = uiState,
             viewModel = viewModel,
+            collapsible = true,
+            initiallyExpanded = false,
         )
     }
 

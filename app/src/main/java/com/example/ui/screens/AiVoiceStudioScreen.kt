@@ -112,7 +112,7 @@ fun AiVoiceStudioScreen(
         ) {
             StudioFocusTopBar(
                 title = if (isEnglish) "AI VOICE STUDIO" else "AI VOICE STUDIO – استوديو الأصوات الذكي",
-                subtitle = "VoxCPM2 + Audar-TTS-V1-Turbo",
+                subtitle = "VoxCPM2 • Audar-Flash • Edge Neural Free",
                 language = lang,
                 onBack = onBack,
             )
@@ -255,7 +255,8 @@ fun AiVoiceStudioScreen(
                             state = state,
                             isEnglish = isEnglish,
                             onSaveBackendUrl = viewModel::saveAiVoiceBackendUrl,
-                            onCheckHealth = viewModel::checkAiVoiceBackendHealth,
+                            onSaveBackendToken = viewModel::saveAiVoiceBackendBearer,
+                            onCheckHealth = { url, token -> viewModel.checkAiVoiceBackendHealth(url, token) },
                         )
                     }
                 }
@@ -295,6 +296,16 @@ private fun AiVoiceSingleStudioContent(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 AiVoiceEngineKind.entries.forEach { engine ->
                     val selected = state.selectedEngine == engine
+                    val tagLabel = when {
+                        engine == AiVoiceEngineKind.EDGE_NEURAL_FREE -> if (isEnglish) "FREE • NO CARD" else "مجاني مباشر"
+                        engine.requiresRemoteGpu -> if (isEnglish) "GPU SERVER" else "خادم GPU"
+                        else -> if (isEnglish) "OFFLINE" else "محلي"
+                    }
+                    val tagColor = when {
+                        engine == AiVoiceEngineKind.EDGE_NEURAL_FREE -> StudioColors.Emerald
+                        engine.requiresRemoteGpu -> StudioColors.Violet
+                        else -> StudioColors.Amber
+                    }
                     Surface(
                         onClick = { onSelectEngine(engine) },
                         shape = RoundedCornerShape(14.dp),
@@ -308,20 +319,38 @@ private fun AiVoiceSingleStudioContent(
                             .defaultMinSize(minHeight = 56.dp)
                             .testTag("ai_voice_engine_${engine.id}"),
                     ) {
-                        Column(
+                        Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(
-                                text = if (isEnglish) engine.titleEn else engine.titleAr,
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = if (selected) StudioColors.Cyan else StudioColors.TextPrimary,
-                            )
-                            Text(
-                                text = "${if (isEnglish) engine.badgeEn else engine.badgeAr} • ${engine.modelRepoId}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = StudioColors.TextSecondary,
-                            )
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = if (isEnglish) engine.titleEn else engine.titleAr,
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = if (selected) StudioColors.Cyan else StudioColors.TextPrimary,
+                                )
+                                Text(
+                                    text = "${if (isEnglish) engine.badgeEn else engine.badgeAr} • ${engine.modelRepoId}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioColors.TextSecondary,
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = tagColor.copy(alpha = 0.16f),
+                                border = BorderStroke(1.dp, tagColor.copy(alpha = 0.45f)),
+                            ) {
+                                Text(
+                                    text = tagLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = tagColor,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                )
+                            }
                         }
                     }
                 }

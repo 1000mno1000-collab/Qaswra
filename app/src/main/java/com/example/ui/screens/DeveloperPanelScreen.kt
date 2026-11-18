@@ -55,7 +55,7 @@ import com.example.devpanel.DeveloperPanelTab
 import com.example.devpanel.OwnerVerificationStatus
 import com.example.i18n.t
 import com.example.model.AppLanguage
-import com.example.model.StudioUiState
+import com.example.viewmodel.StudioUiState
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.theme.StudioColors
 import com.example.viewmodel.StudioViewModel

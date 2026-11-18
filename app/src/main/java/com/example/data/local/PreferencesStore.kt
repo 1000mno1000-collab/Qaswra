@@ -43,6 +43,7 @@ class PreferencesStore(private val context: Context) {
         private val KEY_ONLINE_SOUND_HISTORY_JSON = stringPreferencesKey("online_sound_history_json")
         private val KEY_AI_VOICE_CHARACTERS_JSON = stringPreferencesKey("ai_voice_characters_json")
         private val KEY_AI_VOICE_BACKEND_URL = stringPreferencesKey("ai_voice_backend_url")
+        private val KEY_AI_VOICE_BACKEND_BEARER = stringPreferencesKey("ai_voice_backend_bearer")
     }
 
     val languageFlow: Flow<AppLanguage> = context.studioPrefsDataStore.data.map { prefs ->
@@ -89,6 +90,10 @@ class PreferencesStore(private val context: Context) {
 
     val aiVoiceBackendUrlFlow: Flow<String> = context.studioPrefsDataStore.data.map { prefs ->
         prefs[KEY_AI_VOICE_BACKEND_URL].orEmpty()
+    }
+
+    val aiVoiceBackendBearerFlow: Flow<String> = context.studioPrefsDataStore.data.map { prefs ->
+        prefs[KEY_AI_VOICE_BACKEND_BEARER].orEmpty()
     }
 
     suspend fun saveLanguage(lang: AppLanguage) {
@@ -156,6 +161,12 @@ class PreferencesStore(private val context: Context) {
     suspend fun saveAiVoiceBackendUrl(url: String) {
         context.studioPrefsDataStore.edit { prefs ->
             prefs[KEY_AI_VOICE_BACKEND_URL] = url.trim()
+        }
+    }
+
+    suspend fun saveAiVoiceBackendBearer(token: String) {
+        context.studioPrefsDataStore.edit { prefs ->
+            prefs[KEY_AI_VOICE_BACKEND_BEARER] = token.trim()
         }
     }
 }

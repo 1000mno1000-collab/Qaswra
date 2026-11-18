@@ -124,6 +124,7 @@ class DeveloperPanelUnitTests {
             language = AiVoiceLanguage.AR,
             dialect = AiArabicDialect.MSA,
             category = AiVoiceCategory.MALE,
+            voiceDescriptionPrompt = "رجل عربي بصوت واضح متزن",
             emotion = AiVoiceEmotion.WHISPER,
             emotionIntensity = 0.7f,
             pace = AiDeliveryPace.NORMAL,
@@ -131,5 +132,7 @@ class DeveloperPanelUnitTests {
         val processed = AiVoicePromptBuilder.buildAudarExpressiveText(req.text, req.emotion, req.emotionIntensity)
         assertTrue(processed.startsWith("[whispers]"))
         assertEquals("audar_tts_flash", AiVoiceEngineKind.AUDAR_TTS_V1_FLASH.id)
+        assertEquals("audarai/Audar-TTS-V1-Flash", AiVoiceEngineKind.AUDAR_TTS_V1_FLASH.modelRepoId)
+        assertTrue(AiVoicePromptBuilder.buildVoxCpmInstruction(req).contains("Modern Standard Arabic"))
     }
 }

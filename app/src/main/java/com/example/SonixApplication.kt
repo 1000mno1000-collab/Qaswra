@@ -165,7 +165,7 @@ object SonixCrashGuard {
             .trim()
             .takeIf { it.startsWith("AIza") }
             ?: BuildConfig.GEMINI_API_KEY.trim().takeIf { it.startsWith("AIza") }
-            ?: "AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo"
+            ?: return null
         return FirebaseOptions.Builder()
             .setApplicationId("1:71794555883:android:4c65036e94f7e36e3b37ae")
             .setApiKey(apiKey)
