@@ -218,88 +218,113 @@ object LocalArabicTtsEngine {
         val processedChunkBuffers = ArrayList<StereoAudioBuffer>(chunks.size)
         var singleChunkOutputFile: File? = null
 
-        ttsMutex.withLock {
-            for ((index, chunkText) in chunks.withIndex()) {
-                coroutineContext.ensureActive()
-                val rawTtsWav = File(cacheDir, "tts_raw_${UUID.randomUUID()}.wav")
-                val processedWav = File(cacheDir, "tts_fx_${UUID.randomUUID()}.wav")
-                try {
-                    val synthResult = synthesizeChunkWithAndroidTts(
-                        context = context.applicationContext,
-                        chunkText = chunkText,
-                        dialect = dialect,
-                        gender = gender,
-                        tempWavFile = rawTtsWav,
-                        language = language,
-                    )
-                    if (!synthResult.success || !rawTtsWav.exists() || rawTtsWav.length() <= 44L) {
-                        val reason = synthResult.errorMessage ?: "Android TextToSpeech synthesizeToFile failed"
-                        AppDiagnosticLog.logRecoverable(
-                            toolName = "LocalArabicTtsEngine",
-                            titleAr = "تعذر توليد الصوت عبر محرك النطق المحلي في النظام",
-                            titleEn = "Android TextToSpeech Failed",
-                            causeAr = reason,
-                            causeEn = reason,
-                            errorCode = "LOCAL_TTS_SYNTH_ERR",
+        try {
+            ttsMutex.withLock {
+                for ((index, chunkText) in chunks.withIndex()) {
+                    coroutineContext.ensureActive()
+                    val rawTtsWav = File(cacheDir, "tts_raw_${UUID.randomUUID()}.wav")
+                    val processedWav = File(cacheDir, "tts_fx_${UUID.randomUUID()}.wav")
+                    try {
+                        val synthResult = synthesizeChunkWithAndroidTts(
+                            context = context.applicationContext,
+                            chunkText = chunkText,
+                            dialect = dialect,
+                            gender = gender,
+                            tempWavFile = rawTtsWav,
+                            language = language,
                         )
-                        return@withContext LocalTtsOutcome.Error(reason)
-                    }
+                        if (!synthResult.success || !rawTtsWav.exists() || rawTtsWav.length() <= 44L) {
+                            val reason = synthResult.errorMessage ?: "Android TextToSpeech synthesizeToFile failed"
+                            AppDiagnosticLog.logRecoverable(
+                                toolName = "LocalArabicTtsEngine",
+                                titleAr = "تعذر توليد الصوت عبر محرك النطق المحلي في النظام",
+                                titleEn = "Android TextToSpeech Failed",
+                                causeAr = reason,
+                                causeEn = reason,
+                                errorCode = "LOCAL_TTS_SYNTH_ERR",
+                            )
+                            return@withContext LocalTtsOutcome.Error(reason)
+                        }
 
-                    val masteredBuffer = applyStudioProfileWithFfmpegOrDsp(
-                        rawWavFile = rawTtsWav,
-                        outWavFile = processedWav,
-                        profile = profile,
-                        targetSpeed = targetSpeed,
-                        targetPitch = targetPitch,
-                        style = style,
-                        luxuryBoost = studioLuxuryEnhancement,
-                    )
-
-                    if (masteredBuffer == null || masteredBuffer.frameCount <= 0) {
-                        runCatching { processedWav.delete() }
-                        return@withContext LocalTtsOutcome.Error(
-                            when (language) {
-                                AppLanguage.EN -> "Failed to process synthesized audio output."
-                                AppLanguage.FA -> "پردازش خروجی صوتی ناموفق بود."
-                                AppLanguage.AR -> "تعذر معالجة الملف الصوتي الناتج."
-                            },
+                        val masteredBuffer = applyStudioProfileWithFfmpegOrDsp(
+                            rawWavFile = rawTtsWav,
+                            outWavFile = processedWav,
+                            profile = profile,
+                            targetSpeed = targetSpeed,
+                            targetPitch = targetPitch,
+                            style = style,
+                            luxuryBoost = studioLuxuryEnhancement,
                         )
-                    }
 
-                    if (chunks.size == 1) {
-                        singleChunkOutputFile = processedWav
-                        processedChunkBuffers += masteredBuffer
-                    } else {
-                        processedChunkBuffers += trimSilenceEdgesAndFade(masteredBuffer, keepPadMs = 50)
-                        runCatching { processedWav.delete() }
-                    }
-                } finally {
-                    runCatching { rawTtsWav.delete() }
-                    if (chunks.size > 1 && index == chunks.lastIndex) {
-                        // Nothing extra; per-chunk processedWav deleted above.
+                        if (masteredBuffer == null || masteredBuffer.frameCount <= 0) {
+                            runCatching { processedWav.delete() }
+                            return@withContext LocalTtsOutcome.Error(
+                                when (language) {
+                                    AppLanguage.EN -> "Failed to process synthesized audio output."
+                                    AppLanguage.FA -> "پردازش خروجی صوتی ناموفق بود."
+                                    AppLanguage.AR -> "تعذر معالجة الملف الصوتي الناتج."
+                                },
+                            )
+                        }
+
+                        if (chunks.size == 1) {
+                            singleChunkOutputFile = processedWav
+                            processedChunkBuffers += masteredBuffer
+                        } else {
+                            processedChunkBuffers += trimSilenceEdgesAndFade(masteredBuffer, keepPadMs = 50)
+                            runCatching { processedWav.delete() }
+                        }
+                    } finally {
+                        runCatching { rawTtsWav.delete() }
+                        if (chunks.size > 1 && index == chunks.lastIndex) {
+                            // Per-chunk processedWav deleted above.
+                        }
                     }
                 }
             }
-        }
 
-        val finalResult = if (chunks.size == 1 && singleChunkOutputFile != null) {
-            LocalTtsSynthResult(
-                buffer = processedChunkBuffers.first(),
-                audioFile = singleChunkOutputFile!!,
-            )
-        } else {
-            val pauseMs = (style.breathPauseMs * 0.45f).roundToInt().coerceIn(70, 220)
-            val stitched = stitchSentenceBuffersSmoothly(processedChunkBuffers, pauseMs)
-                ?: return@withContext LocalTtsOutcome.Error(
-                    if (language == AppLanguage.EN) "Failed to stitch synthesized segments." else "تعذر دمج المقاطع الصوتية المولدة.",
+            val finalResult = if (chunks.size == 1 && singleChunkFileOrNull(singleChunkOutputFile) != null) {
+                LocalTtsSynthResult(
+                    buffer = processedChunkBuffers.first(),
+                    audioFile = singleChunkOutputFile!!,
                 )
-            val stitchedWav = File(cacheDir, "tts_final_${UUID.randomUUID()}.wav")
-            writeStereoWavFile(stitchedWav, stitched)
-            LocalTtsSynthResult(buffer = stitched, audioFile = stitchedWav)
-        }
+            } else {
+                val pauseMs = (style.breathPauseMs * 0.45f).roundToInt().coerceIn(70, 220)
+                val stitched = stitchSentenceBuffersSmoothly(processedChunkBuffers, pauseMs)
+                    ?: return@withContext LocalTtsOutcome.Error(
+                        if (language == AppLanguage.EN) "Failed to stitch synthesized segments." else "تعذر دمج المقاطع الصوتية المولدة.",
+                    )
+                val stitchedWav = File(cacheDir, "tts_final_${UUID.randomUUID()}.wav")
+                writeStereoWavFile(stitchedWav, stitched)
+                LocalTtsSynthResult(buffer = stitched, audioFile = stitchedWav)
+            }
 
-        SmartCacheManager.pruneManagedBuckets(context)
-        LocalTtsOutcome.Success(finalResult)
+            SmartCacheManager.pruneManagedBuckets(context)
+            return@withContext LocalTtsOutcome.Success(finalResult)
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            runCatching { singleChunkOutputFile?.delete() }
+            throw ce
+        } catch (t: Throwable) {
+            runCatching { singleChunkOutputFile?.delete() }
+            val reason = t.localizedMessage ?: t.javaClass.simpleName
+            AppDiagnosticLog.logRecoverable(
+                toolName = "LocalArabicTtsEngine",
+                titleAr = "تعذر إتمام التوليد الصوتي المحلي",
+                titleEn = "Local TTS Processing Error",
+                causeAr = reason,
+                causeEn = reason,
+                errorCode = t.javaClass.simpleName,
+                throwable = t,
+            )
+            return@withContext LocalTtsOutcome.Error(
+                if (language == AppLanguage.EN) "Unable to synthesize speech ($reason)."
+                else "تعذر توليد الصوت محلياً ($reason).",
+            )
+        }
+    }
+
+    private fun singleChunkFileOrNull(file: File?): File? {
+        return file?.takeIf { it.exists() && it.length() > 44L }
     }
 
     private data class AndroidTtsChunkResult(
@@ -342,8 +367,8 @@ object LocalArabicTtsEngine {
             }
 
             configureLocaleAndVoice(createdTts, dialect, gender)
-            createdTts.setSpeechRate(1.0f)
-            createdTts.setPitch(1.0f)
+            runCatching { createdTts.setSpeechRate(1.0f) }
+            runCatching { createdTts.setPitch(1.0f) }
 
             val utteranceId = "sonix_tts_${UUID.randomUUID()}"
             val synthDeferred = CompletableDeferred<Boolean>()
@@ -412,9 +437,14 @@ object LocalArabicTtsEngine {
         } catch (t: Throwable) {
             return AndroidTtsChunkResult(false, t.localizedMessage ?: t.javaClass.simpleName)
         } finally {
-            runCatching {
-                ttsInstance?.stop()
-                ttsInstance?.shutdown()
+            val toClose = ttsInstance
+            if (toClose != null) {
+                runCatching {
+                    withContext(Dispatchers.Main + kotlinx.coroutines.NonCancellable) {
+                        runCatching { toClose.stop() }
+                        runCatching { toClose.shutdown() }
+                    }
+                }
             }
         }
     }

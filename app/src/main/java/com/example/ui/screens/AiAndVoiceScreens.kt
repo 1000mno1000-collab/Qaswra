@@ -35,9 +35,11 @@ import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.SpatialAudioOff
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -2828,6 +2830,7 @@ fun SettingsScreen(
 ) {
     val lang = uiState.language
     var langDialogOpen by remember { mutableStateOf(false) }
+    var privacyDialogOpen by rememberSaveable { mutableStateOf(false) }
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -2945,6 +2948,40 @@ fun SettingsScreen(
             }
         }
 
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            onClick = { privacyDialogOpen = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("settings_privacy_card"),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 64.dp)
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(Icons.Rounded.Security, contentDescription = null, tint = StudioColors.Emerald)
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = t(lang, "settings_privacy_section"),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = StudioColors.TextPrimary,
+                    )
+                    Text(
+                        text = t(lang, "settings_privacy_subtitle"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.TextSecondary,
+                    )
+                }
+                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = StudioColors.TextMuted)
+            }
+        }
+
         SupportUpdatesQaSection(
             uiState = uiState,
             viewModel = viewModel,
@@ -2957,6 +2994,35 @@ fun SettingsScreen(
         onSelect = { viewModel.setLanguage(it) },
         onDismiss = { langDialogOpen = false },
     )
+
+    if (privacyDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { privacyDialogOpen = false },
+            containerColor = StudioColors.CardSurface,
+            title = {
+                Text(
+                    text = t(lang, "settings_privacy_dialog_title"),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = StudioColors.TextPrimary,
+                )
+            },
+            text = {
+                Text(
+                    text = t(lang, "settings_privacy_dialog_body"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = StudioColors.TextSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { privacyDialogOpen = false },
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                ) {
+                    Text(t(lang, "settings_privacy_close"), color = StudioColors.Cyan)
+                }
+            },
+        )
+    }
 }
 
 @Composable

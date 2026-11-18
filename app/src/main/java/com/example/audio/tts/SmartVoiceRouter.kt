@@ -44,6 +44,7 @@ class SmartVoiceRouter {
         studioLuxuryEnhancement: Boolean = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(context),
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
+        autoDownloadIfOnline: Boolean = true,
     ): VoiceRouteOutcome = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) {
@@ -65,7 +66,7 @@ class SmartVoiceRouter {
                 studioLuxuryEnhancement = studioLuxuryEnhancement,
                 persona = persona,
                 acousticMode = acousticMode,
-                autoDownloadIfOnline = true,
+                autoDownloadIfOnline = autoDownloadIfOnline,
             )
         ) {
             is NabraSynthOutcome.Success -> VoiceRouteOutcome.Success(

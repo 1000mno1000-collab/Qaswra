@@ -127,8 +127,8 @@ object AudioPlayerManager {
         val myGen: Long
         val mp: MediaPlayer = try {
             MediaPlayer()
-        } catch (e: Exception) {
-            onError(e.localizedMessage ?: "MediaPlayer initialization failed")
+        } catch (t: Throwable) {
+            onError(t.localizedMessage ?: "MediaPlayer initialization failed")
             return false
         }
         synchronized(lock) {
@@ -141,7 +141,7 @@ object AudioPlayerManager {
         }
         try {
             priorCleanup?.invoke()
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
 
         return try {
             mp.setAudioAttributes(
@@ -154,20 +154,20 @@ object AudioPlayerManager {
             mp.setOnPreparedListener { prepared ->
                 val valid = synchronized(lock) { activePlayer === prepared && generation.get() == myGen }
                 if (!valid) {
-                    try { prepared.release() } catch (_: Exception) {}
+                    try { prepared.release() } catch (_: Throwable) {}
                     return@setOnPreparedListener
                 }
                 val started = try {
                     prepared.start()
                     true
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
                     false
                 }
                 if (started) {
-                    onPrepared?.invoke()
+                    try { onPrepared?.invoke() } catch (_: Throwable) {}
                 } else {
                     stop(tag)
-                    onError("MediaPlayer failed to start playback")
+                    try { onError("MediaPlayer failed to start playback") } catch (_: Throwable) {}
                 }
             }
             mp.setOnCompletionListener { completed ->
@@ -180,7 +180,7 @@ object AudioPlayerManager {
                     }
                 }
                 if (wasCurrent) {
-                    onCompletion()
+                    try { onCompletion() } catch (_: Throwable) {}
                 }
             }
             mp.setOnErrorListener { errored, what, extra ->
@@ -193,21 +193,21 @@ object AudioPlayerManager {
                     }
                 }
                 if (wasCurrent) {
-                    onError("MediaPlayerError: what=$what extra=$extra")
+                    try { onError("MediaPlayerError: what=$what extra=$extra") } catch (_: Throwable) {}
                 }
                 true
             }
             mp.prepareAsync()
             true
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             synchronized(lock) {
                 if (activePlayer === mp && generation.get() == myGen) {
                     releaseLocked()
                 } else {
-                    try { mp.release() } catch (_: Exception) {}
+                    try { mp.release() } catch (_: Throwable) {}
                 }
             }
-            onError(e.localizedMessage ?: "MediaPlayer failed to prepare")
+            onError(t.localizedMessage ?: "MediaPlayer failed to prepare")
             false
         }
     }
@@ -224,12 +224,12 @@ object AudioPlayerManager {
         if (old != null) {
             try {
                 if (old.isPlaying) old.stop()
-            } catch (_: Exception) {}
-            try { old.reset() } catch (_: Exception) {}
-            try { old.release() } catch (_: Exception) {}
+            } catch (_: Throwable) {}
+            try { old.reset() } catch (_: Throwable) {}
+            try { old.release() } catch (_: Throwable) {}
         }
         if (oldTemp != null) {
-            try { oldTemp.delete() } catch (_: Exception) {}
+            try { oldTemp.delete() } catch (_: Throwable) {}
         }
         return oldCleanup
     }

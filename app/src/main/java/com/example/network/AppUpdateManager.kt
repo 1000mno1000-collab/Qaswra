@@ -1,5 +1,6 @@
 package com.example.network
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,7 +13,6 @@ import com.example.util.SafeTextGuard
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 
 @Immutable
 data class AppUpdateCheckResult(
@@ -21,7 +21,6 @@ data class AppUpdateCheckResult(
     val isUpdateAvailable: Boolean,
     val releaseNotes: String,
     val releasePageUrl: String,
-    val directApkUrl: String?,
 )
 
 sealed interface AppUpdateOutcome {
@@ -31,15 +30,15 @@ sealed interface AppUpdateOutcome {
 }
 
 /**
- * Checks official GitHub Releases API (`https://api.github.com/repos/1000mno1000-collab/Qaswra/releases/latest`)
- * using the 6-Layer Network Immunity Shield and opens downloads/release pages safely in the browser
- * (Play-policy compliant without requiring REQUEST_INSTALL_PACKAGES).
+ * Checks release metadata and routes updates exclusively through Google Play Store
+ * (without sideloading APK files, complying with Google Play Device & Network Abuse policy).
  */
 object AppUpdateManager {
     private const val GITHUB_RELEASES_API =
         "https://api.github.com/repos/1000mno1000-collab/Qaswra/releases/latest"
-    private const val FALLBACK_REPO_RELEASES_URL =
-        "https://github.com/1000mno1000-collab/Qaswra/releases"
+
+    fun playStoreWebUrl(context: Context): String =
+        "https://play.google.com/store/apps/details?id=${context.packageName}"
 
     fun getCurrentAppVersionName(context: Context): String {
         return runCatching {
@@ -56,6 +55,7 @@ object AppUpdateManager {
 
     suspend fun checkLatestRelease(context: Context): AppUpdateOutcome = withContext(Dispatchers.IO) {
         val currentVersion = getCurrentAppVersionName(context)
+        val storeUrl = playStoreWebUrl(context)
         if (!NetworkImmunityManager.pingReachable(context)) {
             return@withContext AppUpdateOutcome.Offline("No verified internet connection")
         }
@@ -66,12 +66,11 @@ object AppUpdateManager {
                 context = context,
                 headers = mapOf("Accept" to "application/vnd.github+json"),
                 timeoutMs = NetworkImmunityManager.DEFAULT_NETWORK_TIMEOUT_MS,
-                providerLabel = "GitHubReleasesUpdate",
+                providerLabel = "ReleaseNotesCheck",
             )
             when (outcome) {
                 is NetworkFetchOutcome.Offline -> AppUpdateOutcome.Offline(outcome.reason)
                 is NetworkFetchOutcome.Failure -> {
-                    // Graceful handling if repository currently has no published tag yet (404)
                     if (outcome.message.contains("404")) {
                         AppUpdateOutcome.Checked(
                             AppUpdateCheckResult(
@@ -79,8 +78,7 @@ object AppUpdateManager {
                                 latestVersion = currentVersion,
                                 isUpdateAvailable = false,
                                 releaseNotes = "",
-                                releasePageUrl = FALLBACK_REPO_RELEASES_URL,
-                                directApkUrl = null,
+                                releasePageUrl = storeUrl,
                             ),
                         )
                     } else {
@@ -92,27 +90,7 @@ object AppUpdateManager {
                         ?: return@withContext AppUpdateOutcome.Error("Malformed update response payload")
                     val tagRaw = json.optString("tag_name").trim()
                     val latestClean = tagRaw.removePrefix("v").removePrefix("V").ifBlank { currentVersion }
-                    val htmlUrl = NetworkImmunityManager.enforceHttps(
-                        json.optString("html_url").ifBlank { FALLBACK_REPO_RELEASES_URL },
-                    )
                     val body = json.optString("body").trim()
-
-                    var apkUrl: String? = null
-                    val assets = json.optJSONArray("assets")
-                    if (assets != null) {
-                        for (i in 0 until assets.length()) {
-                            val asset = assets.optJSONObject(i) ?: continue
-                            val name = asset.optString("name").lowercase()
-                            if (name.endsWith(".apk")) {
-                                val dl = asset.optString("browser_download_url")
-                                if (dl.isNotBlank()) {
-                                    apkUrl = NetworkImmunityManager.enforceHttps(dl)
-                                    break
-                                }
-                            }
-                        }
-                    }
-
                     val isNewer = compareSemanticVersions(latestClean, currentVersion) > 0
                     AppUpdateOutcome.Checked(
                         AppUpdateCheckResult(
@@ -120,8 +98,7 @@ object AppUpdateManager {
                             latestVersion = latestClean,
                             isUpdateAvailable = isNewer,
                             releaseNotes = body,
-                            releasePageUrl = htmlUrl,
-                            directApkUrl = apkUrl,
+                            releasePageUrl = storeUrl,
                         ),
                     )
                 }
@@ -134,12 +111,28 @@ object AppUpdateManager {
     }
 
     fun openUpdateLinkInBrowser(context: Context, info: AppUpdateCheckResult) {
-        val target = NetworkImmunityManager.enforceHttps(info.directApkUrl ?: info.releasePageUrl)
+        val marketIntent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("market://details?id=${context.packageName}"),
+        ).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            context.startActivity(marketIntent)
+            return
+        } catch (_: ActivityNotFoundException) {
+            // Fallback to HTTPS Google Play Store web listing
+        } catch (_: Throwable) {
+            // Fallback to HTTPS Google Play Store web listing
+        }
+        val target = NetworkImmunityManager.enforceHttps(
+            info.releasePageUrl.ifBlank { playStoreWebUrl(context) },
+        )
         runCatching {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
+            val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            context.startActivity(intent)
+            context.startActivity(webIntent)
         }
     }
 

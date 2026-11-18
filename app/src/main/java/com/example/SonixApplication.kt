@@ -1,8 +1,10 @@
 package com.example
 
+import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.os.Looper
 import android.os.Process
 import android.util.Log
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
+import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
 
@@ -38,13 +41,52 @@ object SonixCrashGuard {
 
     private const val PREFS_NAME = "sonix_crash_guard"
     private const val KEY_LAST_RELAUNCH_MS = "last_relaunch_ms"
+    private const val KEY_PENDING_DIAG_ID = "pending_diag_id"
+    private const val KEY_PENDING_THREAD = "pending_thread"
+    private const val KEY_PENDING_MESSAGE = "pending_message"
+    private const val KEY_PENDING_TRACE = "pending_trace"
     private const val RELAUNCH_COOLDOWN_MS = 3500L
 
     private val handlerInstalled = AtomicBoolean(false)
     private var previousHandler: Thread.UncaughtExceptionHandler? = null
+    private var foregroundActivityRef: WeakReference<Activity>? = null
 
     private val _uncaughtError = MutableStateFlow<StartupErrorReport?>(null)
     val uncaughtError: StateFlow<StartupErrorReport?> = _uncaughtError.asStateFlow()
+
+    fun updateForegroundActivity(activity: Activity?, active: Boolean) {
+        if (active && activity != null) {
+            foregroundActivityRef = WeakReference(activity)
+        } else if (!active && foregroundActivityRef?.get() === activity) {
+            foregroundActivityRef = null
+        }
+    }
+
+    fun consumePendingCrashDiagnostics(context: Context): String? {
+        return runCatching {
+            val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val diagId = prefs.getString(KEY_PENDING_DIAG_ID, null)
+            val thread = prefs.getString(KEY_PENDING_THREAD, null)
+            val msg = prefs.getString(KEY_PENDING_MESSAGE, null)
+            val trace = prefs.getString(KEY_PENDING_TRACE, null)
+            if (!diagId.isNullOrBlank() || !msg.isNullOrBlank()) {
+                prefs.edit()
+                    .remove(KEY_PENDING_DIAG_ID)
+                    .remove(KEY_PENDING_THREAD)
+                    .remove(KEY_PENDING_MESSAGE)
+                    .remove(KEY_PENDING_TRACE)
+                    .apply()
+                if (diagId.isNullOrBlank() && !msg.isNullOrBlank()) {
+                    _uncaughtError.value = StartupErrorReport(
+                        threadName = thread ?: "main",
+                        message = msg,
+                        stackTrace = trace ?: msg,
+                    )
+                }
+            }
+            diagId?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
 
     fun reportError(threadName: String, throwable: Throwable) {
         val msg = throwable.localizedMessage?.takeIf { it.isNotBlank() }
@@ -233,28 +275,41 @@ object SonixCrashGuard {
             requestUserRestartConsent = true,
         )
 
+        val prefs = runCatching {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }.getOrNull()
+
+        runCatching {
+            prefs?.edit()
+                ?.putString(KEY_PENDING_DIAG_ID, entry.id)
+                ?.putString(KEY_PENDING_THREAD, thread.name)
+                ?.putString(KEY_PENDING_MESSAGE, msg)
+                ?.putString(KEY_PENDING_TRACE, trace.take(4000))
+                ?.commit()
+        }
+
         val relaunched = runCatching {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val now = System.currentTimeMillis()
-            val last = prefs.getLong(KEY_LAST_RELAUNCH_MS, 0L)
+            val last = prefs?.getLong(KEY_LAST_RELAUNCH_MS, 0L) ?: 0L
             if (now - last < RELAUNCH_COOLDOWN_MS) {
                 false
             } else {
-                prefs.edit().putLong(KEY_LAST_RELAUNCH_MS, now).commit()
-                val intent = Intent(context, MainActivity::class.java).apply {
-                    addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TASK or
-                            Intent.FLAG_ACTIVITY_NO_ANIMATION,
-                    )
+                prefs?.edit()?.putLong(KEY_LAST_RELAUNCH_MS, now)?.commit()
+                val fgActivity = foregroundActivityRef?.get()?.takeIf { !it.isFinishing && !it.isDestroyed }
+                val launcherCtx = fgActivity ?: context
+                val intent = Intent(launcherCtx, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                    if (fgActivity == null) {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
                     putExtra(EXTRA_ASK_RESTART_CONSENT, true)
                     putExtra(EXTRA_DIAGNOSTIC_ID, entry.id)
                     putExtra(EXTRA_CRASH_THREAD, thread.name)
                     putExtra(EXTRA_CRASH_MESSAGE, msg)
                     putExtra(EXTRA_CRASH_TRACE, trace.take(8000))
                 }
-                context.startActivity(intent)
-                true
+                launcherCtx.startActivity(intent)
+                fgActivity != null
             }
         }.getOrDefault(false)
 
@@ -278,6 +333,25 @@ class SonixApplication : Application() {
         runCatching { AppDiagnosticLog.init(this) }
         runCatching { RecentEditsCacheManager.init(this) }
         runCatching { SmartCacheManager.pruneManagedBuckets(this) }
+        try {
+            registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+                override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+                override fun onActivityStarted(activity: Activity) {}
+                override fun onActivityResumed(activity: Activity) {
+                    SonixCrashGuard.updateForegroundActivity(activity, active = true)
+                }
+                override fun onActivityPaused(activity: Activity) {
+                    SonixCrashGuard.updateForegroundActivity(activity, active = false)
+                }
+                override fun onActivityStopped(activity: Activity) {}
+                override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+                override fun onActivityDestroyed(activity: Activity) {
+                    SonixCrashGuard.updateForegroundActivity(activity, active = false)
+                }
+            })
+        } catch (t: Throwable) {
+            Log.w("SonixStartup", "ActivityLifecycleCallbacks registration skipped: ${t.message}")
+        }
         try {
             SonixCrashGuard.installUncaughtExceptionHandler(this)
         } catch (t: Throwable) {

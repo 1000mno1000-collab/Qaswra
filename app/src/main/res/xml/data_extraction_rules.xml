@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="sharedpref" path="." />
+        <exclude domain="sharedpref" path="sonix_crash_guard.xml" />
+        <exclude domain="sharedpref" path="sonix_nabra_native_guard.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="sharedpref" path="." />
+        <exclude domain="sharedpref" path="sonix_crash_guard.xml" />
+        <exclude domain="sharedpref" path="sonix_nabra_native_guard.xml" />
+    </device-transfer>
+</data-extraction-rules>

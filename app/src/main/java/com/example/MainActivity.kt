@@ -208,9 +208,11 @@ class MainActivity : ComponentActivity() {
             val askRestartConsent = intent?.getBooleanExtra(SonixCrashGuard.EXTRA_ASK_RESTART_CONSENT, false) == true
             val diagId = intent?.getStringExtra(SonixCrashGuard.EXTRA_DIAGNOSTIC_ID)
             val crashMsg = intent?.getStringExtra(SonixCrashGuard.EXTRA_CRASH_MESSAGE)
+            val pendingDiagId = SonixCrashGuard.consumePendingCrashDiagnostics(this)
             if (askRestartConsent) {
-                if (!diagId.isNullOrBlank()) {
-                    AppDiagnosticLog.showPromptForEntryId(diagId)
+                val resolvedDiagId = diagId?.takeIf { it.isNotBlank() } ?: pendingDiagId
+                if (!resolvedDiagId.isNullOrBlank()) {
+                    AppDiagnosticLog.showPromptForEntryId(resolvedDiagId)
                 }
             } else if (!crashMsg.isNullOrBlank()) {
                 SonixCrashGuard.reportError(
@@ -220,6 +222,8 @@ class MainActivity : ComponentActivity() {
                         stackTrace = intent.getStringExtra(SonixCrashGuard.EXTRA_CRASH_TRACE) ?: crashMsg,
                     ),
                 )
+            } else if (!pendingDiagId.isNullOrBlank()) {
+                AppDiagnosticLog.showPromptForEntryId(pendingDiagId)
             }
         } catch (t: Throwable) {
             Log.w("MainActivity", "Failed reading crash intent extras", t)

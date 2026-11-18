@@ -333,12 +333,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 isBusy = false,
                 isProcessing = false,
+                isOnlineTaskRunning = false,
+                onlineTaskLabel = "",
+                isVoiceAiConverting = false,
+                smartMasterAnalyzingAi = false,
                 importProgress = null,
                 importLabel = null,
                 importBytesLabel = null,
                 exportProgress = null,
                 purifyProgress = null,
                 isToolPreviewPlaying = false,
+                ttsUiState = it.ttsUiState.copy(
+                    isSynthesizingPreview = false,
+                    isPreviewing = false,
+                    isGenerating = false,
+                ),
             )
         }
         postBanner(throwable.localizedMessage ?: "تم تجاوز خطأ تقني وتسجيله في الإشعارات")
@@ -4182,6 +4191,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stopToolPreview() {
         AudioPlayerManager.stop("tool_preview")
+        runCatching { toolPreviewTempFile?.delete() }
+        toolPreviewTempFile = null
         _uiState.update {
             it.copy(
                 isToolPreviewPlaying = false,
@@ -4595,9 +4606,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             try {
+                val appCtx = getApplication<Application>()
                 val cur = _uiState.value
+                val allowAutoDownload = com.aistudio.voicepro.sonixk.NabraOnnxDirectEngine.areCoreWeightsPresent(appCtx)
                 val outcome = smartVoiceRouter.synthesizeStudioVoiceWithStatus(
-                    context = getApplication(),
+                    context = appCtx,
                     text = text.trim(),
                     dialect = dialect,
                     gender = gender,
@@ -4608,6 +4621,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
                     persona = persona,
                     acousticMode = acousticMode,
+                    autoDownloadIfOnline = allowAutoDownload,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -4681,6 +4695,34 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             )
                         }
                     }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                releaseTtsPreviewPlayer()
+                AppDiagnosticLog.logRecoverable(
+                    toolName = "TTS Preview",
+                    titleAr = "تعذر تشغيل معاينة تحويل النص",
+                    titleEn = "TTS Preview Safely Recovered",
+                    causeAr = t.localizedMessage ?: t.javaClass.simpleName,
+                    causeEn = t.localizedMessage ?: t.javaClass.simpleName,
+                    errorCode = t.javaClass.simpleName,
+                    throwable = t,
+                )
+                val safeMsg = t.localizedMessage?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                _uiState.update {
+                    it.copy(
+                        ttsUiState = it.ttsUiState.copy(
+                            selectedEngine = engineMode,
+                            isSynthesizingPreview = false,
+                            isPreviewing = false,
+                            errorMessage = if (lang == AppLanguage.EN) {
+                                "TTS preview stopped safely: $safeMsg"
+                            } else {
+                                "تم إيقاف المعاينة بأمان لتفادي الإغلاق: $safeMsg"
+                            },
+                        ),
+                    )
                 }
             } finally {
                 _uiState.update {

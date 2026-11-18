@@ -70,27 +70,35 @@ private data class NabraModelAssetSpec(
 
 /**
  * محرك الصوت العربي العصبي المباشر (Nabra-82M Sherpa-ONNX):
- * 1. يفحص وجود ملفات النموذج الثلاثة (`model.int8.onnx`, `voices.bin`, `tokens.txt`) داخل `context.filesDir/nabra_onnx`.
- * 2. عند عدم توفرها يحمّلها مباشرة عبر `java.net.URL` مع تحديث نسبة التقدم لحظياً عبر [progressFlow].
- * 3. يهيئ محرك `OfflineTts` من حزمة `com.k2fsa.sherpa.onnx` باستخدام `OfflineTtsKokoroModelConfig`،
- *    ويحفظ الصوت الناتج بصيغة WAV لتمريره مباشرة إلى معالجات `FFmpegKit` الموجودة في التطبيق.
+ * 1. يفحص وجود ملفات النموذج الثلاثة (`model.int8.onnx`, `voices.bin`, `tokens.txt`)
+ *    بالإضافة إلى بيانات النطق الصوتي `espeak-ng-data` اللازمة لـ Kokoro C++ داخل `context.filesDir/nabra_onnx`.
+ * 2. يمرر `dataDir = espeak-ng-data` دائماً (عدم تركه فارغاً لمنع إغلاق C++ JNI المفاجئ).
+ * 3. محمي بقاطع أمان مستمر (`NativeCircuitBreaker`) وبالتحويل الفوري السلس إلى [LocalArabicTtsEngine].
  */
 object NabraOnnxDirectEngine {
 
     private const val DIR_NAME = "nabra_onnx"
+    private const val ESPEAK_DIR_NAME = "espeak-ng-data"
     private const val FILE_MODEL = "model.int8.onnx"
     private const val FILE_VOICES = "voices.bin"
     private const val FILE_TOKENS = "tokens.txt"
-    private const val MAX_CHUNK_CHARS = 480
+    private const val MAX_CHUNK_CHARS = 220
 
-    private val MODEL_SPECS = listOf(
+    private const val GUARD_PREFS = "sonix_nabra_native_guard"
+    private const val KEY_NATIVE_INFLIGHT = "native_inflight"
+    private const val KEY_NATIVE_QUARANTINED = "native_quarantined"
+
+    private const val HF_ESPEAK_BASE =
+        "https://huggingface.co/csukuangfj/nabra-82m-arabic-int8/resolve/main/espeak-ng-data"
+
+    private val CORE_MODEL_SPECS = listOf(
         NabraModelAssetSpec(
             fileName = FILE_MODEL,
             urls = listOf(
                 "https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/model.int8.onnx",
                 "https://huggingface.co/csukuangfj/nabra-82m-arabic-int8/resolve/main/model.int8.onnx",
             ),
-            minValidBytes = 1_000_000L,
+            minValidBytes = 10_000_000L,
             estimatedBytes = 87_000_000L,
         ),
         NabraModelAssetSpec(
@@ -113,6 +121,71 @@ object NabraOnnxDirectEngine {
         ),
     )
 
+    private val ESPEAK_ESSENTIAL_SPECS = listOf(
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/phontab",
+            urls = listOf("$HF_ESPEAK_BASE/phontab"),
+            minValidBytes = 10_000L,
+            estimatedBytes = 55_796L,
+        ),
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/phonindex",
+            urls = listOf("$HF_ESPEAK_BASE/phonindex"),
+            minValidBytes = 10_000L,
+            estimatedBytes = 39_074L,
+        ),
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/phondata",
+            urls = listOf("$HF_ESPEAK_BASE/phondata"),
+            minValidBytes = 100_000L,
+            estimatedBytes = 550_424L,
+        ),
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/phondata-manifest",
+            urls = listOf("$HF_ESPEAK_BASE/phondata-manifest"),
+            minValidBytes = 1_000L,
+            estimatedBytes = 21_821L,
+        ),
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/intonations",
+            urls = listOf("$HF_ESPEAK_BASE/intonations"),
+            minValidBytes = 512L,
+            estimatedBytes = 2_040L,
+        ),
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/ar_dict",
+            urls = listOf("$HF_ESPEAK_BASE/ar_dict"),
+            minValidBytes = 100_000L,
+            estimatedBytes = 478_165L,
+        ),
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/en_dict",
+            urls = listOf("$HF_ESPEAK_BASE/en_dict"),
+            minValidBytes = 50_000L,
+            estimatedBytes = 166_944L,
+        ),
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/lang/sem/ar",
+            urls = listOf("$HF_ESPEAK_BASE/lang/sem/ar"),
+            minValidBytes = 16L,
+            estimatedBytes = 50L,
+        ),
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/lang/gmw/en",
+            urls = listOf("$HF_ESPEAK_BASE/lang/gmw/en"),
+            minValidBytes = 32L,
+            estimatedBytes = 140L,
+        ),
+        NabraModelAssetSpec(
+            fileName = "$ESPEAK_DIR_NAME/lang/gmw/en-US",
+            urls = listOf("$HF_ESPEAK_BASE/lang/gmw/en-US"),
+            minValidBytes = 32L,
+            estimatedBytes = 257L,
+        ),
+    )
+
+    private val ALL_MODEL_SPECS = CORE_MODEL_SPECS + ESPEAK_ESSENTIAL_SPECS
+
     private val _progressFlow = MutableStateFlow(NabraDownloadState())
     val progressFlow: StateFlow<NabraDownloadState> = _progressFlow.asStateFlow()
 
@@ -125,29 +198,99 @@ object NabraOnnxDirectEngine {
     @Volatile
     private var cachedModelDir: String? = null
 
+    @Volatile
+    private var sherpaAvailabilityCache: Boolean? = null
+
     fun modelDirectory(context: Context): File = File(context.filesDir, DIR_NAME)
 
-    fun isSherpaOnnxAvailable(): Boolean = runCatching {
-        Class.forName("com.k2fsa.sherpa.onnx.OfflineTts")
-        Class.forName("com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig")
-        true
-    }.getOrDefault(false)
+    fun espeakDataDirectory(context: Context): File = File(modelDirectory(context), ESPEAK_DIR_NAME)
+
+    fun isSherpaOnnxAvailable(): Boolean {
+        sherpaAvailabilityCache?.let { return it }
+        val ok = runCatching {
+            Class.forName("com.k2fsa.sherpa.onnx.OfflineTts")
+            Class.forName("com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig")
+            Class.forName("com.k2fsa.sherpa.onnx.OfflineTtsModelConfig")
+            Class.forName("com.k2fsa.sherpa.onnx.OfflineTtsConfig")
+            true
+        }.getOrDefault(false)
+        sherpaAvailabilityCache = ok
+        return ok
+    }
+
+    private fun isSpecFileValid(dir: File, spec: NabraModelAssetSpec): Boolean {
+        val f = File(dir, spec.fileName)
+        if (!f.exists() || !f.isFile || f.length() < spec.minValidBytes) return false
+        if (spec.fileName == FILE_MODEL || spec.fileName == FILE_TOKENS) {
+            val head = runCatching {
+                f.inputStream().use { inp ->
+                    val buf = ByteArray(16)
+                    val n = inp.read(buf)
+                    if (n > 0) String(buf, 0, n, Charsets.UTF_8).trimStart() else ""
+                }
+            }.getOrDefault("")
+            if (head.startsWith("<") || head.startsWith("{")) return false
+        }
+        return true
+    }
+
+    fun areCoreWeightsPresent(context: Context): Boolean {
+        val dir = modelDirectory(context)
+        return CORE_MODEL_SPECS.all { isSpecFileValid(dir, it) }
+    }
 
     fun areModelsPresent(context: Context): Boolean {
         val dir = modelDirectory(context)
-        return MODEL_SPECS.all { spec ->
-            val f = File(dir, spec.fileName)
-            f.exists() && f.isFile && f.length() >= spec.minValidBytes
+        return ALL_MODEL_SPECS.all { isSpecFileValid(dir, it) }
+    }
+
+    private fun checkAndPromoteNativeQuarantine(context: Context): Boolean {
+        return runCatching {
+            val prefs = context.applicationContext.getSharedPreferences(GUARD_PREFS, Context.MODE_PRIVATE)
+            if (prefs.getBoolean(KEY_NATIVE_INFLIGHT, false)) {
+                prefs.edit()
+                    .putBoolean(KEY_NATIVE_INFLIGHT, false)
+                    .putBoolean(KEY_NATIVE_QUARANTINED, true)
+                    .commit()
+                AppDiagnosticLog.logRecoverable(
+                    toolName = "NabraOnnxDirectEngine",
+                    titleAr = "تم تفعيل المسار الآمن لنطق Nabra",
+                    titleEn = "Safe TTS Fallback Activated",
+                    causeAr = "أوقف المحرك العصبي الجلسة السابقة عند التحميل، لذا تم التحويل تلقائياً لمحرك الاستوديو المحلي لضمان عدم خروج التطبيق.",
+                    causeEn = "Previous native ONNX TTS call terminated unexpectedly; quarantined cleanly to local studio TTS.",
+                    errorCode = "NABRA_NATIVE_QUARANTINE",
+                )
+            }
+            prefs.getBoolean(KEY_NATIVE_QUARANTINED, false)
+        }.getOrDefault(false)
+    }
+
+    private fun setNativeInFlight(context: Context, inFlight: Boolean) {
+        runCatching {
+            context.applicationContext
+                .getSharedPreferences(GUARD_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_NATIVE_INFLIGHT, inFlight)
+                .commit()
+        }
+    }
+
+    private fun clearNativeQuarantine(context: Context) {
+        runCatching {
+            context.applicationContext
+                .getSharedPreferences(GUARD_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_NATIVE_INFLIGHT, false)
+                .putBoolean(KEY_NATIVE_QUARANTINED, false)
+                .commit()
         }
     }
 
     fun refreshStatus(context: Context): NabraDownloadState {
         val dir = modelDirectory(context)
-        val presentCount = MODEL_SPECS.count { spec ->
-            val f = File(dir, spec.fileName)
-            f.exists() && f.isFile && f.length() >= spec.minValidBytes
-        }
-        val ready = presentCount == MODEL_SPECS.size
+        val corePresentCount = CORE_MODEL_SPECS.count { isSpecFileValid(dir, it) }
+        val espeakReady = ESPEAK_ESSENTIAL_SPECS.all { isSpecFileValid(dir, it) }
+        val ready = corePresentCount == CORE_MODEL_SPECS.size && espeakReady
         val sherpaOk = isSherpaOnnxAvailable()
         val cur = _progressFlow.value
         val next = if (cur.isDownloading) {
@@ -157,11 +300,11 @@ object NabraOnnxDirectEngine {
                 isReady = ready,
                 isDownloading = false,
                 currentFileName = if (ready) "" else cur.currentFileName,
-                completedFiles = presentCount,
-                totalFiles = MODEL_SPECS.size,
-                downloadedBytes = if (ready) MODEL_SPECS.sumOf { File(dir, it.fileName).length() } else 0L,
-                totalBytes = if (ready) MODEL_SPECS.sumOf { File(dir, it.fileName).length() } else MODEL_SPECS.sumOf { it.estimatedBytes },
-                progress = if (ready) 1f else (presentCount.toFloat() / MODEL_SPECS.size.toFloat()).coerceIn(0f, 0.99f),
+                completedFiles = corePresentCount,
+                totalFiles = CORE_MODEL_SPECS.size,
+                downloadedBytes = if (ready) ALL_MODEL_SPECS.sumOf { File(dir, it.fileName).length() } else 0L,
+                totalBytes = if (ready) ALL_MODEL_SPECS.sumOf { File(dir, it.fileName).length() } else ALL_MODEL_SPECS.sumOf { it.estimatedBytes },
+                progress = if (ready) 1f else (corePresentCount.toFloat() / CORE_MODEL_SPECS.size.toFloat()).coerceIn(0f, 0.99f),
                 sherpaAvailable = sherpaOk,
                 modelDirPath = dir.absolutePath,
                 errorMessage = if (ready) null else cur.errorMessage,
@@ -172,8 +315,8 @@ object NabraOnnxDirectEngine {
     }
 
     /**
-     * يتحقق من وجود الملفات الثلاثة داخل `filesDir/nabra_onnx` ويحمل الناقص منها عبر `java.net.URL`
-     * مع تحديث نسبة التقدم لحظياً.
+     * يتحقق من وجود الملفات الثلاثة + بيانات `espeak-ng-data` داخل `filesDir/nabra_onnx`
+     * ويحمّل الناقص منها عبر `java.net.URL` مع تحديث نسبة التقدم لحظياً.
      */
     suspend fun ensureModelsDownloaded(
         context: Context,
@@ -183,6 +326,7 @@ object NabraOnnxDirectEngine {
         downloadMutex.withLock {
             val dir = modelDirectory(context).apply { mkdirs() }
             val sherpaOk = isSherpaOnnxAvailable()
+            clearNativeQuarantine(context)
             if (areModelsPresent(context)) {
                 val readyState = refreshStatus(context)
                 onProgress?.invoke(readyState)
@@ -201,32 +345,28 @@ object NabraOnnxDirectEngine {
                 return@withLock failState
             }
 
-            val totalEstimatedAll = MODEL_SPECS.sumOf { it.estimatedBytes }
-            var completedCount = 0
-            var cumulativeExistingBytes = 0L
-
-            for (spec in MODEL_SPECS) {
-                val existing = File(dir, spec.fileName)
-                if (existing.exists() && existing.isFile && existing.length() >= spec.minValidBytes) {
-                    completedCount++
-                    cumulativeExistingBytes += existing.length()
-                }
+            val totalEstimatedAll = ALL_MODEL_SPECS.sumOf { it.estimatedBytes }
+            var completedCoreCount = CORE_MODEL_SPECS.count { isSpecFileValid(dir, it) }
+            var cumulativeExistingBytes = ALL_MODEL_SPECS.sumOf { spec ->
+                val f = File(dir, spec.fileName)
+                if (isSpecFileValid(dir, spec)) f.length() else 0L
             }
 
             try {
-                for (spec in MODEL_SPECS) {
+                for (spec in ALL_MODEL_SPECS) {
                     coroutineContext.ensureActive()
                     val destFile = File(dir, spec.fileName)
-                    if (destFile.exists() && destFile.isFile && destFile.length() >= spec.minValidBytes) {
+                    destFile.parentFile?.mkdirs()
+                    if (isSpecFileValid(dir, spec)) {
                         continue
                     }
 
                     val initialState = NabraDownloadState(
                         isReady = false,
                         isDownloading = true,
-                        currentFileName = spec.fileName,
-                        completedFiles = completedCount,
-                        totalFiles = MODEL_SPECS.size,
+                        currentFileName = spec.fileName.substringAfterLast('/'),
+                        completedFiles = completedCoreCount,
+                        totalFiles = CORE_MODEL_SPECS.size,
                         downloadedBytes = cumulativeExistingBytes,
                         totalBytes = totalEstimatedAll,
                         progress = (cumulativeExistingBytes.toFloat() / totalEstimatedAll.toFloat()).coerceIn(0.01f, 0.99f),
@@ -249,9 +389,9 @@ object NabraOnnxDirectEngine {
                         val progressState = NabraDownloadState(
                             isReady = false,
                             isDownloading = true,
-                            currentFileName = spec.fileName,
-                            completedFiles = completedCount,
-                            totalFiles = MODEL_SPECS.size,
+                            currentFileName = spec.fileName.substringAfterLast('/'),
+                            completedFiles = completedCoreCount,
+                            totalFiles = CORE_MODEL_SPECS.size,
                             downloadedBytes = globalRead,
                             totalBytes = totalAll,
                             progress = overall,
@@ -264,10 +404,11 @@ object NabraOnnxDirectEngine {
                     }
 
                     cumulativeExistingBytes += downloadedSize
-                    completedCount++
+                    if (CORE_MODEL_SPECS.any { it.fileName == spec.fileName }) {
+                        completedCoreCount++
+                    }
                 }
 
-                // Clear cached TTS instance so it picks up newly downloaded weights
                 releaseCachedTts()
                 val readyState = refreshStatus(context).copy(
                     isReady = areModelsPresent(context),
@@ -311,11 +452,8 @@ object NabraOnnxDirectEngine {
 
     /**
      * التوليد الصوتي الموحد عبر Nabra-82M Sherpa-ONNX + FFmpegKit:
-     * - يتأكد من ملفات `nabra_onnx` (ويحملها عند الاتصال إذا لم تكن موجودة).
-     * - يولد الصوت الخام عبر `OfflineTts` (`OfflineTtsKokoroModelConfig`) بصيغة WAV.
-     * - يمرر الملف فوراً إلى معالجات `FFmpegKit` (`asetrate`, `aresample`, `atempo`, `equalizer`, `compand`, `aecho`).
-     * - وإذا لم تتوفر مكتبة `com.k2fsa.sherpa.onnx` في وقت التشغيل أو تعذر التنزيل بلا إنترنت،
-     *   يتحوّل بسلاسة إلى [LocalArabicTtsEngine] لضمان استجابة أزرار المعاينة والمعالجة فوراً بدون أخطاء.
+     * - يتأكد من توفر كل ملفات النموذج وبيانات `espeak-ng-data` كاملة قبل استدعاء أي دالة JNI.
+     * - يمرر الصوت الناتج إلى معالجات `FFmpegKit` أو معالج Kotlin البديل بأمان تام.
      */
     suspend fun synthesize(
         context: Context,
@@ -358,9 +496,10 @@ object NabraOnnxDirectEngine {
         val targetPitch = clamp(pitch * profile.pitchMultiplier * stylePitchRatio, 0.55f, 1.75f)
         val targetSpeed = clamp(speed * style.rateFactor * profile.rateMultiplier, 0.50f, 1.85f)
 
-        val sherpaPresent = isSherpaOnnxAvailable()
+        val isQuarantined = checkAndPromoteNativeQuarantine(context)
+        val sherpaPresent = !isQuarantined && isSherpaOnnxAvailable()
         var modelsReady = areModelsPresent(context)
-        if (!modelsReady && autoDownloadIfOnline && OnlineGuard.isOnline(context)) {
+        if (sherpaPresent && !modelsReady && autoDownloadIfOnline && OnlineGuard.isOnline(context)) {
             val dl = ensureModelsDownloaded(context, language)
             modelsReady = dl.isReady
         } else {
@@ -368,17 +507,31 @@ object NabraOnnxDirectEngine {
         }
 
         if (sherpaPresent && modelsReady) {
-            val neuralResult = synthesizeWithSherpaKokoroAndFfmpeg(
-                context = context,
-                cleanInput = cleanInput,
-                dialect = dialect,
-                gender = gender,
-                style = style,
-                profile = profile,
-                targetSpeed = targetSpeed,
-                targetPitch = targetPitch,
-                luxuryBoost = studioLuxuryEnhancement,
-            )
+            val neuralResult = runCatching {
+                synthesizeWithSherpaKokoroAndFfmpeg(
+                    context = context,
+                    cleanInput = cleanInput,
+                    dialect = dialect,
+                    gender = gender,
+                    style = style,
+                    profile = profile,
+                    targetSpeed = targetSpeed,
+                    targetPitch = targetPitch,
+                    luxuryBoost = studioLuxuryEnhancement,
+                )
+            }.onFailure { t ->
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                AppDiagnosticLog.logRecoverable(
+                    toolName = "NabraOnnxDirectEngine",
+                    titleAr = "تم التحويل للمحرك المحلي أثناء التوليد",
+                    titleEn = "Nabra-82M Fallback Activated",
+                    causeAr = t.localizedMessage ?: t.javaClass.simpleName,
+                    causeEn = t.localizedMessage ?: t.javaClass.simpleName,
+                    errorCode = "NABRA_SYNTH_ERR",
+                    throwable = t,
+                )
+            }.getOrNull()
+
             if (neuralResult != null) {
                 SmartCacheManager.pruneManagedBuckets(context)
                 return@withContext NabraSynthOutcome.Success(
@@ -388,8 +541,6 @@ object NabraOnnxDirectEngine {
             }
         }
 
-        // Fallback seamless route when com.k2fsa.sherpa.onnx native AAR is not in classpath
-        // or when model weights have not yet been downloaded offline.
         when (
             val localOutcome = LocalArabicTtsEngine.synthesize(
                 context = context,
@@ -425,7 +576,12 @@ object NabraOnnxDirectEngine {
         luxuryBoost: Boolean,
     ): LocalTtsSynthResult? = withContext(Dispatchers.IO) {
         val dir = modelDirectory(context)
-        val tts = obtainOrCreateOfflineTts(dir, dialect) ?: return@withContext null
+        val espeakDir = espeakDataDirectory(context)
+        if (!areModelsPresent(context) || !File(espeakDir, "phontab").exists() || !File(espeakDir, "ar_dict").exists()) {
+            return@withContext null
+        }
+
+        val tts = obtainOrCreateOfflineTts(context, dir, espeakDir, dialect) ?: return@withContext null
 
         val chunks = LocalArabicTtsEngine.splitSentencesSmoothly(cleanInput, MAX_CHUNK_CHARS)
         if (chunks.isEmpty()) return@withContext null
@@ -441,13 +597,18 @@ object NabraOnnxDirectEngine {
                 val rawWav = File(workDir, "nabra_raw_${UUID.randomUUID()}.wav")
                 val masteredWav = File(workDir, "nabra_fx_${UUID.randomUUID()}.wav")
                 try {
-                    val rawGenerated = generateChunkWavViaOfflineTts(
-                        tts = tts,
-                        text = chunk,
-                        sid = sid,
-                        speed = 1.0f,
-                        outWavFile = rawWav,
-                    )
+                    setNativeInFlight(context, true)
+                    val rawGenerated = try {
+                        generateChunkWavViaOfflineTts(
+                            tts = tts,
+                            text = chunk,
+                            sid = sid,
+                            speed = 1.0f,
+                            outWavFile = rawWav,
+                        )
+                    } finally {
+                        setNativeInFlight(context, false)
+                    }
                     if (!rawGenerated || !rawWav.exists() || rawWav.length() <= 44L) {
                         return@withContext null
                     }
@@ -491,7 +652,9 @@ object NabraOnnxDirectEngine {
     }
 
     private suspend fun obtainOrCreateOfflineTts(
+        context: Context,
         modelDir: File,
+        espeakDir: File,
         dialect: TtsDialect,
     ): Any? = ttsMutex.withLock {
         val dirPath = modelDir.absolutePath
@@ -500,57 +663,69 @@ object NabraOnnxDirectEngine {
         }
         releaseCachedTtsInternal()
 
-        return@withLock runCatching {
-            val modelPath = File(modelDir, FILE_MODEL).absolutePath
-            val voicesPath = File(modelDir, FILE_VOICES).absolutePath
-            val tokensPath = File(modelDir, FILE_TOKENS).absolutePath
+        val requiredEspeak = listOf("phontab", "phonindex", "phondata", "intonations", "ar_dict", "lang/sem/ar")
+        if (requiredEspeak.any { rel -> !File(espeakDir, rel).exists() }) {
+            return@withLock null
+        }
 
-            val kokoroConfig = createKokoroModelConfig(
-                modelPath = modelPath,
-                voicesPath = voicesPath,
-                tokensPath = tokensPath,
-                lang = if (dialect.id == "en_us") "en" else "ar",
-            ) ?: return@runCatching null
+        setNativeInFlight(context, true)
+        return@withLock try {
+            runCatching {
+                val modelPath = File(modelDir, FILE_MODEL).absolutePath
+                val voicesPath = File(modelDir, FILE_VOICES).absolutePath
+                val tokensPath = File(modelDir, FILE_TOKENS).absolutePath
 
-            val modelConfig = createOfflineTtsModelConfig(kokoroConfig) ?: return@runCatching null
-            val ttsConfig = createOfflineTtsConfig(modelConfig) ?: return@runCatching null
+                val kokoroConfig = createKokoroModelConfig(
+                    modelPath = modelPath,
+                    voicesPath = voicesPath,
+                    tokensPath = tokensPath,
+                    dataDir = espeakDir.absolutePath,
+                    lang = if (dialect.id == "en_us") "en" else "ar",
+                ) ?: return@runCatching null
 
-            val ttsClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineTts")
-            val assetCtor = ttsClass.constructors.firstOrNull { ctor ->
-                val p = ctor.parameterTypes
-                p.size == 2 && p[0] == AssetManager::class.java && p[1].name.endsWith("OfflineTtsConfig")
-            }
-            val configOnlyCtor = ttsClass.constructors.firstOrNull { ctor ->
-                val p = ctor.parameterTypes
-                p.size == 1 && p[0].name.endsWith("OfflineTtsConfig")
-            }
-            val instance = when {
-                assetCtor != null -> assetCtor.newInstance(null, ttsConfig)
-                configOnlyCtor != null -> configOnlyCtor.newInstance(ttsConfig)
-                else -> null
-            }
-            if (instance != null) {
-                cachedOfflineTts = instance
-                cachedModelDir = dirPath
-            }
-            instance
-        }.onFailure { err ->
-            AppDiagnosticLog.logRecoverable(
-                toolName = "NabraOnnxDirectEngine",
-                titleAr = "تعذر تهيئة محرك Sherpa-ONNX Kokoro",
-                titleEn = "Sherpa-ONNX OfflineTts Init Failed",
-                causeAr = err.localizedMessage ?: err.javaClass.simpleName,
-                causeEn = err.localizedMessage ?: err.javaClass.simpleName,
-                errorCode = "SHERPA_INIT_ERR",
-                throwable = err,
-            )
-        }.getOrNull()
+                val modelConfig = createOfflineTtsModelConfig(kokoroConfig) ?: return@runCatching null
+                val ttsConfig = createOfflineTtsConfig(modelConfig) ?: return@runCatching null
+
+                val ttsClass = Class.forName("com.k2fsa.sherpa.onnx.OfflineTts")
+                val assetCtor = ttsClass.constructors.firstOrNull { ctor ->
+                    val p = ctor.parameterTypes
+                    p.size == 2 && p[0] == AssetManager::class.java && p[1].name.endsWith("OfflineTtsConfig")
+                }
+                val configOnlyCtor = ttsClass.constructors.firstOrNull { ctor ->
+                    val p = ctor.parameterTypes
+                    p.size == 1 && p[0].name.endsWith("OfflineTtsConfig")
+                }
+                val instance = when {
+                    assetCtor != null -> assetCtor.newInstance(null, ttsConfig)
+                    configOnlyCtor != null -> configOnlyCtor.newInstance(ttsConfig)
+                    else -> null
+                }
+                if (instance != null) {
+                    cachedOfflineTts = instance
+                    cachedModelDir = dirPath
+                }
+                instance
+            }.onFailure { err ->
+                AppDiagnosticLog.logRecoverable(
+                    toolName = "NabraOnnxDirectEngine",
+                    titleAr = "تعذر تهيئة محرك Sherpa-ONNX Kokoro",
+                    titleEn = "Sherpa-ONNX OfflineTts Init Failed",
+                    causeAr = err.localizedMessage ?: err.javaClass.simpleName,
+                    causeEn = err.localizedMessage ?: err.javaClass.simpleName,
+                    errorCode = "SHERPA_INIT_ERR",
+                    throwable = err,
+                )
+            }.getOrNull()
+        } finally {
+            setNativeInFlight(context, false)
+        }
     }
 
     private fun createKokoroModelConfig(
         modelPath: String,
         voicesPath: String,
         tokensPath: String,
+        dataDir: String,
         lang: String,
     ): Any? {
         val cls = Class.forName("com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig")
@@ -560,7 +735,7 @@ object NabraOnnxDirectEngine {
             invokeSetter(cfg, "setModel", modelPath)
             invokeSetter(cfg, "setVoices", voicesPath)
             invokeSetter(cfg, "setTokens", tokensPath)
-            invokeSetter(cfg, "setDataDir", "")
+            invokeSetter(cfg, "setDataDir", dataDir)
             invokeSetter(cfg, "setLexicon", "")
             invokeSetter(cfg, "setLang", lang)
             invokeSetter(cfg, "setDictDir", "")
@@ -569,7 +744,6 @@ object NabraOnnxDirectEngine {
             }
             return cfg
         }
-        // Full 8-arg Kotlin data class constructor fallback
         val fullCtor = cls.constructors.firstOrNull { ctor ->
             ctor.parameterCount >= 7 && ctor.parameterTypes.take(7).all { it == String::class.java }
         }
@@ -578,7 +752,7 @@ object NabraOnnxDirectEngine {
             args[0] = modelPath
             args[1] = voicesPath
             args[2] = tokensPath
-            args[3] = "" // dataDir
+            args[3] = dataDir
             args[4] = "" // lexicon
             args[5] = lang
             args[6] = "" // dictDir
@@ -651,7 +825,6 @@ object NabraOnnxDirectEngine {
                 return@runCatching outWavFile.exists() && outWavFile.length() > 44L
             }
 
-            // Fallback: use GeneratedAudio.save(filename)
             val saved = runCatching {
                 val saveMethod = generatedAudio.javaClass.getMethod("save", String::class.java)
                 saveMethod.invoke(generatedAudio, outWavFile.absolutePath) as? Boolean
@@ -679,6 +852,7 @@ object NabraOnnxDirectEngine {
         for (candidateUrl in urls) {
             var conn: HttpURLConnection? = null
             try {
+                destFile.parentFile?.mkdirs()
                 if (partFile.exists()) partFile.delete()
                 conn = openUrlWithRedirects(candidateUrl)
                 val totalLength = conn.contentLengthLong
