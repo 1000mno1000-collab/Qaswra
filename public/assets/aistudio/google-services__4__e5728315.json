@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "71794555883-2r22k8q6r0ma4knvunvj9d1p6l7ujrrq.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.voicepro.sonixk",
+            "certificate_hash": "ec923ae24f13a18a28c26888f6256eae74f637db"
+          }
+        },
+        {
           "client_id": "71794555883-4h5f663q9f5d284ebtddkagccj4pq5bp.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
