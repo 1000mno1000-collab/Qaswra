@@ -34,15 +34,15 @@ object ExclusiveAudioController {
         synchronized(lock) {
             studioPlayer = player
         }
-
-        fun activePlaybackCount(): Int {
-            val activeStudio = synchronized(lock) { studioPlayer }
-            val studioIsPlaying = runCatching { activeStudio?.isCurrentlyPlaying() == true }.getOrDefault(false)
-            val previewIsPlaying = AudioPlayerManager.isPlaying()
-            return (if (studioIsPlaying) 1 else 0) + (if (previewIsPlaying) 1 else 0)
-        }
         FfmpegKitBridge.cancelActiveSessions()
         AudioPlayerManager.releaseAll()
+    }
+
+    fun activePlaybackCount(): Int {
+        val activeStudio = synchronized(lock) { studioPlayer }
+        val studioIsPlaying = runCatching { activeStudio?.isCurrentlyPlaying() == true }.getOrDefault(false)
+        val previewIsPlaying = AudioPlayerManager.isPlaying()
+        return (if (studioIsPlaying) 1 else 0) + (if (previewIsPlaying) 1 else 0)
     }
 
     fun onBeforeStudioPlayerSeek(@Suppress("UNUSED_PARAMETER") player: StudioAudioPlayer) {
