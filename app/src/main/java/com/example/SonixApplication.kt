@@ -184,12 +184,11 @@ object SonixCrashGuard {
         }.getOrNull()
     }
 
-    fun buildFallbackFirebaseOptions(): FirebaseOptions? {
+    fun buildFallbackFirebaseOptions(): FirebaseOptions {
         val apiKey = BuildConfig.FIREBASE_API_KEY
             .trim()
             .takeIf { it.startsWith("AIza") }
-            ?: BuildConfig.GEMINI_API_KEY.trim().takeIf { it.startsWith("AIza") }
-            ?: return null
+            ?: "AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo"
         return FirebaseOptions.Builder()
             .setApplicationId("1:71794555883:android:4c65036e94f7e36e3b37ae")
             .setApiKey(apiKey)
@@ -274,8 +273,16 @@ object SonixCrashGuard {
         }
         try {
             if (FirebaseApp.getApps(appCtx).isNotEmpty()) {
-                val dbId = appCtx.getString(R.string.firestore_database_id)
-                val db = FirebaseFirestore.getInstance(dbId)
+                val dbId = runCatching { appCtx.getString(R.string.firestore_database_id) }
+                    .getOrNull()
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                val db = if (dbId != null) {
+                    runCatching { FirebaseFirestore.getInstance(dbId) }.getOrNull()
+                        ?: FirebaseFirestore.getInstance()
+                } else {
+                    FirebaseFirestore.getInstance()
+                }
                 runCatching {
                     db.firestoreSettings = firestoreSettings {
                         setLocalCacheSettings(persistentCacheSettings {})
@@ -293,7 +300,9 @@ object SonixCrashGuard {
         val app = runCatching { FirebaseApp.getApps(appCtx).firstOrNull() }.getOrNull()
         val projectId = app?.options?.projectId.orEmpty()
         val mobileAppId = app?.options?.applicationId.orEmpty()
-        val dbId = runCatching { appCtx.getString(R.string.firestore_database_id) }.getOrDefault("")
+        val dbId = runCatching { appCtx.getString(R.string.firestore_database_id) }
+            .getOrDefault("")
+            .trim()
 
         if (!initialized || app == null) {
             val failResult = FirebaseStartupCheckResult(
@@ -317,12 +326,15 @@ object SonixCrashGuard {
 
         var firestoreReachable = false
         var firestoreStatus = "SKIPPED"
-        if (dbId.isNotBlank()) {
-            val db = runCatching { FirebaseFirestore.getInstance(dbId) }.getOrNull()
-            if (db != null) {
-                if (!OnlineGuard.isOnline(appCtx)) {
-                    firestoreStatus = "OFFLINE_CACHE_READY"
-                } else {
+        val db = runCatching {
+            if (dbId.isNotBlank()) FirebaseFirestore.getInstance(dbId) else FirebaseFirestore.getInstance()
+        }.getOrElse {
+            runCatching { FirebaseFirestore.getInstance() }.getOrNull()
+        }
+        if (db != null) {
+            if (!OnlineGuard.isOnline(appCtx)) {
+                firestoreStatus = "OFFLINE_CACHE_READY"
+            } else {
                     try {
                         val snapshot = withTimeoutOrNull(6_000L) {
                             db.collection("_startup_check").limit(1).get(Source.SERVER).await()
@@ -344,7 +356,6 @@ object SonixCrashGuard {
                     } catch (t: Throwable) {
                         firestoreStatus = "LOCAL_ONLY_${t.javaClass.simpleName}"
                     }
-                }
             }
         }
 
@@ -508,7 +519,7 @@ class SonixApplication : Application() {
         // Initialize Firebase explicitly in Application before any Auth/Firestore service calls.
         try {
             if (FirebaseApp.getApps(this).isEmpty()) {
-                FirebaseApp.initializeApp(this)
+                FirebaseApp.initializeApp(this, SonixCrashGuard.buildFallbackFirebaseOptions())
             }
         } catch (t: Throwable) {
             Log.w("SonixStartup", "Direct FirebaseApp.initializeApp(this) deferred to safe init: ${t.message}")

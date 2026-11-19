@@ -119,11 +119,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
-private fun resolveGoogleWebClientId(context: Context): String? {
+private const val OFFICIAL_GOOGLE_WEB_CLIENT_ID =
+    "71794555883-1j2b8ckt6mriegaem2vji34ov5vofpb4.apps.googleusercontent.com"
+
+private fun resolveGoogleWebClientId(context: Context): String {
     return runCatching { context.getString(R.string.default_web_client_id) }
         .getOrNull()
         ?.trim()
         ?.takeIf { it.isNotBlank() }
+        ?: OFFICIAL_GOOGLE_WEB_CLIENT_ID
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
@@ -184,11 +188,9 @@ fun AuthScreen(
     }
     val googleWebClientId = remember(context) { resolveGoogleWebClientId(context) }
     val signInWithGoogleRequest = remember(googleWebClientId) {
-        googleWebClientId?.let { clientId ->
-            GetCredentialRequest.Builder()
-                .addCredentialOption(GetSignInWithGoogleOption.Builder(clientId).build())
-                .build()
-        }
+        GetCredentialRequest.Builder()
+            .addCredentialOption(GetSignInWithGoogleOption.Builder(googleWebClientId).build())
+            .build()
     }
     var preparedHandle by remember {
         mutableStateOf<PrepareGetCredentialResponse.PendingGetCredentialHandle?>(null)
@@ -303,8 +305,7 @@ fun AuthScreen(
         // Pre-fetch device Google accounts via CredentialManager.prepareGetCredential (API 34+)
         // so tapping "Sign in with Google" pops up accounts immediately without cold IPC delay.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
-            credentialManager != null &&
-            signInWithGoogleRequest != null
+            credentialManager != null
         ) {
             val handle = withContext(Dispatchers.IO) {
                 runCatching {
@@ -408,15 +409,6 @@ fun AuthScreen(
             }
 
             val request = signInWithGoogleRequest
-            if (request == null) {
-                isGoogleLoading = false
-                errorMsg = if (isEn) {
-                    "Google Sign-In configuration missing: default_web_client_id not found."
-                } else {
-                    "إعدادات تسجيل الدخول عبر Google غير مكتملة (default_web_client_id)."
-                }
-                return@AuthScreenContent
-            }
 
             val activityContextWrapper = MutableContextWrapper(activity)
             val cachedHandle = preparedHandle

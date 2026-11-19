@@ -7,13 +7,20 @@ import android.util.Base64OutputStream
 import com.example.BuildConfig
 import com.example.audio.AudioDecoder
 import com.example.audio.OnlineGuard
+import com.example.audio.SherpaMoonshineAsrEngine
 import com.example.audio.TARGET_SAMPLE_RATE
 import com.example.audio.cache.SmartCacheManager
 import com.example.audio.clamp
 import com.example.audio.fx.StudioLuxuryAudioFilter
+import com.example.audio.mergeTranscriptText
 import com.example.audio.network.NetworkImmunityManager
 import com.example.audio.processAudioFileWithFfmpeg
 import com.example.audio.resampleStereo
+import com.example.audio.resampleStereoToMono16k
+import com.example.audio.transformVoiceOffline
+import com.example.audio.tts.ArabicTextDiacritizer
+import com.example.audio.tts.SmartVoiceRouter
+import com.example.audio.tts.VoiceRouteOutcome
 import com.example.audio.writeStereoWavFile
 import com.example.diagnostics.AppDiagnosticLog
 import com.example.diagnostics.FfmpegKitBridge
@@ -27,10 +34,11 @@ import com.example.model.TtsGender
 import com.example.model.TtsPersonaAcousticMode
 import com.example.model.TtsVoicePersona
 import com.example.model.VoiceCharacterPreset
-import com.google.firebase.FirebaseApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -101,18 +109,16 @@ object SonixUnifiedAIEngine {
     )
 
     private fun resolveProjectApiKey(): String {
-        val envKey = BuildConfig.GEMINI_API_KEY
+        return BuildConfig.GEMINI_API_KEY
             .trim()
             .takeIf { it.startsWith("AIza") }
-        if (envKey != null) return envKey
-        val firebaseKey = runCatching { FirebaseApp.getInstance().options.apiKey }.getOrNull()
-            ?.trim()
-            ?.takeIf { it.startsWith("AIza") }
-        return firebaseKey ?: ""
+            .orEmpty()
     }
 
+    private fun hasGeminiApiKey(): Boolean = resolveProjectApiKey().isNotBlank()
+
     // -------------------------------------------------------------------------
-    // 1. Arabic Tashkeel, Punctuation & Breath-Pause Optimizer (gemini-2.5-flash)
+    // 1. Arabic Tashkeel, Punctuation & Breath-Pause Optimizer (Local or Gemini)
     // -------------------------------------------------------------------------
 
     suspend fun diacritizeArabicIfAvailable(
@@ -128,7 +134,12 @@ object SonixUnifiedAIEngine {
         val alreadyRichlyFormatted = diacriticCount >= (rawText.length / 6).coerceAtLeast(4) &&
             acousticMode == TtsPersonaAcousticMode.NATURAL
         if (alreadyRichlyFormatted) return@withContext null
-        if (!OnlineGuard.isOnline(context)) return@withContext null
+        if (!hasGeminiApiKey() || !OnlineGuard.isOnline(context)) {
+            return@withContext ArabicTextDiacritizer.normalizeAndHintForTts(
+                rawText = rawText,
+                applyLightDiacritics = true,
+            ).takeIf { it.isNotBlank() && it != rawText }
+        }
 
         val dialectDesc = describeDialectArabic(dialect.id)
         val cadenceDirective = when (acousticMode) {
@@ -216,33 +227,52 @@ object SonixUnifiedAIEngine {
             )
         }
 
-        // Priority 2: 100% Online Gemini 2.5 Audio Multimodal TTS
-        if (!OnlineGuard.isOnline(context) || !NetworkImmunityManager.pingReachable(context)) {
-            return@withContext UnifiedSpeechResult.Offline(OnlineGuard.offlineErrorMessage(language))
+        val effectiveMode = acousticMode ?: persona?.defaultAcousticMode ?: TtsPersonaAcousticMode.NATURAL
+        // Priority 2: Gemini 2.5 Audio TTS only when GEMINI_API_KEY is explicitly configured & online
+        if (hasGeminiApiKey() && OnlineGuard.isOnline(context) && NetworkImmunityManager.pingReachable(context)) {
+            val voiceName = persona?.geminiVoiceName ?: pickPrebuiltVoice(dialect, gender, style)
+            val dialectCoaching = buildDialectInstruction(
+                dialect = dialect,
+                gender = gender,
+                style = style,
+                speechRate = speechRate,
+                persona = persona,
+                acousticMode = effectiveMode,
+            )
+            val prompt = "$dialectCoaching\n\nالنص المراد نطقه بصوت بشري طبيعي تماماً:\n\"$text\""
+
+            val audioAttempt = requestGeminiAudioOutput(
+                cacheDir = cacheDir,
+                prompt = prompt,
+                voiceName = voiceName,
+                language = language,
+            )
+            if (audioAttempt is UnifiedSpeechResult.Success) {
+                return@withContext audioAttempt
+            }
         }
 
-        val effectiveMode = acousticMode ?: persona?.defaultAcousticMode ?: TtsPersonaAcousticMode.NATURAL
-        val voiceName = persona?.geminiVoiceName ?: pickPrebuiltVoice(dialect, gender, style)
-        val dialectCoaching = buildDialectInstruction(
+        // Priority 3: Built-in Hybrid Studio Engine (Nabra-82M / LocalArabicTtsEngine + FFmpegKit)
+        val routed = SmartVoiceRouter().synthesizeStudioVoiceWithStatus(
+            context = context,
+            text = text,
             dialect = dialect,
             gender = gender,
             style = style,
             speechRate = speechRate,
-            persona = persona,
-            acousticMode = effectiveMode,
-        )
-        val prompt = "$dialectCoaching\n\nالنص المراد نطقه بصوت بشري طبيعي تماماً:\n\"$text\""
-
-        val audioAttempt = requestGeminiAudioOutput(
-            cacheDir = cacheDir,
-            prompt = prompt,
-            voiceName = voiceName,
+            pitch = if (gender == TtsGender.FEMALE) 1.08f else 0.96f,
             language = language,
+            studioLuxuryEnhancement = true,
+            acousticMode = effectiveMode,
+            autoDownloadIfOnline = OnlineGuard.isOnline(context),
         )
-        when (audioAttempt) {
-            is UnifiedSpeechResult.Success -> audioAttempt
-            is UnifiedSpeechResult.Offline -> audioAttempt
-            is UnifiedSpeechResult.Error -> audioAttempt
+        when (routed) {
+            is VoiceRouteOutcome.Success -> UnifiedSpeechResult.Success(
+                buffer = routed.result.buffer,
+                usedLocalOnnx = true,
+                engineSummaryAr = if (routed.usedFallback) "المحرك المدمج (Local + FFmpegKit)" else "Nabra-82M Neural + FFmpegKit",
+            )
+            is VoiceRouteOutcome.ProviderError -> UnifiedSpeechResult.Error(routed.message)
         }
     }
 
@@ -297,9 +327,23 @@ object SonixUnifiedAIEngine {
             }
         }
 
-        // Priority 2: 100% Online Gemini 2.5 Audio (Voice Analysis + Persona Re-Voicing + FFmpegKit Acoustic Mastering)
-        if (!OnlineGuard.isOnline(context) || !NetworkImmunityManager.pingReachable(context)) {
-            return@withContext UnifiedSpeechResult.Offline(OnlineGuard.offlineErrorMessage(language))
+        // Priority 2: If no Gemini key or offline, use local Formant + FFmpegKit studio character transformation
+        val canUseGemini = hasGeminiApiKey() && OnlineGuard.isOnline(context) && NetworkImmunityManager.pingReachable(context)
+        if (!canUseGemini) {
+            return@withContext runLocalVoiceConversion(
+                context = context,
+                workingDir = workingDir,
+                sourceBuffer = sourceBuffer,
+                sourceFile = sourceFile,
+                targetPreset = targetPreset,
+                pitchSemitones = pitchSemitones,
+                formantShift = formantShift,
+                warmthDb = warmthDb,
+                presenceDb = presenceDb,
+                language = language,
+                targetPersona = targetPersona,
+                acousticMode = acousticMode,
+            )
         }
 
         val audioB64 = extractBoundedWavChunkBase64(
@@ -309,9 +353,19 @@ object SonixUnifiedAIEngine {
             sourceFile = sourceFile,
             startSec = 0,
             durationSec = 35,
-        ) ?: return@withContext UnifiedSpeechResult.Error(
-            if (language == AppLanguage.EN) "Failed to read audio window for AI conversion."
-            else "تعذر تجهيز المقطع الصوتي للمعالجة بالذكاء الاصطناعي.",
+        ) ?: return@withContext runLocalVoiceConversion(
+            context = context,
+            workingDir = workingDir,
+            sourceBuffer = sourceBuffer,
+            sourceFile = sourceFile,
+            targetPreset = targetPreset,
+            pitchSemitones = pitchSemitones,
+            formantShift = formantShift,
+            warmthDb = warmthDb,
+            presenceDb = presenceDb,
+            language = language,
+            targetPersona = targetPersona,
+            acousticMode = acousticMode,
         )
 
         val acousticStyleNote = when (acousticMode) {
@@ -371,8 +425,19 @@ object SonixUnifiedAIEngine {
             language = language,
         )
         if (analysisResp.json == null) {
-            return@withContext UnifiedSpeechResult.Error(
-                analysisResp.error ?: friendlyNetworkError(language, "فشل تحليل الصوت سحابياً"),
+            return@withContext runLocalVoiceConversion(
+                context = context,
+                workingDir = workingDir,
+                sourceBuffer = sourceBuffer,
+                sourceFile = sourceFile,
+                targetPreset = targetPreset,
+                pitchSemitones = pitchSemitones,
+                formantShift = formantShift,
+                warmthDb = warmthDb,
+                presenceDb = presenceDb,
+                language = language,
+                targetPersona = targetPersona,
+                acousticMode = acousticMode,
             )
         }
 
@@ -381,12 +446,19 @@ object SonixUnifiedAIEngine {
         val hasSpeech = parsed?.optBoolean("has_speech", true) ?: true
         val verbatimText = parsed?.optString("transcript")?.trim().orEmpty()
         if (!hasSpeech || verbatimText.isBlank()) {
-            return@withContext UnifiedSpeechResult.Error(
-                if (language == AppLanguage.EN) {
-                    "No clear spoken dialogue was detected for AI Voice-to-Voice. Try the offline Character DSP filters for SFX/music."
-                } else {
-                    "لم يتم رصد كلام بشري واضح في هذا المقطع للتحويل الصوتي الذكي. يمكنك استخدام فلاتر الشخصيات المباشرة للمؤثرات أو الموسيقى."
-                },
+            return@withContext runLocalVoiceConversion(
+                context = context,
+                workingDir = workingDir,
+                sourceBuffer = sourceBuffer,
+                sourceFile = sourceFile,
+                targetPreset = targetPreset,
+                pitchSemitones = pitchSemitones,
+                formantShift = formantShift,
+                warmthDb = warmthDb,
+                presenceDb = presenceDb,
+                language = language,
+                targetPersona = targetPersona,
+                acousticMode = acousticMode,
             )
         }
 
@@ -434,9 +506,80 @@ object SonixUnifiedAIEngine {
                     engineSummaryAr = "Gemini 2.5 Audio ($targetVoiceName • ${acousticMode.titleAr}) + FFmpegKit",
                 )
             }
-            is UnifiedSpeechResult.Offline -> rendered
-            is UnifiedSpeechResult.Error -> rendered
+            else -> runLocalVoiceConversion(
+                context = context,
+                workingDir = workingDir,
+                sourceBuffer = sourceBuffer,
+                sourceFile = sourceFile,
+                targetPreset = targetPreset,
+                pitchSemitones = pitchSemitones,
+                formantShift = formantShift,
+                warmthDb = warmthDb,
+                presenceDb = presenceDb,
+                language = language,
+                targetPersona = targetPersona,
+                acousticMode = acousticMode,
+            )
         }
+    }
+
+    private suspend fun runLocalVoiceConversion(
+        context: Context,
+        workingDir: File,
+        sourceBuffer: StereoAudioBuffer?,
+        sourceFile: File?,
+        targetPreset: VoiceCharacterPreset?,
+        pitchSemitones: Float,
+        formantShift: Float,
+        warmthDb: Float,
+        presenceDb: Float,
+        language: AppLanguage,
+        targetPersona: TtsVoicePersona?,
+        acousticMode: TtsPersonaAcousticMode,
+    ): UnifiedSpeechResult {
+        val inputBuf = sourceBuffer ?: sourceFile?.let {
+            AudioDecoder.decodeFile(it) ?: AudioDecoder.decodeSampleWindowForAnalysis(it, maxSeconds = 45f)
+        }
+        if (inputBuf == null || inputBuf.frameCount <= 0) {
+            return UnifiedSpeechResult.Error(
+                if (language == AppLanguage.EN) "No playable audio found for voice transformation."
+                else "تعذر قراءة المقطع الصوتي للمعالجة المحلية.",
+            )
+        }
+        val transformed = transformVoiceOffline(
+            source = inputBuf,
+            pitchSemitones = pitchSemitones,
+            formantShift = formantShift,
+            warmthDb = warmthDb,
+            presenceDb = presenceDb,
+            mix = 0.88f,
+            bassBoostDb = targetPreset?.bassBoostDb ?: 0f,
+            vibratoHz = targetPreset?.vibratoHz ?: 0f,
+            vibratoDepth = targetPreset?.vibratoDepth ?: 0f,
+            echoDelayMs = targetPreset?.echoDelayMs ?: 0f,
+            echoDecay = targetPreset?.echoDecay ?: 0f,
+            dualLayerPitchSemitones = targetPreset?.dualLayerPitchSemitones ?: 0f,
+            dualLayerFormantShift = targetPreset?.dualLayerFormantShift ?: 1.0f,
+            dualLayerMix = targetPreset?.dualLayerMix ?: 0f,
+            studioMasteringPolish = true,
+        )
+        val mastered = polishConvertedVoiceWithFfmpeg(
+            context = context,
+            cacheDir = workingDir,
+            buffer = transformed,
+            warmthDb = warmthDb,
+            presenceDb = presenceDb,
+            bassBoostDb = targetPreset?.bassBoostDb ?: 0f,
+            acousticMode = acousticMode,
+            style = targetPersona?.defaultStyle ?: TtsDeliveryStyle.NATURAL_WARM,
+            gender = targetPersona?.gender
+                ?: if (formantShift > 1.05f || pitchSemitones > 1.5f) TtsGender.FEMALE else TtsGender.MALE,
+        )
+        return UnifiedSpeechResult.Success(
+            buffer = mastered,
+            usedLocalOnnx = true,
+            engineSummaryAr = "محرك الاستوديو المحلي (Formant DSP + FFmpegKit)",
+        )
     }
 
     // -------------------------------------------------------------------------
@@ -450,8 +593,14 @@ object SonixUnifiedAIEngine {
         language: AppLanguage,
         onChunkProgress: ((String) -> Unit)? = null,
     ): UnifiedTextResult = withContext(Dispatchers.IO) {
-        if (!OnlineGuard.isOnline(context) || !NetworkImmunityManager.pingReachable(context)) {
-            return@withContext UnifiedTextResult.Offline(OnlineGuard.offlineErrorMessage(language))
+        if (!hasGeminiApiKey() || !OnlineGuard.isOnline(context) || !NetworkImmunityManager.pingReachable(context)) {
+            return@withContext transcribeLocallyWithSherpa(
+                context = context,
+                buffer = buffer,
+                sourceFile = sourceFile,
+                language = language,
+                onChunkProgress = onChunkProgress,
+            )
         }
 
         val workingDir = File(context.cacheDir, "sonix_ai_transcribe").apply { mkdirs() }
@@ -546,9 +695,20 @@ object SonixUnifiedAIEngine {
                     // Return what was already transcribed gracefully
                     break
                 }
-                return@withContext UnifiedTextResult.Error(
-                    resp.error ?: friendlyNetworkError(language, "تعذر إتمام التفريغ الصوتي السحابي"),
+                val localAttempt = transcribeLocallyWithSherpa(
+                    context = context,
+                    buffer = buffer,
+                    sourceFile = sourceFile,
+                    language = language,
+                    onChunkProgress = onChunkProgress,
                 )
+                return@withContext if (localAttempt is UnifiedTextResult.Success) {
+                    localAttempt
+                } else {
+                    UnifiedTextResult.Error(
+                        resp.error ?: friendlyNetworkError(language, "تعذر إتمام التفريغ الصوتي السحابي"),
+                    )
+                }
             }
 
             val chunkText = extractTextFromResponse(resp.json)?.trim().orEmpty()
@@ -576,6 +736,92 @@ object SonixUnifiedAIEngine {
         UnifiedTextResult.Success(finalTranscript)
     }
 
+    private suspend fun transcribeLocallyWithSherpa(
+        context: Context,
+        buffer: StereoAudioBuffer?,
+        sourceFile: File?,
+        language: AppLanguage,
+        onChunkProgress: ((String) -> Unit)?,
+    ): UnifiedTextResult {
+        if (buffer == null && (sourceFile == null || !sourceFile.exists())) {
+            return UnifiedTextResult.Error(
+                if (language == AppLanguage.EN) "No active audio loaded to transcribe."
+                else "لا يوجد مقطع صوتي حالياً لتفريغه. سجّل أو استورد صوتاً أولاً.",
+            )
+        }
+        val engine = SherpaMoonshineAsrEngine(context.applicationContext)
+        if (!engine.isNativeLibraryAvailable()) {
+            return UnifiedTextResult.Error(
+                if (language == AppLanguage.EN) "Local Sherpa-ONNX engine is unavailable on this device ABI."
+                else "محرك Sherpa-ONNX المحلي غير متوافق مع معمارية هذا الجهاز.",
+            )
+        }
+        if (!engine.isModelReady()) {
+            if (OnlineGuard.isOnline(context)) {
+                onChunkProgress?.invoke(
+                    if (language == AppLanguage.EN) "Downloading local Sherpa-ONNX Arabic model..."
+                    else "جاري تجهيز نموذج Sherpa-ONNX المحلي للتفريغ...",
+                )
+                engine.ensureModelsDownloaded()
+            }
+            if (!engine.isModelReady()) {
+                return UnifiedTextResult.Error(
+                    if (language == AppLanguage.EN) {
+                        "Local Sherpa-ONNX model is not downloaded yet. Open Speech-to-Text to download it once or connect to the internet."
+                    } else {
+                        "يرجى تحميل نموذج Sherpa-ONNX المحلي مرة واحدة من شاشة تحويل الكلام إلى نص للعمل بدون إنترنت."
+                    },
+                )
+            }
+        }
+        onChunkProgress?.invoke(
+            if (language == AppLanguage.EN) "Transcribing locally with Sherpa-ONNX..."
+            else "جاري التفريغ محلياً عبر Sherpa-ONNX + Silero VAD...",
+        )
+        val samples16k = when {
+            buffer != null && buffer.frameCount > 0 -> resampleStereoToMono16k(buffer)
+            sourceFile != null -> engine.extractMono16kSamplesFromFile(sourceFile)
+            else -> null
+        } ?: return UnifiedTextResult.Error(
+            if (language == AppLanguage.EN) "Failed to decode audio samples for local transcription."
+            else "تعذر استخراج عينات الصوت للتفريغ المحلي.",
+        )
+
+        val localText = suspendCancellableCoroutine<String?> { cont ->
+            val sb = StringBuilder()
+            val started = engine.startOfflineClipTranscription(
+                samples16k = samples16k,
+                onPartialUpdate = {},
+                onSegmentCommitted = { seg ->
+                    val merged = mergeTranscriptText(sb.toString(), seg)
+                    sb.clear()
+                    sb.append(merged)
+                },
+                onCompleted = {
+                    if (cont.isActive) cont.resume(sb.toString().trim())
+                },
+                onFatalError = {
+                    if (cont.isActive) cont.resume(sb.toString().trim().ifBlank { null })
+                },
+            )
+            if (!started && cont.isActive) {
+                cont.resume(null)
+            }
+            cont.invokeOnCancellation {
+                engine.stop()
+            }
+        }?.trim().orEmpty()
+
+        return if (localText.isNotBlank()) {
+            UnifiedTextResult.Success(localText)
+        } else {
+            UnifiedTextResult.Error(
+                if (language == AppLanguage.EN) "No clear speech was detected by local Sherpa-ONNX."
+                else "لم يرصد محرك Sherpa-ONNX كلاماً واضحاً في المقطع.",
+            )
+        }
+    }
+
     // -------------------------------------------------------------------------
     // 5. Smart AI Audio Engineer (Multimodal Diagnosis + Safe FFmpeg Filter Graph)
     // -------------------------------------------------------------------------
@@ -587,8 +833,8 @@ object SonixUnifiedAIEngine {
         acousticMetrics: SmartMasterAnalysis,
         language: AppLanguage,
     ): SmartEngineerRecommendation? = withContext(Dispatchers.IO) {
-        if (!OnlineGuard.isOnline(context) || !NetworkImmunityManager.pingReachable(context)) {
-            return@withContext null
+        if (!hasGeminiApiKey() || !OnlineGuard.isOnline(context) || !NetworkImmunityManager.pingReachable(context)) {
+            return@withContext buildLocalSmartEngineerRecommendation(acousticMetrics, language)
         }
         val workingDir = File(context.cacheDir, "sonix_ai_engineer").apply { mkdirs() }
         val audioB64 = extractBoundedWavChunkBase64(
@@ -666,7 +912,7 @@ object SonixUnifiedAIEngine {
             language = language,
         )
         val json = parseJsonObjectSafe(extractTextFromResponse(resp.json).orEmpty())
-            ?: return@withContext null
+            ?: return@withContext buildLocalSmartEngineerRecommendation(acousticMetrics, language)
 
         val profile = json.optString("profile").trim().ifBlank { acousticMetrics.detectedProfile }
         val diagNotes = json.optString("diagnosticNotes").trim()
@@ -688,6 +934,53 @@ object SonixUnifiedAIEngine {
             diagnosticNotes = diagNotes,
             recommendedFfmpegFilter = safeFilter,
         )
+    }
+
+    private fun buildLocalSmartEngineerRecommendation(
+        metrics: SmartMasterAnalysis,
+        language: AppLanguage,
+    ): SmartEngineerRecommendation {
+        val graph = buildFallbackFfmpegGraph(metrics)
+        val recs = mutableListOf<String>()
+        if (language == AppLanguage.EN) {
+            if (metrics.noiseFloorDb > -48f) {
+                recs += "Apply spectral noise attenuation (noise floor ${"%.1f".format(Locale.US, metrics.noiseFloorDb)} dB)"
+            }
+            if (metrics.lowEnergyRatio > 0.40f) {
+                recs += "Cut low-end mud around 220 Hz and engage 100 Hz high-pass"
+            }
+            if (metrics.highEnergyRatio < 0.14f) {
+                recs += "Lift vocal presence around 2.6 kHz for clearer articulation"
+            }
+            if (recs.isEmpty()) {
+                recs += "Gentle dynamic compression and broadcast loudness normalization (-16 LUFS)"
+            }
+            return SmartEngineerRecommendation(
+                detectedProfile = metrics.detectedProfile,
+                recommendations = recs,
+                diagnosticNotes = "Local acoustic inspection via DSP + FFmpegKit graph ready to apply.",
+                recommendedFfmpegFilter = graph,
+            )
+        } else {
+            if (metrics.noiseFloorDb > -48f) {
+                recs += "عزل الضوضاء الطيفية لخفض أرضية الضجيج (${"%.1f".format(Locale.US, metrics.noiseFloorDb)} dB)"
+            }
+            if (metrics.lowEnergyRatio > 0.40f) {
+                recs += "تخفيف الترددات المنخفضة المكتومة عند 220Hz مع فلتر high-pass عند 100Hz"
+            }
+            if (metrics.highEnergyRatio < 0.14f) {
+                recs += "إبراز وضوح الصوت والحضور عند 2.6kHz"
+            }
+            if (recs.isEmpty()) {
+                recs += "ضغط ديناميكي متوازن وموازنة الشدة (-16 LUFS) عبر FFmpegKit"
+            }
+            return SmartEngineerRecommendation(
+                detectedProfile = metrics.detectedProfile,
+                recommendations = recs,
+                diagnosticNotes = "تم التحليل الصوتي محلياً وتجهيز سلسلة فلاتر FFmpegKit المناسبة للتنفيذ الفوري.",
+                recommendedFfmpegFilter = graph,
+            )
+        }
     }
 
     /**
@@ -747,52 +1040,117 @@ object SonixUnifiedAIEngine {
         query: String,
         language: AppLanguage,
     ): UnifiedTextResult = withContext(Dispatchers.IO) {
-        if (!OnlineGuard.isOnline(context) || !NetworkImmunityManager.pingReachable(context)) {
-            return@withContext UnifiedTextResult.Offline(OnlineGuard.offlineErrorMessage(language))
-        }
-        val langInstr = when (language) {
-            AppLanguage.EN -> "Answer clearly in English as a senior audio mastering engineer."
-            AppLanguage.FA -> "به زبان فارسی روان و تخصصی به عنوان مهندس صدابرداری پاسخ بده."
-            AppLanguage.AR -> "أجب باللغة العربية الاحترافية الواضحة بصفتك مهندس صوت وماسترينغ خبير."
-        }
-        val payload = JSONObject().apply {
-            put(
-                "contents",
-                JSONArray().put(
-                    JSONObject().put(
-                        "parts",
-                        JSONArray().put(
-                            JSONObject().put(
-                                "text",
-                                "$langInstr\nقدّم خطوات عملية واضحة وأرقام ترددات (Hz/dB) عند الحاجة دون حشو.\n\nسؤال المستخدم:\n$query",
+        if (hasGeminiApiKey() && OnlineGuard.isOnline(context) && NetworkImmunityManager.pingReachable(context)) {
+            val langInstr = when (language) {
+                AppLanguage.EN -> "Answer clearly in English as a senior audio mastering engineer."
+                AppLanguage.FA -> "به زبان فارسی روان و تخصصی به عنوان مهندس صدابرداری پاسخ بده."
+                AppLanguage.AR -> "أجب باللغة العربية الاحترافية الواضحة بصفتك مهندس صوت وماسترينغ خبير."
+            }
+            val payload = JSONObject().apply {
+                put(
+                    "contents",
+                    JSONArray().put(
+                        JSONObject().put(
+                            "parts",
+                            JSONArray().put(
+                                JSONObject().put(
+                                    "text",
+                                    "$langInstr\nقدّم خطوات عملية واضحة وأرقام ترددات (Hz/dB) عند الحاجة دون حشو.\n\nسؤال المستخدم:\n$query",
+                                ),
                             ),
                         ),
                     ),
-                ),
+                )
+                put(
+                    "generationConfig",
+                    JSONObject().apply {
+                        put("temperature", 0.35)
+                        put("maxOutputTokens", 1400)
+                    },
+                )
+            }
+
+            val resp = postGeminiJson(
+                urlStr = "$ENDPOINT_MULTIMODAL?key=${resolveProjectApiKey()}",
+                bodyJson = payload.toString(),
+                connectTimeoutMs = 4_500,
+                readTimeoutMs = 20_000,
+                language = language,
             )
-            put(
-                "generationConfig",
-                JSONObject().apply {
-                    put("temperature", 0.35)
-                    put("maxOutputTokens", 1400)
-                },
-            )
+            val geminiAnswer = extractTextFromResponse(resp.json)?.trim().orEmpty()
+            if (geminiAnswer.isNotBlank()) {
+                return@withContext UnifiedTextResult.Success(geminiAnswer)
+            }
         }
 
-        val resp = postGeminiJson(
-            urlStr = "$ENDPOINT_MULTIMODAL?key=${resolveProjectApiKey()}",
-            bodyJson = payload.toString(),
-            connectTimeoutMs = 4_500,
-            readTimeoutMs = 20_000,
-            language = language,
-        )
-        val answer = extractTextFromResponse(resp.json)?.trim().orEmpty()
-        if (answer.isBlank()) {
-            return@withContext UnifiedTextResult.Error(
-                resp.error ?: friendlyNetworkError(language, "تعذر الحصول على رد من مساعد الهندسة الصوتية"),
-            )
+        // Local & Free Assistant Fallback (when GEMINI_API_KEY is blank or offline)
+        if (OnlineGuard.isOnline(context)) {
+            val freeTurn = runCatching {
+                SmartAssistantAndSearch.askPollinationsChat(
+                    history = emptyList(),
+                    userMessage = query,
+                    language = language,
+                    context = context,
+                )
+            }.getOrNull()
+            if (freeTurn != null && !freeTurn.isOfflineError && freeTurn.replyText.isNotBlank()) {
+                val matchedTools = SmartAssistantAndSearch.findBestToolWithTypoTolerance(query)
+                val formatted = buildString {
+                    append(freeTurn.replyText.trim())
+                    if (matchedTools.isNotEmpty()) {
+                        append("\n\n")
+                        append(formatLocalToolGuide(matchedTools.first(), language))
+                    }
+                }
+                return@withContext UnifiedTextResult.Success(formatted)
+            }
         }
-        UnifiedTextResult.Success(answer)
+
+        val localMatches = SmartAssistantAndSearch.findBestToolWithTypoTolerance(query)
+        if (localMatches.isNotEmpty()) {
+            val combined = localMatches.take(2).joinToString("\n\n") { tool ->
+                formatLocalToolGuide(tool, language)
+            }
+            return@withContext UnifiedTextResult.Success(combined)
+        }
+
+        val generalGuidance = when (language) {
+            AppLanguage.EN -> buildString {
+                append("Smart Audio Guide (Local):\n")
+                append("• Remove noise/hum: use Voice Purifier (80 Hz high-pass + spectral denoise).\n")
+                append("• Vocal clarity: boost +2 to +3 dB around 2.5–3 kHz and trim mud at 220 Hz.\n")
+                append("• Social loudness: use Reels & Podcast -14 LUFS template or Auto-Master.")
+            }
+            AppLanguage.FA -> buildString {
+                append("راهنمای هوشمند صدابرداری (محلی):\n")
+                append("• حذف نویز: از تصفیه‌کننده صدا (High-pass 80Hz + کاهش نویز طیفی) استفاده کنید.\n")
+                append("• وضوح صدا: فرکانس 2.5kHz تا 3kHz را 2-3 dB تقویت و 220Hz را کمی کاهش دهید.")
+            }
+            AppLanguage.AR -> buildString {
+                append("مرشد الهندسة الصوتية الذكي (محلي):\n")
+                append("• لعزل الضوضاء والهواء: استخدم أداة «منقّي الصوت» (High-Pass 80Hz + عزل طيفي).\n")
+                append("• لرفع وضوح الكلام: ارفع التردد 2.5–3 kHz بمقدار +2.5 dB وخفّض 220 Hz بمقدار -2 dB.\n")
+                append("• للريلز والبودكاست: استخدم قالب -14 LUFS أو الماسترينغ الذكي تلقائياً.")
+            }
+        }
+        UnifiedTextResult.Success(generalGuidance)
+    }
+
+    private fun formatLocalToolGuide(tool: ToolGuideResult, language: AppLanguage): String {
+        val header = if (language == AppLanguage.EN) {
+            "Recommended Tool: ${tool.toolName}"
+        } else {
+            "الأداة الأنسب في Sonix: ${tool.toolName}"
+        }
+        return buildString {
+            append(header)
+            append("\n")
+            append(tool.matchReason)
+            if (tool.howToUseSteps.isNotEmpty()) {
+                append("\n")
+                append(tool.howToUseSteps.joinToString("\n"))
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1300,14 +1658,7 @@ object SonixUnifiedAIEngine {
             ""
         }
         if (urlStr.contains("?key=") && apiKeyParam.isBlank()) {
-            return JsonPostOutcome(
-                null,
-                if (language == AppLanguage.EN) {
-                    "Gemini API key is not configured. Add GEMINI_API_KEY in AI Studio Secrets."
-                } else {
-                    "مفتاح Gemini API غير مُعدّ بعد. يرجى إضافة GEMINI_API_KEY في لوحة Secrets."
-                },
-            )
+            return JsonPostOutcome(null, null)
         }
         var conn: HttpURLConnection? = null
         return try {

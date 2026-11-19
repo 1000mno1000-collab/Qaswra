@@ -38,9 +38,16 @@ class DeveloperPanelRepository(context: Context) {
 
     private fun dbOrNull(): FirebaseFirestore? {
         if (FirebaseApp.getApps(appContext).isEmpty()) return null
-        return runCatching {
-            FirebaseFirestore.getInstance(appContext.getString(R.string.firestore_database_id))
-        }.getOrNull()
+        val dbId = runCatching { appContext.getString(R.string.firestore_database_id) }
+            .getOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        return if (dbId != null) {
+            runCatching { FirebaseFirestore.getInstance(dbId) }.getOrNull()
+                ?: runCatching { FirebaseFirestore.getInstance() }.getOrNull()
+        } else {
+            runCatching { FirebaseFirestore.getInstance() }.getOrNull()
+        }
     }
 
     private fun requireOwnerUid(): String {

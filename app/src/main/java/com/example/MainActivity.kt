@@ -212,10 +212,14 @@ class MainActivity : ComponentActivity() {
 
         try {
             if (FirebaseApp.getApps(this).isEmpty()) {
-                val options = SonixCrashGuard.buildFallbackFirebaseOptions()
-                if (options != null) {
-                    FirebaseApp.initializeApp(this, options)
-                }
+                val options = FirebaseOptions.Builder()
+                    .setApplicationId("1:71794555883:android:4c65036e94f7e36e3b37ae")
+                    .setApiKey("AIzaSyAewWAxeUSQFEtUoMGuVFCSa5qHbmcYGoo")
+                    .setProjectId("gen-lang-client-0021883952")
+                    .setStorageBucket("gen-lang-client-0021883952.firebasestorage.app")
+                    .setGcmSenderId("71794555883")
+                    .build()
+                FirebaseApp.initializeApp(this, options)
             }
         } catch (e: Exception) {
             Log.w("MainActivity", "Manual FirebaseApp initialization skipped safely: ${e.message}")
@@ -356,12 +360,20 @@ class MainActivity : ComponentActivity() {
                 }
                 val auth = runCatching { FirebaseAuth.getInstance() }.getOrNull()
                 val authUid = runCatching { auth?.currentUser?.uid }.getOrNull()
-                val dbId = getString(R.string.firestore_database_id)
-                val db = FirebaseFirestore.getInstance(dbId)
+                val dbId = runCatching { getString(R.string.firestore_database_id) }
+                    .getOrNull()
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                val db = if (dbId != null) {
+                    runCatching { FirebaseFirestore.getInstance(dbId) }.getOrNull()
+                        ?: FirebaseFirestore.getInstance()
+                } else {
+                    FirebaseFirestore.getInstance()
+                }
                 val isOnline = OnlineGuard.isOnline(this@MainActivity)
                 Log.i(
                     "SonixFirebaseDiag",
-                    "MainActivity Firebase startup check | app=${app.name} | project=${app.options.projectId} | authReady=${auth != null} | uid=${authUid ?: "signed_out"} | db=$dbId | online=$isOnline",
+                    "MainActivity Firebase startup check | app=${app.name} | project=${app.options.projectId} | authReady=${auth != null} | uid=${authUid ?: "signed_out"} | db=${dbId ?: "(default)"} | online=$isOnline",
                 )
 
                 if (!isOnline) {

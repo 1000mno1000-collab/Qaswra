@@ -345,9 +345,16 @@ class FirestoreStudioRepository(context: Context) {
 
     private fun dbOrNull(): FirebaseFirestore? {
         if (FirebaseApp.getApps(appContext).isEmpty()) return null
-        return runCatching {
-            FirebaseFirestore.getInstance(appContext.getString(R.string.firestore_database_id))
-        }.getOrNull()
+        val dbId = runCatching { appContext.getString(R.string.firestore_database_id) }
+            .getOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        return if (dbId != null) {
+            runCatching { FirebaseFirestore.getInstance(dbId) }.getOrNull()
+                ?: runCatching { FirebaseFirestore.getInstance() }.getOrNull()
+        } else {
+            runCatching { FirebaseFirestore.getInstance() }.getOrNull()
+        }
     }
 
     private fun handleFirestoreError(
@@ -381,11 +388,17 @@ class FirestoreStudioRepository(context: Context) {
     fun observeCustomPresets(userId: String): Flow<List<StudioPreset>> {
         val db = dbOrNull() ?: return flowOf(emptyList())
         val path = "users/$userId/custom_presets"
-        return db.collection("users")
-            .document(userId)
-            .collection("custom_presets")
-            .orderBy("createdAt", Query.Direction.DESCENDING)
-            .snapshots()
+        val snapshotFlow = runCatching {
+            db.collection("users")
+                .document(userId)
+                .collection("custom_presets")
+                .orderBy("createdAt", Query.Direction.DESCENDING)
+                .snapshots()
+        }.getOrElse { e ->
+            handleFirestoreError(e, OperationType.LIST, path)
+            return flowOf(emptyList())
+        }
+        return snapshotFlow
             .map { snapshot ->
                 snapshot.documents.mapNotNull { doc ->
                     runCatching {
@@ -496,11 +509,17 @@ class FirestoreStudioRepository(context: Context) {
     fun observeDrafts(userId: String): Flow<List<CloudDraft>> {
         val db = dbOrNull() ?: return flowOf(emptyList())
         val path = "users/$userId/drafts"
-        return db.collection("users")
-            .document(userId)
-            .collection("drafts")
-            .orderBy("updatedAt", Query.Direction.DESCENDING)
-            .snapshots()
+        val snapshotFlow = runCatching {
+            db.collection("users")
+                .document(userId)
+                .collection("drafts")
+                .orderBy("updatedAt", Query.Direction.DESCENDING)
+                .snapshots()
+        }.getOrElse { e ->
+            handleFirestoreError(e, OperationType.LIST, path)
+            return flowOf(emptyList())
+        }
+        return snapshotFlow
             .map { snapshot ->
                 snapshot.documents.mapNotNull { doc ->
                     runCatching {

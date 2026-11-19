@@ -301,7 +301,7 @@ fun AiVoiceStudioContentLayout(
             ) {
                 StudioFocusTopBar(
                     title = if (isEnglish) "AI VOICE STUDIO" else "AI VOICE STUDIO – استوديو الصوت",
-                    subtitle = if (isEnglish) "VoxCPM2 • Local Studio Engine" else "VoxCPM2 • محرك الاستوديو المحلي",
+                    subtitle = if (isEnglish) "Nabra-82M • FFmpegKit Built-in Engine" else "Nabra-82M • محرك الاستوديو المدمج",
                     language = language,
                     onBack = onBack,
                 )
@@ -435,7 +435,7 @@ fun AiVoiceStudioContentLayout(
                                     val subItems = listOf(
                                         0 to (if (isEnglish) "Dialogue" else "الحوار المتعدد"),
                                         1 to (if (isEnglish) "Clone & Save" else "استنساخ الصوت"),
-                                        2 to (if (isEnglish) "Server" else "الخادم"),
+                                        2 to (if (isEnglish) "Engine" else "المحرك المدمج"),
                                     )
                                     subItems.forEach { (idx, title) ->
                                         val selected = advancedSubTab == idx

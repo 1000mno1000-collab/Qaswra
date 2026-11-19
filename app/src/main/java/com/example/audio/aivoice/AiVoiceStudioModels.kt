@@ -19,47 +19,39 @@ enum class AiVoiceEngineKind(
 ) {
     VOXCPM_2(
         id = "voxcpm2",
-        modelRepoId = "openbmb/VoxCPM2",
-        titleAr = "VoxCPM2 (المحرك الأساسي العالمي)",
-        titleEn = "VoxCPM2 (Global Primary Engine)",
-        shortTitleAr = "المحرك الأساسي العالمي",
-        shortTitleEn = "VoxCPM2 Global",
-        badgeAr = "48kHz • تصميم + استنساخ • 30 لغة",
-        badgeEn = "48kHz • Design + Cloning • 30 Langs",
-        requiresRemoteGpu = true,
+        modelRepoId = "sonix/nabra-82m-ffmpegkit",
+        titleAr = "Nabra-82M + FFmpegKit (وضع الاستوديو الاحترافي)",
+        titleEn = "Nabra-82M + FFmpegKit (Pro Studio Mode)",
+        shortTitleAr = "Nabra-82M المدمج",
+        shortTitleEn = "Nabra-82M Pro",
+        badgeAr = "44.1kHz • معالجة مدمجة • بدون سيرفر",
+        badgeEn = "44.1kHz • Built-in Engine • No Server",
+        requiresRemoteGpu = false,
     ),
     SONIX_LOCAL_STUDIO(
         id = "sonix_local_studio",
-        modelRepoId = "local/sonix-studio",
-        titleAr = "محرك الاستوديو المحلي (بدون سيرفر)",
-        titleEn = "Local Studio Engine (No Server)",
-        shortTitleAr = "محرك الاستوديو المحلي",
-        shortTitleEn = "Local Studio",
-        badgeAr = "محلي • بدون سيرفر • بصمة ثابتة",
-        badgeEn = "On-Device • Offline • Deterministic",
+        modelRepoId = "local/nabra-82m-ffmpegkit",
+        titleAr = "المحرك المدمج (Nabra-82M + FFmpegKit)",
+        titleEn = "Built-in Engine (Nabra-82M + FFmpegKit)",
+        shortTitleAr = "المحرك المدمج",
+        shortTitleEn = "Nabra-82M Studio",
+        badgeAr = "مدمج • Nabra-82M + FFmpegKit • فوري",
+        badgeEn = "On-Device • Nabra-82M + FFmpegKit • Instant",
         requiresRemoteGpu = false,
     ),
     ;
 
     fun supportedEmotions(): List<AiVoiceEmotion> = AiVoiceEmotion.entries
 
-    fun supportsVoiceDesignPrompt(): Boolean = this == VOXCPM_2
+    fun supportsVoiceDesignPrompt(): Boolean = true
 
     fun supportsEmotionIntensity(): Boolean = true
 
     fun supportsPitchShiftControl(): Boolean = true
 
-    fun supportsVoiceCloning(): Boolean = this == VOXCPM_2
+    fun supportsVoiceCloning(): Boolean = true
 
-    fun supportsLanguage(language: AiVoiceLanguage): Boolean = when (this) {
-        SONIX_LOCAL_STUDIO -> language in setOf(
-            AiVoiceLanguage.AR,
-            AiVoiceLanguage.EN,
-            AiVoiceLanguage.FA,
-            AiVoiceLanguage.TR,
-        )
-        VOXCPM_2 -> language.voxCpmSupported
-    }
+    fun supportsLanguage(language: AiVoiceLanguage): Boolean = true
 
     fun supportedLanguages(): List<AiVoiceLanguage> =
         AiVoiceLanguage.entries.filter { supportsLanguage(it) }
@@ -235,7 +227,7 @@ data class AiVoiceCharacter(
     val category: AiVoiceCategory,
     val language: AiVoiceLanguage = AiVoiceLanguage.AR,
     val dialect: AiArabicDialect = AiArabicDialect.MSA,
-    val preferredEngine: AiVoiceEngineKind = AiVoiceEngineKind.VOXCPM_2,
+    val preferredEngine: AiVoiceEngineKind = AiVoiceEngineKind.SONIX_LOCAL_STUDIO,
     val voiceDescriptionPrompt: String,
     val defaultEmotion: AiVoiceEmotion = AiVoiceEmotion.NEUTRAL,
     val defaultEmotionIntensity: Float = 0.65f,
@@ -347,7 +339,7 @@ data class AiVoiceBackendHealth(
 @Immutable
 data class AiVoiceStudioUiState(
     val activeTab: Int = 0, // 0=Studio, 1=Advanced (Dialogue & Cloning)
-    val selectedEngine: AiVoiceEngineKind = AiVoiceEngineKind.VOXCPM_2,
+    val selectedEngine: AiVoiceEngineKind = AiVoiceEngineKind.SONIX_LOCAL_STUDIO,
     val selectedLanguage: AiVoiceLanguage = AiVoiceLanguage.AR,
     val selectedDialect: AiArabicDialect = AiArabicDialect.MSA,
     val selectedCategory: AiVoiceCategory = AiVoiceCategory.MALE,
@@ -407,7 +399,7 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         category = AiVoiceCategory.MALE,
         language = AiVoiceLanguage.AR,
         dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        preferredEngine = AiVoiceEngineKind.SONIX_LOCAL_STUDIO,
         voiceDescriptionPrompt = "Professional studio news and podcast host, crisp articulation, poised resonant baritone tone.",
         defaultEmotion = AiVoiceEmotion.NEUTRAL,
         defaultEmotionIntensity = 0.65f,
@@ -430,7 +422,7 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         category = AiVoiceCategory.MALE,
         language = AiVoiceLanguage.AR,
         dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        preferredEngine = AiVoiceEngineKind.SONIX_LOCAL_STUDIO,
         voiceDescriptionPrompt = "Cinematic documentary narrator with rich deep authoritative warmth and unhurried poised pacing.",
         defaultEmotion = AiVoiceEmotion.CALM,
         defaultEmotionIntensity = 0.65f,
@@ -453,7 +445,7 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         category = AiVoiceCategory.MALE,
         language = AiVoiceLanguage.AR,
         dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        preferredEngine = AiVoiceEngineKind.SONIX_LOCAL_STUDIO,
         voiceDescriptionPrompt = "Expressive dramatic male voice actor with dynamic projection and clear emotional presence.",
         defaultEmotion = AiVoiceEmotion.EXCITED,
         defaultEmotionIntensity = 0.70f,
@@ -478,7 +470,7 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         category = AiVoiceCategory.FEMALE,
         language = AiVoiceLanguage.AR,
         dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        preferredEngine = AiVoiceEngineKind.SONIX_LOCAL_STUDIO,
         voiceDescriptionPrompt = "Warm polished female podcast anchor with inviting studio closeness and crystal clarity.",
         defaultEmotion = AiVoiceEmotion.NEUTRAL,
         defaultEmotionIntensity = 0.65f,
@@ -501,7 +493,7 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         category = AiVoiceCategory.FEMALE,
         language = AiVoiceLanguage.AR,
         dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        preferredEngine = AiVoiceEngineKind.SONIX_LOCAL_STUDIO,
         voiceDescriptionPrompt = "Poised captivating female storyteller with silky calm resonance and thoughtful phrasing.",
         defaultEmotion = AiVoiceEmotion.CALM,
         defaultEmotionIntensity = 0.65f,
@@ -524,7 +516,7 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         category = AiVoiceCategory.FEMALE,
         language = AiVoiceLanguage.AR,
         dialect = AiArabicDialect.MSA,
-        preferredEngine = AiVoiceEngineKind.VOXCPM_2,
+        preferredEngine = AiVoiceEngineKind.SONIX_LOCAL_STUDIO,
         voiceDescriptionPrompt = "Bright lively commercial female presenter with uplifting clarity and crisp articulation.",
         defaultEmotion = AiVoiceEmotion.EXCITED,
         defaultEmotionIntensity = 0.72f,

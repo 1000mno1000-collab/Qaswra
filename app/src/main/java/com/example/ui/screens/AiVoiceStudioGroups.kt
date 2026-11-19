@@ -409,9 +409,9 @@ internal fun AiVoiceEngineSelectionCard(
                             )
                             Text(
                                 text = if (engine == AiVoiceEngineKind.VOXCPM_2) {
-                                    "VoxCPM2 • 48kHz"
+                                    "Nabra-82M • Pro"
                                 } else {
-                                    if (isEnglish) "No Server" else "بدون سيرفر"
+                                    if (isEnglish) "Nabra-82M + FFmpegKit" else "مدمج • بدون سيرفر"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = StudioColors.TextSecondary,

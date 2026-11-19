@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -1033,8 +1034,6 @@ fun AiVoiceServerSetupTab(
     onSaveBackendToken: (String) -> Unit = {},
     onCheckHealth: (String, String) -> Unit,
 ) {
-    var urlInput by remember(state.backendServerUrl) { mutableStateOf(state.backendServerUrl) }
-    var tokenInput by remember(state.backendBearerToken) { mutableStateOf(state.backendBearerToken) }
     val health = state.backendHealth
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1049,18 +1048,18 @@ fun AiVoiceServerSetupTab(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Rounded.Info, contentDescription = null, tint = StudioColors.Cyan)
+                    Icon(Icons.Rounded.Memory, contentDescription = null, tint = StudioColors.Cyan)
                     Text(
-                        text = if (isEnglish) "VoxCPM2 GPU Backend Status" else "حالة ربط خادم VoxCPM2",
+                        text = if (isEnglish) "Built-in Engine: Nabra-82M + FFmpegKit" else "المحرك المدمج: Nabra-82M + FFmpegKit",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = StudioColors.Cyan,
                     )
                 }
                 Text(
                     text = if (isEnglish) {
-                        "Connect your dedicated GPU server running openbmb/VoxCPM2 for 48kHz generation and voice cloning, or use Local Studio Engine directly offline."
+                        "Voice synthesis, emotion shaping, and multi-speaker dialogue run directly on-device via the built-in Nabra-82M + FFmpegKit engine with zero external server required."
                     } else {
-                        "اربط خادم GPU الخاص لتشغيل محرك VoxCPM2 بدقة 48kHz واستنساخ الصوت، أو استخدم «محرك الاستوديو المحلي» فوراً بدون سيرفر."
+                        "يعمل استوديو الصوت والتوليد الفوري والحوار متعدد الشخصيات مباشرة على جهازك عبر المحرك المدمج (Nabra-82M + FFmpegKit) دون الحاجة لإدخال رابط خادم أو إعدادات خارجية."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = StudioColors.TextSecondary,
@@ -1078,67 +1077,52 @@ fun AiVoiceServerSetupTab(
                 modifier = Modifier.padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                OutlinedTextField(
-                    value = urlInput,
-                    onValueChange = { urlInput = it },
-                    label = { Text(if (isEnglish) "Dedicated GPU Backend HTTPS URL" else "رابط خادم GPU الخلفي (HTTPS)") },
-                    placeholder = { Text("https://your-sonix-voice-gpu.example.com") },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("ai_voice_backend_url_input"),
-                )
-
-                OutlinedTextField(
-                    value = tokenInput,
-                    onValueChange = { tokenInput = it },
-                    label = { Text(if (isEnglish) "Server Access Token (Optional SONIX_SERVER_BEARER)" else "رمز الوصول للخادم (اختياري)") },
-                    placeholder = { Text(if (isEnglish) "Leave empty if using Firebase sign-in only" else "اتركه فارغاً عند الاعتماد على Firebase") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("ai_voice_backend_token_input"),
-                )
-
-                Row(
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = StudioColors.ElevatedSurface,
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Button(
-                        onClick = {
-                            onSaveBackendUrl(urlInput)
-                            onSaveBackendToken(tokenInput)
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = StudioColors.Cyan,
-                            contentColor = StudioColors.BgTop,
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .testTag("ai_voice_save_backend_url_button"),
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text(if (isEnglish) "Save Settings" else "حفظ الإعدادات", fontWeight = FontWeight.Bold)
-                    }
-                    OutlinedButton(
-                        onClick = { onCheckHealth(urlInput, tokenInput) },
-                        enabled = !health.isChecking,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .testTag("ai_voice_check_health_button"),
-                    ) {
-                        if (health.isChecking) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(
+                            imageVector = Icons.Rounded.CheckCircle,
+                            contentDescription = null,
+                            tint = StudioColors.Emerald,
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = if (isEnglish) "Nabra-82M + FFmpegKit Ready" else "محرك Nabra-82M + FFmpegKit جاهز للعمل الفوري",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                color = StudioColors.TextPrimary,
+                            )
+                            Text(
+                                text = if (isEnglish) "On-device deterministic processing • No server URL needed" else "معالجة مدمجة وفورية • لا يتطلب رابط خادم",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioColors.Emerald,
+                            )
                         }
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (isEnglish) "Test Connection" else "فحص الاتصال")
                     }
+                }
+
+                OutlinedButton(
+                    onClick = { onCheckHealth("", "") },
+                    enabled = !health.isChecking,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("ai_voice_check_health_button"),
+                ) {
+                    if (health.isChecking) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (isEnglish) "Verify Built-in Engine" else "التحقق من جاهزية المحرك المدمج")
                 }
 
                 if (health.isChecked) {
@@ -1153,43 +1137,24 @@ fun AiVoiceServerSetupTab(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Icon(
-                                    imageVector = if (health.serverReachable || health.voxCpmPublicSpaceAvailable) {
-                                        Icons.Rounded.CloudDone
-                                    } else {
-                                        Icons.Rounded.CloudOff
-                                    },
+                                    imageVector = Icons.Rounded.CheckCircle,
                                     contentDescription = null,
-                                    tint = if (health.serverReachable && health.voxCpm2Ready) StudioColors.Emerald else StudioColors.Amber,
+                                    tint = StudioColors.Emerald,
                                 )
                                 Text(
-                                    text = health.statusDetail,
+                                    text = health.statusDetail.ifBlank {
+                                        if (isEnglish) "Nabra-82M + FFmpegKit engine is active and ready." else "المحرك المدمج (Nabra-82M + FFmpegKit) نشط وجاهز."
+                                    },
                                     style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                                     color = StudioColors.TextPrimary,
                                 )
                             }
-                            if (health.serverReachable) {
-                                Text(
-                                    text = "VoxCPM2: ${if (health.voxCpm2Ready) (if (health.voxcpm2Loaded) "محمّل بالذاكرة" else "جاهز") else "غير جاهز"} • CUDA: ${if (health.cudaAvailable) "متاح" else "غير متاح"}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (health.voxCpm2Ready) StudioColors.Emerald else StudioColors.Amber,
-                                )
-                                if (health.voxcpm2LoadError.isNotBlank()) {
-                                    Text(
-                                        text = health.voxcpm2LoadError,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = StudioColors.RoseBright,
-                                    )
-                                }
-                            }
                             if (health.serverGpuInfo.isNotBlank()) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = StudioColors.Cyan, modifier = Modifier.size(14.dp))
-                                    Text(
-                                        text = "GPU: ${health.serverGpuInfo}",
-                                        style = TelemetryTextStyle,
-                                        color = StudioColors.Cyan,
-                                    )
-                                }
+                                Text(
+                                    text = health.serverGpuInfo,
+                                    style = TelemetryTextStyle,
+                                    color = StudioColors.Cyan,
+                                )
                             }
                         }
                     }

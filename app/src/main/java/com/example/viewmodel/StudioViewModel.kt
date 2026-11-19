@@ -209,6 +209,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -740,7 +741,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     autoLoop = local.autoLoop,
                     projects = local.projects,
                     recordings = local.recordings,
-                    customPresets = if (isSynced) cloudPresets else local.localCustomPresets,
+                    customPresets = if (isSynced) (cloudPresets + local.localCustomPresets).distinctBy { it.name.lowercase() } else local.localCustomPresets,
                     cloudDrafts = cloudDrafts,
                     isCloudSynced = isSynced,
                     defaultSaveFolderName = defaultFolder.second,
@@ -797,14 +798,32 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         isCloudSyncedFlow.value = true
-        cloudPresetsJob = viewModelScope.launch {
-            firestoreRepo.observeCustomPresets(uid).collect { list ->
-                cloudPresetsFlow.value = list
+        cloudPresetsJob = viewModelScope.launch(safeCoroutineHandler) {
+            runCatching {
+                firestoreRepo.observeCustomPresets(uid)
+                    .catch { err ->
+                        Log.w("CloudSync", "Cloud presets listener warning: ${err.message}")
+                        emit(emptyList())
+                    }
+                    .collect { list ->
+                        cloudPresetsFlow.value = list
+                    }
+            }.onFailure { err ->
+                Log.w("CloudSync", "Failed attaching presets listener: ${err.message}")
             }
         }
-        cloudDraftsJob = viewModelScope.launch {
-            firestoreRepo.observeDrafts(uid).collect { list ->
-                cloudDraftsFlow.value = list
+        cloudDraftsJob = viewModelScope.launch(safeCoroutineHandler) {
+            runCatching {
+                firestoreRepo.observeDrafts(uid)
+                    .catch { err ->
+                        Log.w("CloudSync", "Cloud drafts listener warning: ${err.message}")
+                        emit(emptyList())
+                    }
+                    .collect { list ->
+                        cloudDraftsFlow.value = list
+                    }
+            }.onFailure { err ->
+                Log.w("CloudSync", "Failed attaching drafts listener: ${err.message}")
             }
         }
     }
@@ -879,11 +898,19 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             email = email.trim(),
         )
         _uiState.update { it.copy(authSession = session) }
-        attachCloudListeners(uid)
-        if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
-            developerPanelController.onAuthSessionChanged()
+        runCatching {
+            attachCloudListeners(uid)
+            if (BuildConfig.DEVELOPER_PANEL_ENABLED) {
+                developerPanelController.onAuthSessionChanged()
+            }
+        }.onFailure { err ->
+            Log.w("Auth", "Non-fatal cloud listener setup warning after sign-in: ${err.message}")
         }
-        repository.saveAuthSession(session)
+        runCatching {
+            repository.saveAuthSession(session)
+        }.onFailure { err ->
+            Log.w("Auth", "Failed persisting session locally: ${err.message}")
+        }
     }
 
     fun onGoogleLoginSuccess(uid: String, displayName: String, email: String) {
@@ -3253,15 +3280,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun saveCustomPreset(name: String, description: String) {
         if (name.isBlank()) return
-        viewModelScope.launch {
+        viewModelScope.launch(safeCoroutineHandler) {
             val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
             if (!uid.isNullOrBlank()) {
-                val res = firestoreRepo.saveCustomPreset(uid, name, description, _uiState.value.dspConfig)
+                val res = runCatching {
+                    firestoreRepo.saveCustomPreset(uid, name, description, _uiState.value.dspConfig)
+                }.getOrElse { Result.failure(it) }
                 if (res.isSuccess) {
                     postBanner("تم حفظ القالب \"$name\" في السحابة بنجاح")
                 } else {
-                    val errMsg = res.exceptionOrNull()?.localizedMessage ?: "تعذر حفظ القالب في السحابة"
-                    postBanner(errMsg)
+                    Log.w("CloudSync", "Cloud preset save fell back to local storage", res.exceptionOrNull())
+                    runCatching { repository.saveCustomPreset(name, description, _uiState.value.dspConfig) }
+                    postBanner("تم حفظ القالب \"$name\" محلياً على جهازك")
                 }
             } else {
                 repository.saveCustomPreset(name, description, _uiState.value.dspConfig)
@@ -3271,16 +3301,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun deleteCustomPreset(presetId: Long) {
-        viewModelScope.launch {
+        viewModelScope.launch(safeCoroutineHandler) {
             val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
             val match = _uiState.value.customPresets.firstOrNull { it.id == presetId }
             val cloudDocId = match?.cloudDocId
             if (!uid.isNullOrBlank() && !cloudDocId.isNullOrBlank()) {
-                val res = firestoreRepo.deleteCustomPreset(uid, cloudDocId)
+                val res = runCatching {
+                    firestoreRepo.deleteCustomPreset(uid, cloudDocId)
+                }.getOrElse { Result.failure(it) }
                 if (res.isSuccess) {
                     postBanner("تم حذف القالب المخصص من السحابة")
                 } else {
-                    postBanner(res.exceptionOrNull()?.localizedMessage ?: "تعذر حذف القالب المخصص")
+                    Log.w("CloudSync", "Cloud preset delete warning", res.exceptionOrNull())
+                    runCatching { repository.deleteCustomPreset(presetId) }
+                    postBanner("تعذّر الحذف السحابي مؤقتاً — تم الحذف محلياً")
                 }
             } else {
                 repository.deleteCustomPreset(presetId)
@@ -3300,18 +3334,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         val st = _uiState.value
         val presetName = st.selectedPresetLabel.ifBlank { st.activeProjectName }
-        viewModelScope.launch {
+        viewModelScope.launch(safeCoroutineHandler) {
             _uiState.update { it.copy(isBusy = true) }
             try {
-                val res = firestoreRepo.saveDraft(
-                    userId = uid,
-                    existingDraftId = st.activeCloudDraftId,
-                    name = cleanName,
-                    selectedPresetName = presetName,
-                    durationMs = st.durationMs,
-                    sampleRate = activeBuffer?.sampleRate ?: 44100,
-                    config = st.dspConfig,
-                )
+                val res = runCatching {
+                    firestoreRepo.saveDraft(
+                        userId = uid,
+                        existingDraftId = st.activeCloudDraftId,
+                        name = cleanName,
+                        selectedPresetName = presetName,
+                        durationMs = st.durationMs,
+                        sampleRate = activeBuffer?.sampleRate ?: 44100,
+                        config = st.dspConfig,
+                    )
+                }.getOrElse { Result.failure(it) }
                 if (res.isSuccess) {
                     val newDocId = res.getOrNull()
                     _uiState.update {
@@ -3323,7 +3359,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     postBanner(t(lang, "draft_saved_success"))
                 } else {
-                    postBanner(res.exceptionOrNull()?.localizedMessage ?: "تعذر حفظ المسودة السحابية")
+                    Log.w("CloudSync", "Cloud draft save warning", res.exceptionOrNull())
+                    postBanner("تعذّر المزامنة السحابية حالياً — يمكنك مواصلة العمل محلياً بشكل طبيعي")
                 }
             } finally {
                 _uiState.update { it.copy(isBusy = false) }
@@ -3354,15 +3391,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteCloudDraft(draftId: String) {
         val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull() ?: return
-        viewModelScope.launch {
-            val res = firestoreRepo.deleteDraft(uid, draftId)
+        viewModelScope.launch(safeCoroutineHandler) {
+            val res = runCatching {
+                firestoreRepo.deleteDraft(uid, draftId)
+            }.getOrElse { Result.failure(it) }
             if (res.isSuccess) {
                 if (_uiState.value.activeCloudDraftId == draftId) {
                     _uiState.update { it.copy(activeCloudDraftId = null) }
                 }
                 postBanner("تم حذف المسودة السحابية")
             } else {
-                postBanner(res.exceptionOrNull()?.localizedMessage ?: "تعذر حذف المسودة")
+                Log.w("CloudSync", "Cloud draft delete warning", res.exceptionOrNull())
+                postBanner("تعذّر حذف المسودة من السحابة حالياً")
             }
         }
     }
@@ -3630,22 +3670,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // AI Studio (100% Online Only — SonixUnifiedAIEngine via Gemini 2.5 Audio API)
+    // AI Studio — Hybrid: uses Gemini API when BuildConfig.GEMINI_API_KEY is present, otherwise Sherpa-ONNX / Local Engines seamlessly
     fun transcribeActiveAudio() {
         val lang = _uiState.value.language
-        val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), lang)
-        if (offlineErr != null) {
-            _uiState.update {
-                it.copy(
-                    transcriptionState = AiStreamState(
-                        isLoading = false,
-                        errorMessage = offlineErr,
-                    ),
-                )
-            }
-            postBanner(offlineErr)
-            return
-        }
         val src = activeBuffer
         val srcFile = activeSourceFile
         if (src == null && (srcFile == null || !srcFile.exists())) {
@@ -3670,19 +3697,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             try {
-                if (!NetworkImmunityManager.pingReachable(getApplication())) {
-                    val netErr = OnlineGuard.offlineErrorMessage(lang)
-                    _uiState.update {
-                        it.copy(
-                            transcriptionState = AiStreamState(
-                                isLoading = false,
-                                errorMessage = netErr,
-                            ),
-                        )
-                    }
-                    postBanner(netErr)
-                    return@launch
-                }
                 val res = aiRepository.transcribeAudioSource(
                     buffer = src,
                     sourceFile = srcFile,
@@ -3847,19 +3861,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun askSearchAssistant(query: String) {
         if (query.isBlank()) return
         val lang = _uiState.value.language
-        val offlineErr = OnlineGuard.requireOnlineOrError(getApplication(), lang)
-        if (offlineErr != null) {
-            _uiState.update {
-                it.copy(
-                    searchAssistantState = AiStreamState(
-                        isLoading = false,
-                        errorMessage = offlineErr,
-                    ),
-                )
-            }
-            postBanner(offlineErr)
-            return
-        }
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             _uiState.update {
@@ -3870,19 +3871,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             try {
-                if (!NetworkImmunityManager.pingReachable(getApplication())) {
-                    val netErr = OnlineGuard.offlineErrorMessage(lang)
-                    _uiState.update {
-                        it.copy(
-                            searchAssistantState = AiStreamState(
-                                isLoading = false,
-                                errorMessage = netErr,
-                            ),
-                        )
-                    }
-                    postBanner(netErr)
-                    return@launch
-                }
                 when (val res = aiRepository.askSearchAssistant(query.trim(), lang)) {
                     is AiResponse.Success -> _uiState.update {
                         it.copy(
@@ -7653,21 +7641,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun saveAiVoiceBackendUrl(url: String) {
-        val trimmed = url.trim().trimEnd('/')
-        val normalized = if (trimmed.isEmpty()) "" else com.example.audio.network.NetworkImmunityManager.enforceHttps(trimmed)
         viewModelScope.launch(safeCoroutineHandler) {
-            repository.saveAiVoiceBackendUrl(normalized)
-            _aiVoiceUiState.update { it.copy(backendServerUrl = normalized) }
-            postBanner(if (normalized.isEmpty()) "تم مسح رابط السيرفر" else "تم حفظ رابط سيرفر GPU بنجاح ($normalized)")
+            repository.saveAiVoiceBackendUrl("")
+            _aiVoiceUiState.update { it.copy(backendServerUrl = "") }
+            postBanner("يعمل استوديو الصوت مباشرة عبر المحرك المدمج (Nabra-82M + FFmpegKit)")
         }
     }
 
     fun saveAiVoiceBackendBearer(token: String) {
-        val clean = token.trim()
         viewModelScope.launch(safeCoroutineHandler) {
-            repository.saveAiVoiceBackendBearer(clean)
-            _aiVoiceUiState.update { it.copy(backendBearerToken = clean) }
-            postBanner(if (clean.isEmpty()) "تم مسح رمز المصادقة للخادم" else "تم حفظ رمز المصادقة (X-Sonix-Bearer) بنجاح")
+            repository.saveAiVoiceBackendBearer("")
+            _aiVoiceUiState.update { it.copy(backendBearerToken = "") }
         }
     }
 
@@ -7676,31 +7660,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         pendingToken: String? = null,
     ) {
         viewModelScope.launch(safeCoroutineHandler) {
-            val resolvedUrl = if (pendingUrl != null) {
-                val t = pendingUrl.trim().trimEnd('/')
-                if (t.isEmpty()) "" else com.example.audio.network.NetworkImmunityManager.enforceHttps(t)
-            } else {
-                _aiVoiceUiState.value.backendServerUrl
-            }
-            val resolvedToken = pendingToken?.trim() ?: _aiVoiceUiState.value.backendBearerToken
-
-            if (pendingUrl != null) {
-                repository.saveAiVoiceBackendUrl(resolvedUrl)
-            }
-            if (pendingToken != null) {
-                repository.saveAiVoiceBackendBearer(resolvedToken)
-            }
             _aiVoiceUiState.update {
                 it.copy(
-                    backendServerUrl = resolvedUrl,
-                    backendBearerToken = resolvedToken,
+                    backendServerUrl = "",
+                    backendBearerToken = "",
                     backendHealth = it.backendHealth.copy(isChecking = true),
                 )
             }
             val health = aiVoiceCoordinator.checkBackendHealth(
                 context = getApplication(),
-                backendUrl = resolvedUrl,
-                bearerToken = resolvedToken,
+                backendUrl = "",
+                bearerToken = "",
             )
             _aiVoiceUiState.update { it.copy(backendHealth = health) }
         }
@@ -7736,7 +7706,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     selectedEngine = engine,
                     isSynthesizing = true,
                     synthesisProgress = 0.04f,
-                    synthesisStatusLabel = "جاري تحضير طلب ${engine.titleAr}...",
+                    synthesisStatusLabel = "جاري تحضير المحرك المدمج (Nabra-82M + FFmpegKit)...",
                     errorTitle = null,
                     errorDetail = null,
                     setupRequiredGuide = null,
