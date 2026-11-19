@@ -369,7 +369,15 @@ object LocalArabicTtsEngine {
                 return AndroidTtsChunkResult(false, msg)
             }
 
-            configureLocaleAndVoice(createdTts, dialect, gender, fixedSid)
+            val requestedVoiceAvailable = configureLocaleAndVoice(createdTts, dialect, gender, fixedSid)
+            if (gender == TtsGender.MALE && !requestedVoiceAvailable) {
+                val message = when (language) {
+                    AppLanguage.EN -> "No installed Arabic male TTS voice was found. Install one in the device Text-to-Speech settings."
+                    AppLanguage.FA -> "صدای گفتار مردانه عربی در دستگاه پیدا نشد. یک صدا را از تنظیمات گفتار دستگاه نصب کنید."
+                    AppLanguage.AR -> "لم يُعثر على صوت نطق عربي رجالي مثبت. ثبّت صوتاً رجاليّاً من إعدادات تحويل النص إلى كلام في الجهاز."
+                }
+                return AndroidTtsChunkResult(false, message)
+            }
             runCatching { createdTts.setSpeechRate(1.0f) }
             runCatching { createdTts.setPitch(1.0f) }
 
@@ -457,7 +465,7 @@ object LocalArabicTtsEngine {
         dialect: TtsDialect,
         gender: TtsGender,
         fixedSid: Int? = null,
-    ) {
+    ): Boolean {
         val primaryLocale = Locale.forLanguageTag(dialect.localeTag)
         val fallbackLocale = Locale.forLanguageTag(dialect.fallbackLocaleTag)
         val langOnlyLocale = Locale(primaryLocale.language.ifBlank { "ar" })
@@ -473,7 +481,7 @@ object LocalArabicTtsEngine {
         }
 
         val installedVoices = runCatching { tts.voices }.getOrNull().orEmpty()
-        if (installedVoices.isEmpty()) return
+        if (installedVoices.isEmpty()) return false
 
         val targetLang = (chosenLocale ?: primaryLocale).language
         val matchingVoices = installedVoices
@@ -484,12 +492,13 @@ object LocalArabicTtsEngine {
                 installedVoices.filter { it.locale.language.equals(targetLang, ignoreCase = true) }
             }
             .sortedBy { it.name.lowercase(Locale.US) }
-        if (matchingVoices.isEmpty()) return
+        if (matchingVoices.isEmpty()) return false
 
-        val preferred = pickGenderMatchedVoice(matchingVoices, gender, fixedSid) ?: matchingVoices.firstOrNull()
-        if (preferred != null) {
-            runCatching { tts.voice = preferred }
-        }
+        val preferred = pickGenderMatchedVoice(matchingVoices, gender, fixedSid) ?: return false
+        return runCatching {
+            tts.voice = preferred
+            tts.voice?.name == preferred.name
+        }.getOrDefault(false)
     }
 
     private fun pickGenderMatchedVoice(
@@ -504,6 +513,7 @@ object LocalArabicTtsEngine {
             val nameLower = v.name.lowercase(Locale.US)
             hints.any { hint -> nameLower.contains(hint) }
         }
+        if (gender == TtsGender.MALE && matched.isEmpty()) return null
         val pool = matched.ifEmpty { voices }
         if (pool.isEmpty()) return null
         val index = if (fixedSid != null && fixedSid >= 0) fixedSid % pool.size else 0

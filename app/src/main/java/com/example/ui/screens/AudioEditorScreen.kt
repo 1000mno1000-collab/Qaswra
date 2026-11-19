@@ -274,7 +274,9 @@ fun AudioEditorScreen(
 
             uiState.importProgress?.let { prog ->
                 item(key = "editor_import_progress") {
-                    val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
+                    val byteTransferActive = !uiState.importBytesLabel.isNullOrBlank()
+                    val byteFraction = uiState.importBytesProgress
+                    val pct = ((byteFraction ?: prog).coerceIn(0f, 1f) * 100f).toInt()
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = StudioColors.CardSurface,
@@ -298,7 +300,11 @@ fun AudioEditorScreen(
                                     t(lang, "uploading_to_cache_label")
                                 }
                                 Text(
-                                    text = "$phaseText $pct%",
+                                    text = if (byteTransferActive && byteFraction == null) {
+                                        phaseText.orEmpty()
+                                    } else {
+                                        "$phaseText $pct%"
+                                    },
                                     style = MaterialTheme.typography.labelMedium,
                                     color = StudioColors.Cyan,
                                     modifier = Modifier.weight(1f),
@@ -311,16 +317,28 @@ fun AudioEditorScreen(
                                     )
                                 }
                             }
-                            LinearProgressIndicator(
-                                progress = { prog.coerceIn(0f, 1f) },
-                                color = StudioColors.Cyan,
-                                trackColor = StudioColors.BgTop,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(7.dp)
-                                    .clip(CircleShape)
-                                    .testTag("editor_import_progress_bar"),
-                            )
+                            if (byteTransferActive && byteFraction == null) {
+                                LinearProgressIndicator(
+                                    color = StudioColors.Cyan,
+                                    trackColor = StudioColors.BgTop,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(5.dp)
+                                        .clip(CircleShape)
+                                        .testTag("editor_import_progress_bar"),
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    progress = { (byteFraction ?: prog).coerceIn(0f, 1f) },
+                                    color = StudioColors.Cyan,
+                                    trackColor = StudioColors.BgTop,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(5.dp)
+                                        .clip(CircleShape)
+                                        .testTag("editor_import_progress_bar"),
+                                )
+                            }
                         }
                     }
                 }

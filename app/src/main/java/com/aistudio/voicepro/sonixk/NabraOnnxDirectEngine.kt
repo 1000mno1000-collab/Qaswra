@@ -9,6 +9,7 @@ import com.example.audio.cache.SmartCacheManager
 import com.example.audio.clamp
 import com.example.audio.resampleStereo
 import com.example.audio.tts.ArabicTextDiacritizer
+import com.example.audio.tts.TtsTextLimits
 import com.example.audio.writeStereoWavFile
 import com.example.diagnostics.AppDiagnosticLog
 import com.example.model.AppLanguage
@@ -82,6 +83,8 @@ object NabraOnnxDirectEngine {
     private const val FILE_MODEL = "model.int8.onnx"
     private const val FILE_VOICES = "voices.bin"
     private const val FILE_TOKENS = "tokens.txt"
+    const val DEFAULT_FIXED_SID = 0
+    private const val FIXED_SID = DEFAULT_FIXED_SID
     private const val MAX_CHUNK_CHARS = 220
 
     private const val GUARD_PREFS = "sonix_nabra_native_guard"
@@ -468,8 +471,17 @@ object NabraOnnxDirectEngine {
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
         autoDownloadIfOnline: Boolean = true,
-        fixedSid: Int? = null,
+        fixedSid: Int? = FIXED_SID,
     ): NabraSynthOutcome = withContext(Dispatchers.IO) {
+        if (TtsTextLimits.countWords(text) > TtsTextLimits.MAX_WORDS) {
+            return@withContext NabraSynthOutcome.Error(
+                if (language == AppLanguage.EN) {
+                    "Text is limited to ${TtsTextLimits.MAX_WORDS} words."
+                } else {
+                    "الحد الأقصى للنص هو ${TtsTextLimits.MAX_WORDS} كلمة."
+                },
+            )
+        }
         val cleanInput = ArabicTextDiacritizer.normalizeAndHintForTts(text.trim(), applyLightDiacritics = true)
         if (cleanInput.isEmpty()) {
             return@withContext NabraSynthOutcome.Error(
@@ -498,7 +510,8 @@ object NabraOnnxDirectEngine {
         val targetSpeed = clamp(speed * style.rateFactor * profile.rateMultiplier, 0.50f, 1.85f)
 
         val isQuarantined = checkAndPromoteNativeQuarantine(context)
-        val sherpaPresent = !isQuarantined && isSherpaOnnxAvailable()
+        val modelVoiceMatchesRequest = gender == TtsGender.FEMALE && persona?.id != "child_voice"
+        val sherpaPresent = modelVoiceMatchesRequest && !isQuarantined && isSherpaOnnxAvailable()
         var modelsReady = areModelsPresent(context)
         if (sherpaPresent && !modelsReady && autoDownloadIfOnline && OnlineGuard.isOnline(context)) {
             val dl = ensureModelsDownloaded(context, language)
@@ -513,13 +526,11 @@ object NabraOnnxDirectEngine {
                     context = context,
                     cleanInput = cleanInput,
                     dialect = dialect,
-                    gender = gender,
                     style = style,
                     profile = profile,
                     targetSpeed = targetSpeed,
                     targetPitch = targetPitch,
                     luxuryBoost = studioLuxuryEnhancement,
-                    fixedSid = fixedSid,
                 )
             }.onFailure { t ->
                 if (t is kotlinx.coroutines.CancellationException) throw t
@@ -571,13 +582,11 @@ object NabraOnnxDirectEngine {
         context: Context,
         cleanInput: String,
         dialect: TtsDialect,
-        gender: TtsGender,
         style: TtsDeliveryStyle,
         profile: LocalTtsVoiceProfile,
         targetSpeed: Float,
         targetPitch: Float,
         luxuryBoost: Boolean,
-        fixedSid: Int? = null,
     ): LocalTtsSynthResult? = withContext(Dispatchers.IO) {
         val dir = modelDirectory(context)
         val espeakDir = espeakDataDirectory(context)
@@ -595,7 +604,7 @@ object NabraOnnxDirectEngine {
         var singleChunkFile: File? = null
 
         ttsMutex.withLock {
-            val sid = resolveSpeakerId(tts, gender, fixedSid)
+            val sid = FIXED_SID
             for (chunk in chunks) {
                 coroutineContext.ensureActive()
                 val rawWav = File(workDir, "nabra_raw_${UUID.randomUUID()}.wav")
@@ -787,20 +796,6 @@ object NabraOnnxDirectEngine {
         cls.methods.firstOrNull { it.name == "setModel" && it.parameterCount == 1 }?.invoke(ttsCfg, modelConfig)
         runCatching { cls.getMethod("setMaxNumSentences", Int::class.javaPrimitiveType).invoke(ttsCfg, 1) }
         return ttsCfg
-    }
-
-    private fun resolveSpeakerId(tts: Any, gender: TtsGender, fixedSid: Int? = null): Int {
-        val numSpeakers = runCatching {
-            tts.javaClass.getMethod("numSpeakers").invoke(tts) as? Int
-        }.getOrNull() ?: 1
-        if (numSpeakers <= 1) return 0
-        if (fixedSid != null && fixedSid >= 0) {
-            return when (numSpeakers) {
-                2 -> if (gender == TtsGender.FEMALE) 0 else 1
-                else -> fixedSid % numSpeakers
-            }
-        }
-        return if (gender == TtsGender.FEMALE) 0 else 1.coerceAtMost(numSpeakers - 1)
     }
 
     private fun generateChunkWavViaOfflineTts(

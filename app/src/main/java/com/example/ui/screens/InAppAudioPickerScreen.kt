@@ -422,7 +422,11 @@ fun InAppAudioPickerScreen(
             val activeLabel = uiState.importLabel ?: previewCopyName
             activeProgress?.let { prog ->
                 item(key = "picker_upload_progress", contentType = "upload_progress") {
-                    val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
+                    val isGlobalUpload = uiState.importProgress != null
+                    val byteTransferActive = isGlobalUpload && !uiState.importBytesLabel.isNullOrBlank()
+                    val byteFraction = uiState.importBytesProgress
+                    val shownProgress = if (isGlobalUpload) byteFraction ?: prog else prog
+                    val pct = (shownProgress.coerceIn(0f, 1f) * 100f).toInt()
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = StudioColors.CardSurface,
@@ -448,31 +452,37 @@ fun InAppAudioPickerScreen(
                                     t(lang, "uploading_to_cache_label")
                                 }
                                 Text(
-                                    text = phaseLabel,
+                                    text = if (byteTransferActive && byteFraction == null) {
+                                        phaseLabel.orEmpty()
+                                    } else {
+                                        "$phaseLabel $pct%"
+                                    },
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                     color = StudioColors.Cyan,
                                     modifier = Modifier.weight(1f),
                                 )
-                                Text(
-                                    text = "$pct%",
-                                    style = TelemetryTextStyle,
-                                    color = StudioColors.Emerald,
-                                )
                             }
-                            if (!activeLabel.isNullOrBlank() || !uiState.importBytesLabel.isNullOrBlank()) {
+                            if (
+                                (!activeLabel.isNullOrBlank() && phaseLabel != activeLabel) ||
+                                !uiState.importBytesLabel.isNullOrBlank()
+                            ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Text(
-                                        text = activeLabel.orEmpty(),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = StudioColors.TextPrimary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
-                                    )
+                                    if (phaseLabel != activeLabel) {
+                                        Text(
+                                            text = activeLabel.orEmpty(),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = StudioColors.TextPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    } else {
+                                        Spacer(Modifier.weight(1f))
+                                    }
                                     uiState.importBytesLabel?.let { bytesText ->
                                         Text(
                                             text = bytesText,
@@ -482,15 +492,26 @@ fun InAppAudioPickerScreen(
                                     }
                                 }
                             }
-                            LinearProgressIndicator(
-                                progress = { prog.coerceIn(0f, 1f) },
-                                color = StudioColors.Cyan,
-                                trackColor = StudioColors.BgTop,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(7.dp)
-                                    .testTag("picker_import_progress_bar"),
-                            )
+                            if (byteTransferActive && byteFraction == null) {
+                                LinearProgressIndicator(
+                                    color = StudioColors.Cyan,
+                                    trackColor = StudioColors.BgTop,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(5.dp)
+                                        .testTag("picker_import_progress_bar"),
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    progress = { shownProgress.coerceIn(0f, 1f) },
+                                    color = StudioColors.Cyan,
+                                    trackColor = StudioColors.BgTop,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(5.dp)
+                                        .testTag("picker_import_progress_bar"),
+                                )
+                            }
                         }
                     }
                 }

@@ -532,7 +532,7 @@ fun PreviewAndApplyActionRow(
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         val previewInteraction = remember { MutableInteractionSource() }
         Button(

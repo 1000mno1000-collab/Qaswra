@@ -45,7 +45,7 @@ class SmartVoiceRouter {
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
         autoDownloadIfOnline: Boolean = true,
-        fixedSid: Int? = null,
+        fixedSid: Int? = NabraOnnxDirectEngine.DEFAULT_FIXED_SID,
     ): VoiceRouteOutcome = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) {

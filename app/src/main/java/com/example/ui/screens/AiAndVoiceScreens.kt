@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,6 +49,11 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenu
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -61,6 +67,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.menuAnchor
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -88,6 +96,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.BuildConfig
 import com.example.audio.OnlineGuard
 import com.example.audio.fx.VoiceEffect
+import com.example.audio.tts.TtsTextLimits
 import com.example.i18n.t
 import com.example.model.AiToolType
 import com.example.model.AppLanguage
@@ -97,9 +106,6 @@ import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsGender
 import com.example.model.TtsPersonaAcousticMode
 import com.example.model.TtsVoicePersona
-import com.example.model.VOICE_CHARACTER_PRESETS
-import com.example.model.VoiceCharacterCategory
-import com.example.model.VoiceCharacterPreset
 import com.example.studio.ui.lit
 import com.example.ui.components.InfoBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
@@ -134,7 +140,6 @@ private data class TtsEditorSnapshot(
 )
 
 private data class VoiceTransformSnapshot(
-    val presetId: String?,
     val pitchSemitones: Float,
     val formantShift: Float,
     val warmthDb: Float,
@@ -794,6 +799,7 @@ fun TextToSpeechStudioScreen(
     var selectedStyle by remember { mutableStateOf(TTS_VOICE_PERSONAS.first().defaultStyle) }
     var selectedAcousticMode by remember { mutableStateOf(TTS_VOICE_PERSONAS.first().defaultAcousticMode) }
     var textInput by rememberSaveable { mutableStateOf(TTS_DIALECTS.first().sampleText) }
+    var wordLimitExceeded by remember { mutableStateOf(false) }
     var rateOffsetPercent by remember { mutableFloatStateOf(0f) }
     var pitchOffsetPercent by remember { mutableFloatStateOf(0f) }
     var appendToExisting by remember { mutableStateOf(false) }
@@ -812,6 +818,13 @@ fun TextToSpeechStudioScreen(
             acousticMode = selectedAcousticMode,
         ),
     )
+    LaunchedEffect(Unit) {
+        val limitedText = TtsTextLimits.limitWords(textInput)
+        if (limitedText != textInput) {
+            textInput = limitedText
+            wordLimitExceeded = true
+        }
+    }
 
     fun currentTtsSnap(
         txt: String = textInput,
@@ -834,7 +847,9 @@ fun TextToSpeechStudioScreen(
     )
 
     fun applyTtsSnap(snap: TtsEditorSnapshot) {
-        textInput = snap.textInput
+        val limitedText = TtsTextLimits.limitWords(snap.textInput)
+        textInput = limitedText
+        wordLimitExceeded = limitedText != snap.textInput
         selectedDialect = TTS_DIALECTS.firstOrNull { it.id == snap.dialectId } ?: TTS_DIALECTS.first()
         selectedPersona = snap.personaId?.let { id -> TTS_VOICE_PERSONAS.firstOrNull { it.id == id } }
         selectedGender = snap.gender
@@ -847,7 +862,115 @@ fun TextToSpeechStudioScreen(
     val effectiveSpeechRate = (selectedDialect.defaultRate * (1f + rateOffsetPercent / 100f)).coerceIn(0.55f, 1.65f)
     val effectiveSpeechPitch = (selectedDialect.defaultPitch * (1f + pitchOffsetPercent / 100f)).coerceIn(0.65f, 1.45f)
 
-    StudioScrollColumn {
+    Scaffold(
+        bottomBar = {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .imePadding(),
+                color = StudioColors.CardSurface,
+                border = BorderStroke(1.dp, StudioColors.Border),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    val previewInteraction = remember { MutableInteractionSource() }
+                    OutlinedButton(
+                        onClick = {
+                            if (uiState.ttsUiState.isPreviewing) {
+                                viewModel.stopTtsPreview()
+                            } else if (!uiState.ttsUiState.isSynthesizingPreview) {
+                                viewModel.previewTtsSpeech(
+                                    text = textInput,
+                                    dialect = selectedDialect,
+                                    gender = selectedGender,
+                                    style = selectedStyle,
+                                    speechRate = effectiveSpeechRate,
+                                    pitch = effectiveSpeechPitch,
+                                    persona = selectedPersona,
+                                    acousticMode = selectedAcousticMode,
+                                )
+                            }
+                        },
+                        enabled = !uiState.ttsUiState.isSynthesizingPreview && textInput.isNotBlank(),
+                        interactionSource = previewInteraction,
+                        border = BorderStroke(1.dp, StudioColors.Cyan),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(previewInteraction, MaterialTheme.colorScheme.primary, selected = uiState.ttsUiState.isPreviewing, cornerRadius = 14.dp)
+                            .testTag("tts_preview_button"),
+                    ) {
+                        if (uiState.ttsUiState.isSynthesizingPreview) {
+                            CircularProgressIndicator(
+                                color = StudioColors.Cyan,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = t(lang, "tts_synthesizing"),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (uiState.ttsUiState.isPreviewing) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = if (uiState.ttsUiState.isPreviewing) t(lang, "tts_stop_preview") else t(lang, "tts_preview_button"),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+
+                    val insertInteraction = remember { MutableInteractionSource() }
+                    Button(
+                        onClick = {
+                            preferVmUndo = true
+                            viewModel.generateTtsToStudio(
+                                text = textInput,
+                                dialect = selectedDialect,
+                                gender = selectedGender,
+                                style = selectedStyle,
+                                speechRate = effectiveSpeechRate,
+                                pitch = effectiveSpeechPitch,
+                                appendToExisting = appendToExisting,
+                                persona = selectedPersona,
+                                acousticMode = selectedAcousticMode,
+                            )
+                        },
+                        enabled = !uiState.ttsUiState.isGenerating && !uiState.isBusy && textInput.isNotBlank(),
+                        interactionSource = insertInteraction,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StudioColors.Cyan,
+                            contentColor = StudioColors.BgTop,
+                        ),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(insertInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                            .testTag("tts_insert_button"),
+                    ) {
+                        Icon(Icons.Rounded.RecordVoiceOver, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(t(lang, "approve_and_start_processing"), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        },
+    ) { scaffoldPadding ->
+        StudioScrollColumn(modifier = Modifier.padding(scaffoldPadding)) {
         StudioFocusTopBar(
             title = t(lang, "section_tts_title"),
             subtitle = t(lang, "section_tts_subtitle"),
@@ -1188,8 +1311,10 @@ fun TextToSpeechStudioScreen(
                     onClick = {
                         viewModel.extractArticleTextForTts(articleUrl) { extracted ->
                             preferVmUndo = false
-                            textInput = extracted
-                            ttsHistory.commit(currentTtsSnap(txt = extracted))
+                            val limitedText = TtsTextLimits.limitWords(extracted)
+                            wordLimitExceeded = limitedText != extracted
+                            textInput = limitedText
+                            ttsHistory.commit(currentTtsSnap(txt = limitedText))
                         }
                     },
                     enabled = !uiState.isExtractingArticle && articleUrl.isNotBlank(),
@@ -1290,8 +1415,10 @@ fun TextToSpeechStudioScreen(
                             viewModel.stopTtsPreview()
                         }
                         preferVmUndo = false
-                        textInput = it
-                        ttsHistory.commit(currentTtsSnap(txt = it), debounceMs = 350L)
+                        val limitedText = TtsTextLimits.limitWords(it)
+                        wordLimitExceeded = limitedText != it
+                        textInput = limitedText
+                        ttsHistory.commit(currentTtsSnap(txt = limitedText), debounceMs = 350L)
                     },
                     minLines = 3,
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1305,6 +1432,27 @@ fun TextToSpeechStudioScreen(
                         .fillMaxWidth()
                         .testTag("tts_text_input"),
                 )
+                Text(
+                    text = if (lang == AppLanguage.EN) {
+                        "${TtsTextLimits.countWords(textInput)} / ${TtsTextLimits.MAX_WORDS} words"
+                    } else {
+                        "${TtsTextLimits.countWords(textInput)} / ${TtsTextLimits.MAX_WORDS} كلمة"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (wordLimitExceeded) StudioColors.RoseBright else StudioColors.TextSecondary,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (wordLimitExceeded) {
+                    Text(
+                        text = if (lang == AppLanguage.EN) {
+                            "Text is limited to ${TtsTextLimits.MAX_WORDS} words."
+                        } else {
+                            "الحد الأقصى للنص هو ${TtsTextLimits.MAX_WORDS} كلمة."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.RoseBright,
+                    )
+                }
 
                 CategorizedVoicePersonasSection(
                     selectedPersona = selectedPersona,
@@ -1572,100 +1720,7 @@ fun TextToSpeechStudioScreen(
                     AiStatusCard(message = err, isAmber = false)
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    val previewInteraction = remember { MutableInteractionSource() }
-                    OutlinedButton(
-                        onClick = {
-                            if (uiState.ttsUiState.isPreviewing) {
-                                viewModel.stopTtsPreview()
-                            } else if (!uiState.ttsUiState.isSynthesizingPreview) {
-                                viewModel.previewTtsSpeech(
-                                    text = textInput,
-                                    dialect = selectedDialect,
-                                    gender = selectedGender,
-                                    style = selectedStyle,
-                                    speechRate = effectiveSpeechRate,
-                                    pitch = effectiveSpeechPitch,
-                                    persona = selectedPersona,
-                                    acousticMode = selectedAcousticMode,
-                                )
-                            }
-                        },
-                        enabled = !uiState.ttsUiState.isSynthesizingPreview && textInput.isNotBlank(),
-                        interactionSource = previewInteraction,
-                        border = BorderStroke(1.dp, StudioColors.Cyan),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(previewInteraction, MaterialTheme.colorScheme.primary, selected = uiState.ttsUiState.isPreviewing, cornerRadius = 14.dp)
-                            .testTag("tts_preview_button"),
-                    ) {
-                        if (uiState.ttsUiState.isSynthesizingPreview) {
-                            CircularProgressIndicator(
-                                color = StudioColors.Cyan,
-                                strokeWidth = 2.dp,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = t(lang, "tts_synthesizing"),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        } else {
-                            Icon(
-                                imageVector = if (uiState.ttsUiState.isPreviewing) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = if (uiState.ttsUiState.isPreviewing) t(lang, "tts_stop_preview") else t(lang, "tts_preview_button"),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-
-                    val insertInteraction = remember { MutableInteractionSource() }
-                    Button(
-                        onClick = {
-                            preferVmUndo = true
-                            viewModel.generateTtsToStudio(
-                                text = textInput,
-                                dialect = selectedDialect,
-                                gender = selectedGender,
-                                style = selectedStyle,
-                                speechRate = effectiveSpeechRate,
-                                pitch = effectiveSpeechPitch,
-                                appendToExisting = appendToExisting,
-                                persona = selectedPersona,
-                                acousticMode = selectedAcousticMode,
-                            )
-                        },
-                        enabled = !uiState.ttsUiState.isGenerating && !uiState.isBusy && textInput.isNotBlank(),
-                        interactionSource = insertInteraction,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = StudioColors.Cyan,
-                            contentColor = StudioColors.BgTop,
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(insertInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                            .testTag("tts_insert_button"),
-                    ) {
-                        Icon(Icons.Rounded.RecordVoiceOver, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(t(lang, "approve_and_start_processing"), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
+            }
             }
         }
     }
@@ -1686,7 +1741,6 @@ fun VoiceTransformerScreen(
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
-    var selectedPreset by remember { mutableStateOf<VoiceCharacterPreset?>(null) }
     var selectedPersona by remember { mutableStateOf<TtsVoicePersona?>(null) }
     var selectedAcousticMode by remember { mutableStateOf(TtsPersonaAcousticMode.NATURAL) }
     var pitchSemitones by remember { mutableFloatStateOf(0f) }
@@ -1700,7 +1754,6 @@ fun VoiceTransformerScreen(
     var preferVmUndo by remember { mutableStateOf(false) }
     val voiceHistory = rememberEditHistory(
         VoiceTransformSnapshot(
-            presetId = selectedPreset?.id,
             pitchSemitones = pitchSemitones,
             formantShift = formantShift,
             warmthDb = warmthDb,
@@ -1712,7 +1765,6 @@ fun VoiceTransformerScreen(
     )
 
     fun currentVoiceSnap(
-        presetId: String? = selectedPreset?.id,
         pitch: Float = pitchSemitones,
         formant: Float = formantShift,
         warmth: Float = warmthDb,
@@ -1721,7 +1773,6 @@ fun VoiceTransformerScreen(
         personaId: String? = selectedPersona?.id,
         acousticMode: TtsPersonaAcousticMode = selectedAcousticMode,
     ) = VoiceTransformSnapshot(
-        presetId = presetId,
         pitchSemitones = pitch,
         formantShift = formant,
         warmthDb = warmth,
@@ -1732,7 +1783,6 @@ fun VoiceTransformerScreen(
     )
 
     fun applyVoiceSnap(snap: VoiceTransformSnapshot) {
-        selectedPreset = snap.presetId?.let { id -> VOICE_CHARACTER_PRESETS.firstOrNull { it.id == id } }
         selectedPersona = snap.personaId?.let { id -> TTS_VOICE_PERSONAS.firstOrNull { it.id == id } }
         selectedAcousticMode = snap.acousticMode
         pitchSemitones = snap.pitchSemitones
@@ -1756,11 +1806,18 @@ fun VoiceTransformerScreen(
         val restored = viewModel.consumeRestoredToolSession("voice_transformer")
         if (restored != null) {
             val fp = restored.floatParams
-            val presetId = restored.stringParams["presetId"]
             val personaId = restored.stringParams["personaId"]
+            val legacyPresetId = restored.stringParams["presetId"]
             val modeName = restored.stringParams["acousticMode"]
-            selectedPreset = presetId?.let { id -> VOICE_CHARACTER_PRESETS.firstOrNull { it.id == id } }
             selectedPersona = personaId?.let { id -> TTS_VOICE_PERSONAS.firstOrNull { it.id == id } }
+                ?: when (legacyPresetId) {
+                    "male_luxury" -> TTS_VOICE_PERSONAS.firstOrNull { it.id == "male_doc_deep" }
+                    "male_calm" -> TTS_VOICE_PERSONAS.firstOrNull { it.id == "male_podcast_warm" }
+                    "female_soft" -> TTS_VOICE_PERSONAS.firstOrNull { it.id == "female_story_soft" }
+                    "female_balanced" -> TTS_VOICE_PERSONAS.firstOrNull { it.id == "female_podcast_host" }
+                    "child" -> TTS_VOICE_PERSONAS.firstOrNull { it.id == "child_voice" }
+                    else -> null
+                }
             selectedAcousticMode = modeName?.let { runCatching { TtsPersonaAcousticMode.valueOf(it) }.getOrNull() }
                 ?: selectedPersona?.defaultAcousticMode
                 ?: TtsPersonaAcousticMode.NATURAL
@@ -1773,7 +1830,6 @@ fun VoiceTransformerScreen(
     }
 
     val latestHasAudio by rememberUpdatedState(uiState.hasAudio)
-    val latestPresetId by rememberUpdatedState(selectedPreset?.id)
     val latestPersonaId by rememberUpdatedState(selectedPersona?.id)
     val latestAcousticMode by rememberUpdatedState(selectedAcousticMode)
     val latestPitch by rememberUpdatedState(pitchSemitones)
@@ -1801,20 +1857,12 @@ fun VoiceTransformerScreen(
                         "mix" to latestMix,
                     ),
                     stringParams = buildMap {
-                        latestPresetId?.let { put("presetId", it) }
                         latestPersonaId?.let { put("personaId", it) }
                         put("acousticMode", latestAcousticMode.name)
                     },
                 )
             }
         }
-    }
-
-    val humanPresets = remember {
-        VOICE_CHARACTER_PRESETS.filter { it.category == VoiceCharacterCategory.HUMAN }
-    }
-    val mythicalPresets = remember {
-        VOICE_CHARACTER_PRESETS.filter { it.category == VoiceCharacterCategory.MYTHICAL }
     }
 
     StudioScrollColumn {
@@ -1864,7 +1912,6 @@ fun VoiceTransformerScreen(
             onRedo = { viewModel.redoLastEdit() },
             onResetZero = {
                 preferVmUndo = false
-                selectedPreset = null
                 selectedPersona = null
                 selectedAcousticMode = TtsPersonaAcousticMode.NATURAL
                 pitchSemitones = 0f
@@ -1874,7 +1921,6 @@ fun VoiceTransformerScreen(
                 mix = 0f
                 voiceHistory.commit(
                     currentVoiceSnap(
-                        presetId = null,
                         pitch = 0f,
                         formant = 1.0f,
                         warmth = 0f,
@@ -1931,12 +1977,8 @@ fun VoiceTransformerScreen(
                 val liveOptions = remember {
                     listOf(
                         VoiceEffect.CHILD_NATURAL to "Child",
-                        VoiceEffect.ABYSSAL_DRAGON to "Dragon",
-                        VoiceEffect.ALIEN_WIZARD to "Alien",
                         VoiceEffect.DEEP to "Deep",
-                        VoiceEffect.ROBOT to "Robot",
                         VoiceEffect.ECHO to "Echo",
-                        VoiceEffect.CHIPMUNK to "Chipmunk",
                         VoiceEffect.NONE to "Natural",
                     )
                 }
@@ -1950,8 +1992,6 @@ fun VoiceTransformerScreen(
                         val isSel = selectedLiveEffect == eff
                         val chipLabel = when (eff) {
                             VoiceEffect.CHILD_NATURAL -> t(lang, "voice_char_child")
-                            VoiceEffect.ABYSSAL_DRAGON -> t(lang, "voice_char_abyssal_dragon")
-                            VoiceEffect.ALIEN_WIZARD -> t(lang, "voice_char_alien_wizard")
                             else -> fallbackLabel
                         }
                         FilterChip(
@@ -2026,7 +2066,7 @@ fun VoiceTransformerScreen(
             }
         }
 
-        // Categorized Men/Women Voices + Documentary/Podcast/Natural FFmpegKit Mastering
+        // A single profile menu avoids duplicate gender-specific lists and keeps voice processing settings together.
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -2037,16 +2077,19 @@ fun VoiceTransformerScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                CategorizedVoicePersonasSection(
+                Text(
+                    text = if (lang == AppLanguage.EN) "Professional voice profile" else "الشخصية الصوتية الاحترافية",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = StudioColors.Cyan,
+                )
+                VoiceProfileDropdown(
                     selectedPersona = selectedPersona,
-                    selectedAcousticMode = selectedAcousticMode,
                     language = lang,
                     onSelectPersona = { persona ->
                         preferVmUndo = false
                         selectedPersona = persona
-                        selectedPreset = null
                         pitchSemitones = persona.defaultPitchSemitones
                         formantShift = persona.defaultFormantShift
                         warmthDb = persona.defaultWarmthDb
@@ -2055,7 +2098,6 @@ fun VoiceTransformerScreen(
                         selectedAcousticMode = persona.defaultAcousticMode
                         voiceHistory.commit(
                             currentVoiceSnap(
-                                presetId = null,
                                 pitch = persona.defaultPitchSemitones,
                                 formant = persona.defaultFormantShift,
                                 warmth = persona.defaultWarmthDb,
@@ -2066,102 +2108,16 @@ fun VoiceTransformerScreen(
                             ),
                         )
                     },
+                )
+                AcousticModeDropdown(
+                    selectedAcousticMode = selectedAcousticMode,
+                    language = lang,
                     onSelectAcousticMode = { mode ->
                         preferVmUndo = false
                         selectedAcousticMode = mode
                         voiceHistory.commit(currentVoiceSnap(acousticMode = mode))
                     },
                 )
-            }
-        }
-
-        // Voice Character Presets split into Realistic Human + Mythical & Scary Voices
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-            border = BorderStroke(1.dp, StudioColors.Border),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text(
-                    text = t(lang, "voice_section_human"),
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = StudioColors.Cyan,
-                )
-                humanPresets.forEach { preset ->
-                    VoiceCharacterPresetRow(
-                        preset = preset,
-                        selected = selectedPersona == null && preset.id == selectedPreset?.id,
-                        accentColor = StudioColors.Cyan,
-                        language = lang,
-                        onClick = {
-                            preferVmUndo = false
-                            selectedPersona = null
-                            selectedPreset = preset
-                            pitchSemitones = preset.pitchSemitones
-                            formantShift = preset.formantShift
-                            warmthDb = preset.warmthDb
-                            presenceDb = preset.presenceDb
-                            mix = 1f
-                            voiceHistory.commit(
-                                currentVoiceSnap(
-                                    presetId = preset.id,
-                                    pitch = preset.pitchSemitones,
-                                    formant = preset.formantShift,
-                                    warmth = preset.warmthDb,
-                                    presence = preset.presenceDb,
-                                    mixVal = 1f,
-                                    personaId = null,
-                                ),
-                            )
-                        },
-                    )
-                }
-
-                HorizontalDivider(
-                    color = StudioColors.Border,
-                    modifier = Modifier.padding(vertical = 4.dp),
-                )
-
-                Text(
-                    text = t(lang, "voice_section_mythical"),
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = StudioColors.Violet,
-                )
-                mythicalPresets.forEach { preset ->
-                    VoiceCharacterPresetRow(
-                        preset = preset,
-                        selected = selectedPersona == null && preset.id == selectedPreset?.id,
-                        accentColor = StudioColors.Violet,
-                        language = lang,
-                        onClick = {
-                            preferVmUndo = false
-                            selectedPersona = null
-                            selectedPreset = preset
-                            pitchSemitones = preset.pitchSemitones
-                            formantShift = preset.formantShift
-                            warmthDb = preset.warmthDb
-                            presenceDb = preset.presenceDb
-                            mix = 1f
-                            voiceHistory.commit(
-                                currentVoiceSnap(
-                                    presetId = preset.id,
-                                    pitch = preset.pitchSemitones,
-                                    formant = preset.formantShift,
-                                    warmth = preset.warmthDb,
-                                    presence = preset.presenceDb,
-                                    mixVal = 1f,
-                                    personaId = null,
-                                ),
-                            )
-                        },
-                    )
-                }
             }
         }
 
@@ -2284,15 +2240,6 @@ fun VoiceTransformerScreen(
                             warmthDb = warmthDb,
                             presenceDb = presenceDb,
                             mix = mix,
-                            bassBoostDb = selectedPreset?.bassBoostDb ?: 0f,
-                            bassFreqHz = selectedPreset?.bassFreqHz ?: 75f,
-                            vibratoHz = selectedPreset?.vibratoHz ?: 0f,
-                            vibratoDepth = selectedPreset?.vibratoDepth ?: 0f,
-                            echoDelayMs = selectedPreset?.echoDelayMs ?: 0f,
-                            echoDecay = selectedPreset?.echoDecay ?: 0f,
-                            dualLayerPitchSemitones = selectedPreset?.dualLayerPitchSemitones ?: 0f,
-                            dualLayerFormantShift = selectedPreset?.dualLayerFormantShift ?: 1.0f,
-                            dualLayerMix = selectedPreset?.dualLayerMix ?: 0f,
                             acousticMode = selectedAcousticMode,
                             style = selectedPersona?.defaultStyle ?: TtsDeliveryStyle.NATURAL_WARM,
                             gender = selectedPersona?.gender ?: TtsGender.MALE,
@@ -2302,8 +2249,7 @@ fun VoiceTransformerScreen(
                         preferVmUndo = true
                         val resolvedLabel = selectedPersona?.let {
                             if (lang == AppLanguage.EN) it.titleEn else it.titleAr
-                        } ?: selectedPreset?.let { t(lang, it.titleKey) }
-                            ?: t(lang, "section_voice_transformer_title")
+                        } ?: t(lang, "section_voice_transformer_title")
                         viewModel.transformVoiceOffline(
                             pitchSemitones = pitchSemitones,
                             formantShift = formantShift,
@@ -2311,15 +2257,6 @@ fun VoiceTransformerScreen(
                             presenceDb = presenceDb,
                             mix = mix,
                             characterLabel = resolvedLabel,
-                            bassBoostDb = selectedPreset?.bassBoostDb ?: 0f,
-                            bassFreqHz = selectedPreset?.bassFreqHz ?: 75f,
-                            vibratoHz = selectedPreset?.vibratoHz ?: 0f,
-                            vibratoDepth = selectedPreset?.vibratoDepth ?: 0f,
-                            echoDelayMs = selectedPreset?.echoDelayMs ?: 0f,
-                            echoDecay = selectedPreset?.echoDecay ?: 0f,
-                            dualLayerPitchSemitones = selectedPreset?.dualLayerPitchSemitones ?: 0f,
-                            dualLayerFormantShift = selectedPreset?.dualLayerFormantShift ?: 1.0f,
-                            dualLayerMix = selectedPreset?.dualLayerMix ?: 0f,
                             acousticMode = selectedAcousticMode,
                             style = selectedPersona?.defaultStyle ?: TtsDeliveryStyle.NATURAL_WARM,
                             gender = selectedPersona?.gender ?: TtsGender.MALE,
@@ -2417,8 +2354,7 @@ fun VoiceTransformerScreen(
 
                 val targetCharacterLabel = selectedPersona?.let {
                     if (lang == AppLanguage.EN) it.titleEn else it.titleAr
-                } ?: selectedPreset?.let { t(lang, it.titleKey) }
-                    ?: if (lang == AppLanguage.EN) "Realistic Studio Voice" else "شخصية استوديو طبيعية"
+                } ?: if (lang == AppLanguage.EN) "Realistic Studio Voice" else "شخصية استوديو طبيعية"
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -2428,7 +2364,7 @@ fun VoiceTransformerScreen(
                     OutlinedButton(
                         onClick = {
                             viewModel.previewVoiceWithAi(
-                                preset = selectedPreset,
+                                preset = null,
                                 targetLabel = targetCharacterLabel,
                                 pitchSemitones = pitchSemitones,
                                 formantShift = formantShift,
@@ -2463,7 +2399,7 @@ fun VoiceTransformerScreen(
                         onClick = {
                             preferVmUndo = true
                             viewModel.convertVoiceWithAi(
-                                preset = selectedPreset,
+                                preset = null,
                                 targetLabel = targetCharacterLabel,
                                 pitchSemitones = pitchSemitones,
                                 formantShift = formantShift,
@@ -2512,55 +2448,121 @@ fun VoiceTransformerScreen(
     ToolInfoDialog(
         open = infoOpen,
         title = t(lang, "section_voice_transformer_title"),
-        description = "${t(lang, "section_voice_transformer_subtitle")} • ${t(lang, "voice_section_mythical")}",
+        description = t(lang, "section_voice_transformer_subtitle"),
         language = lang,
         onDismiss = { infoOpen = false },
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VoiceCharacterPresetRow(
-    preset: VoiceCharacterPreset,
-    selected: Boolean,
-    accentColor: Color,
+private fun VoiceProfileDropdown(
+    selectedPersona: TtsVoicePersona?,
     language: AppLanguage,
-    onClick: () -> Unit,
+    onSelectPersona: (TtsVoicePersona) -> Unit,
 ) {
-    val charInteraction = remember { MutableInteractionSource() }
-    Surface(
-        onClick = onClick,
-        interactionSource = charInteraction,
-        shape = RoundedCornerShape(14.dp),
-        color = if (selected) StudioColors.ElevatedSurface else StudioColors.BgMid,
-        border = BorderStroke(1.dp, if (selected) accentColor else StudioColors.Border),
-        modifier = Modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = 56.dp)
-            .lit(charInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 14.dp)
-            .testTag("voice_char_${preset.id}"),
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val selectedLabel = selectedPersona?.let {
+        if (language == AppLanguage.EN) it.titleEn else it.titleAr
+    } ?: if (language == AppLanguage.EN) "Choose a profile" else "اختر شخصية"
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(if (language == AppLanguage.EN) "Voice profile" else "الشخصية الصوتية") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor()
+                .testTag("voice_profile_dropdown"),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = t(language, preset.titleKey),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = StudioColors.TextPrimary,
-                )
-                Text(
-                    text = t(language, preset.descKey),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = StudioColors.TextSecondary,
+            TTS_VOICE_PERSONAS.forEach { persona ->
+                DropdownMenuItem(
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(if (language == AppLanguage.EN) persona.titleEn else persona.titleAr)
+                            Text(
+                                text = if (language == AppLanguage.EN) persona.descEn else persona.descAr,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioColors.TextSecondary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelectPersona(persona)
+                    },
+                    modifier = Modifier.testTag("voice_profile_${persona.id}"),
                 )
             }
-            if (selected) {
-                Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = accentColor)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AcousticModeDropdown(
+    selectedAcousticMode: TtsPersonaAcousticMode,
+    language: AppLanguage,
+    onSelectAcousticMode: (TtsPersonaAcousticMode) -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val selectedLabel = if (language == AppLanguage.EN) {
+        selectedAcousticMode.titleEn
+    } else {
+        selectedAcousticMode.titleAr
+    }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(if (language == AppLanguage.EN) "Studio processing" else "المعالجة الاستوديوية") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor()
+                .testTag("voice_acoustic_mode_dropdown"),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            TtsPersonaAcousticMode.entries.forEach { mode ->
+                DropdownMenuItem(
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(if (language == AppLanguage.EN) mode.titleEn else mode.titleAr)
+                            Text(
+                                text = if (language == AppLanguage.EN) mode.descEn else mode.descAr,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioColors.TextSecondary,
+                            )
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelectAcousticMode(mode)
+                    },
+                    modifier = Modifier.testTag("voice_acoustic_mode_${mode.name}"),
+                )
             }
         }
     }

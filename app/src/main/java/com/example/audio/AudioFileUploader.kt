@@ -37,10 +37,9 @@ sealed interface AudioUploadOutcome {
 }
 
 /**
- * Fast, direct URI-to-`cacheDir` audio uploader running on [Dispatchers.IO] with a 64 KB buffer
- * (`ByteArray(65536)`). Takes persistable read permission, queries [OpenableColumns.SIZE] for accurate
- * `0%..100%` progress reporting, and preserves/detects the true audio extension so decoders and
- * `MediaPlayer` / `FFmpegKit` only ever open completed local files via `file.absolutePath`.
+ * Streams URI data through a 64 KB buffer into the staged cache directory, without loading the
+ * source file into memory. Prefers a file descriptor for content URIs and reports byte progress
+ * from the provider's actual size when available.
  */
 object AudioFileUploader {
     private const val COPY_BUFFER_SIZE = 65536
@@ -103,15 +102,13 @@ object AudioFileUploader {
                 null
             }
         } else {
-            runCatching { resolver.openInputStream(uri) }
-                .onFailure { openError = it }
-                .getOrNull()
-                ?: run {
-                    val fdRes = runCatching { resolver.openFileDescriptor(uri, "r") }
-                    fdRes.onFailure { if (openError == null) openError = it }
-                    pfd = fdRes.getOrNull()
-                    pfd?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
-                }
+            val fdRes = runCatching { resolver.openFileDescriptor(uri, "r") }
+            pfd = fdRes.getOrNull()
+            if (pfd == null) openError = fdRes.exceptionOrNull()
+            pfd?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
+                ?: runCatching { resolver.openInputStream(uri) }
+                    .onFailure { if (openError == null) openError = it }
+                    .getOrNull()
         }
 
         if (inputStream == null) {

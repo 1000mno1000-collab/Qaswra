@@ -11,6 +11,7 @@ import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -81,9 +82,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -107,7 +110,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -449,6 +455,34 @@ private fun SonixRootApp(
     val context = LocalContext.current
     val lang = uiState.language
     val layoutDirection = if (lang.isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
+    val requiredPermissions = remember { mandatoryRuntimePermissions() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var permissionRefreshVersion by remember { mutableIntStateOf(0) }
+    var hasRequestedMandatoryPermissions by rememberSaveable { mutableStateOf(false) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                permissionRefreshVersion++
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val missingPermissions = remember(permissionRefreshVersion) {
+        requiredPermissions.filter { permission ->
+            ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED
+        }
+    }
+    val permissionRequestLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        permissionRefreshVersion++
+    }
+    val activity = context as? Activity
+    val permanentlyDeniedPermission = hasRequestedMandatoryPermissions &&
+        missingPermissions.any { permission ->
+            activity?.shouldShowRequestPermissionRationale(permission) == false
+        }
 
     // Hoist Home LazyListState at parent composable level outside NavHost/conditionals
     // so scroll position stays intact across any tool navigation and return.
@@ -539,6 +573,24 @@ private fun SonixRootApp(
                     viewModel = viewModel,
                     onLoginSuccess = {
                         viewModel.clearBanner()
+                    },
+                )
+            } else if (missingPermissions.isNotEmpty()) {
+                MandatoryPermissionsGateScreen(
+                    isArabic = lang.isRtl,
+                    missingPermissions = missingPermissions,
+                    permanentlyDenied = permanentlyDeniedPermission,
+                    onRequestPermissions = {
+                        hasRequestedMandatoryPermissions = true
+                        permissionRequestLauncher.launch(missingPermissions.toTypedArray())
+                    },
+                    onOpenSettings = {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", context.packageName, null),
+                            ),
+                        )
                     },
                 )
             } else {
@@ -722,7 +774,9 @@ private fun SonixRootApp(
                     ) {
 
                         uiState.importProgress?.let { progress ->
-                            val pct = (progress.coerceIn(0f, 1f) * 100f).toInt()
+                            val byteTransferActive = !uiState.importBytesLabel.isNullOrBlank()
+                            val byteFraction = uiState.importBytesProgress
+                            val pct = ((byteFraction ?: progress).coerceIn(0f, 1f) * 100f).toInt()
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -755,15 +809,16 @@ private fun SonixRootApp(
                                                 t(lang, "importing_file_progress")
                                             }
                                             Text(
-                                                text = "$stageLabel $pct%",
+                                                text = if (byteTransferActive && byteFraction == null) {
+                                                    stageLabel.orEmpty()
+                                                } else {
+                                                    "$stageLabel $pct%"
+                                                },
                                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                                 color = StudioColors.Cyan,
                                                 modifier = Modifier.weight(1f),
                                             )
-                                            val detailText = listOfNotNull(
-                                                uiState.importBytesLabel?.takeIf { it.isNotBlank() },
-                                                uiState.importLabel?.takeIf { it.isNotBlank() },
-                                            ).joinToString(" • ")
+                                            val detailText = uiState.importBytesLabel.orEmpty()
                                             if (detailText.isNotBlank()) {
                                                 Text(
                                                     text = detailText,
@@ -775,16 +830,28 @@ private fun SonixRootApp(
                                                 )
                                             }
                                         }
-                                        LinearProgressIndicator(
-                                            progress = { progress.coerceIn(0f, 1f) },
-                                            color = StudioColors.Cyan,
-                                            trackColor = StudioColors.BgTop,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(7.dp)
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .testTag("global_import_progress_bar"),
-                                        )
+                                        if (byteTransferActive && byteFraction == null) {
+                                            LinearProgressIndicator(
+                                                color = StudioColors.Cyan,
+                                                trackColor = StudioColors.BgTop,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(5.dp)
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .testTag("global_import_progress_bar"),
+                                            )
+                                        } else {
+                                            LinearProgressIndicator(
+                                                progress = { (byteFraction ?: progress).coerceIn(0f, 1f) },
+                                                color = StudioColors.Cyan,
+                                                trackColor = StudioColors.BgTop,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(5.dp)
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .testTag("global_import_progress_bar"),
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1321,6 +1388,124 @@ private fun SonixRootApp(
                 language = lang,
                 onFinished = { showLuxuryLaunch = false },
             )
+        }
+    }
+}
+
+private fun mandatoryRuntimePermissions(): List<String> = buildList {
+    add(Manifest.permission.RECORD_AUDIO)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        add(Manifest.permission.READ_MEDIA_AUDIO)
+        add(Manifest.permission.POST_NOTIFICATIONS)
+    } else {
+        add(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+}
+
+@Composable
+private fun MandatoryPermissionsGateScreen(
+    isArabic: Boolean,
+    missingPermissions: List<String>,
+    permanentlyDenied: Boolean,
+    onRequestPermissions: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val permissionLabels = missingPermissions.map { permission ->
+        when (permission) {
+            Manifest.permission.RECORD_AUDIO ->
+                if (isArabic) "إمكانية استخدام الميكروفون" else "Microphone access"
+            Manifest.permission.READ_MEDIA_AUDIO,
+            Manifest.permission.READ_EXTERNAL_STORAGE ->
+                if (isArabic) "إمكانية الوصول إلى الملفات الصوتية" else "Audio files access"
+            Manifest.permission.POST_NOTIFICATIONS ->
+                if (isArabic) "إمكانية إرسال الإشعارات" else "Notifications"
+            else -> permission
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+            .padding(24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 480.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.BorderBright),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Info,
+                    contentDescription = null,
+                    tint = StudioColors.Cyan,
+                    modifier = Modifier.size(40.dp),
+                )
+                Text(
+                    text = if (isArabic) "الصلاحيات مطلوبة للمتابعة" else "Permissions required to continue",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = StudioColors.TextPrimary,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    text = if (isArabic) {
+                        "لن تتمكن من دخول الاستوديو حتى تسمح بجميع الصلاحيات التالية:"
+                    } else {
+                        "You can't enter the studio until you allow all of the following permissions:"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = StudioColors.TextSecondary,
+                    textAlign = TextAlign.Center,
+                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    permissionLabels.forEach { label ->
+                        Text(
+                            text = "• $label",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = StudioColors.TextPrimary,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                Button(
+                    onClick = onRequestPermissions,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.Cyan,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                ) {
+                    Text(if (isArabic) "السماح بالصلاحيات" else "Allow permissions")
+                }
+                if (permanentlyDenied) {
+                    OutlinedButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp),
+                    ) {
+                        Text(
+                            if (isArabic) "فتح إعدادات التطبيق" else "Open app settings",
+                            color = StudioColors.Cyan,
+                        )
+                    }
+                }
+            }
         }
     }
 }

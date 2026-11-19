@@ -62,6 +62,7 @@ import com.example.audio.processReelsAudioTemplate
 import com.example.audio.stageLargeFileToCleanAsciiCache
 import com.example.audio.tts.FreeEmotionalTtsClient
 import com.example.audio.tts.SmartVoiceRouter
+import com.example.audio.tts.TtsTextLimits
 import com.example.audio.tts.VoiceRouteOutcome
 import com.example.audio.unity.UnityExporter
 import com.example.audio.web.ArticleExtractionResult
@@ -287,6 +288,7 @@ data class StudioUiState(
     val importProgress: Float? = null,
     val importLabel: String? = null,
     val importBytesLabel: String? = null,
+    val importBytesProgress: Float? = null,
     val exportProgress: Float? = null,
     val purifyProgress: Float? = null,
     val ttsEngineMode: TtsEngineMode = TtsEngineMode.NABRA_ONNX_DIRECT,
@@ -381,6 +383,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 importProgress = null,
                 importLabel = null,
                 importBytesLabel = null,
+                importBytesProgress = null,
                 exportProgress = null,
                 purifyProgress = null,
                 isToolPreviewPlaying = false,
@@ -1732,6 +1735,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     importProgress = 0f,
                     importLabel = resolvedName,
                     importBytesLabel = null,
+                    importBytesProgress = null,
                 )
             }
             var tempCachedFile: File? = null
@@ -1749,6 +1753,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             importProgress = (info.fraction * 0.50f).coerceIn(0f, 0.50f),
                             importLabel = info.fileName,
                             importBytesLabel = bytesText,
+                            importBytesProgress = info.fraction.takeIf { info.totalBytes > 0L },
                         )
                     }
                 }
@@ -1766,6 +1771,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         importProgress = 0.50f,
                         importLabel = "جاري تجهيز الصوت والموجة: ${uploaded.displayName}",
+                        importBytesLabel = null,
+                        importBytesProgress = null,
                     )
                 }
 
@@ -1871,6 +1878,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         importProgress = null,
                         importLabel = null,
                         importBytesLabel = null,
+                        importBytesProgress = null,
                     )
                 }
             }
@@ -2374,6 +2382,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     importProgress = 0f,
                     importLabel = name,
                     importBytesLabel = null,
+                    importBytesProgress = null,
                 )
             }
             var cachedFile: File? = null
@@ -2390,6 +2399,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             importProgress = (info.fraction * 0.50f).coerceIn(0f, 0.50f),
                             importLabel = info.fileName,
                             importBytesLabel = bytesText,
+                            importBytesProgress = info.fraction.takeIf { info.totalBytes > 0L },
                         )
                     }
                 }
@@ -2407,6 +2417,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         importProgress = 0.50f,
                         importLabel = "جاري تجهيز الخلفية والموجة: ${uploaded.displayName}",
+                        importBytesLabel = null,
+                        importBytesProgress = null,
                     )
                 }
 
@@ -2489,6 +2501,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         importProgress = null,
                         importLabel = null,
                         importBytesLabel = null,
+                        importBytesProgress = null,
                     )
                 }
             }
@@ -2835,6 +2848,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     importProgress = 0f,
                     importLabel = name,
                     importBytesLabel = null,
+                    importBytesProgress = null,
                 )
             }
             var cachedFile: File? = null
@@ -2851,6 +2865,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             importProgress = (info.fraction * 0.50f).coerceIn(0f, 0.50f),
                             importLabel = info.fileName,
                             importBytesLabel = bytesText,
+                            importBytesProgress = info.fraction.takeIf { info.totalBytes > 0L },
                         )
                     }
                 }
@@ -2868,6 +2883,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         importProgress = 0.55f,
                         importLabel = "جاري تجهيز ودمج المقطع: ${uploaded.displayName}",
+                        importBytesLabel = null,
+                        importBytesProgress = null,
                     )
                 }
 
@@ -2946,6 +2963,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         importProgress = null,
                         importLabel = null,
                         importBytesLabel = null,
+                        importBytesProgress = null,
                     )
                 }
             }
@@ -5016,6 +5034,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     importProgress = 0f,
                     importLabel = resolvedName,
                     importBytesLabel = null,
+                    importBytesProgress = null,
                 )
             }
             var tempVideoFile: File? = null
@@ -5034,6 +5053,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             importProgress = (info.fraction * 0.40f).coerceIn(0f, 0.40f),
                             importLabel = info.fileName,
                             importBytesLabel = bytesText,
+                            importBytesProgress = info.fraction.takeIf { info.totalBytes > 0L },
                         )
                     }
                 }
@@ -5051,6 +5071,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         importProgress = 0.42f,
                         importLabel = "جاري فصل المسار الصوتي من الفيديو: ${uploaded.displayName}",
+                        importBytesLabel = null,
+                        importBytesProgress = null,
                     )
                 }
                 val extractedFile = AudioDecoder.extractAudioTrackFromVideoFile(app, uploaded.file) { frac ->
@@ -5170,6 +5192,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         importProgress = null,
                         importLabel = null,
                         importBytesLabel = null,
+                        importBytesProgress = null,
                     )
                 }
             }
@@ -5353,6 +5376,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
             return
         }
+        if (TtsTextLimits.countWords(text) > TtsTextLimits.MAX_WORDS) {
+            _uiState.update {
+                it.copy(
+                    ttsUiState = it.ttsUiState.copy(
+                        errorMessage = if (lang == AppLanguage.EN) {
+                            "Text is limited to ${TtsTextLimits.MAX_WORDS} words."
+                        } else {
+                            "الحد الأقصى للنص هو ${TtsTextLimits.MAX_WORDS} كلمة."
+                        },
+                    ),
+                )
+            }
+            return
+        }
         val engineMode = TtsEngineMode.NABRA_ONNX_DIRECT
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
@@ -5389,6 +5426,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     persona = persona,
                     acousticMode = acousticMode,
                     autoDownloadIfOnline = allowAutoDownload,
+                    fixedSid = NabraOnnxDirectEngine.DEFAULT_FIXED_SID,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -5526,8 +5564,22 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
     ) {
-        if (text.isBlank()) return
         val lang = _uiState.value.language
+        if (TtsTextLimits.countWords(text) > TtsTextLimits.MAX_WORDS) {
+            _uiState.update {
+                it.copy(
+                    ttsUiState = it.ttsUiState.copy(
+                        errorMessage = if (lang == AppLanguage.EN) {
+                            "Text is limited to ${TtsTextLimits.MAX_WORDS} words."
+                        } else {
+                            "الحد الأقصى للنص هو ${TtsTextLimits.MAX_WORDS} كلمة."
+                        },
+                    ),
+                )
+            }
+            return
+        }
+        if (text.isBlank()) return
         val engineMode = TtsEngineMode.NABRA_ONNX_DIRECT
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
@@ -5559,6 +5611,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
                     persona = persona,
                     acousticMode = acousticMode,
+                    fixedSid = NabraOnnxDirectEngine.DEFAULT_FIXED_SID,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
