@@ -166,7 +166,7 @@ class EchoReverbProcessor(private val sampleRate: Int = 44100) {
             sampleRate * 0.02f,
             (echoBufL.size - 16).toFloat(),
         )
-        val targetFeedback = clamp(p.feedback, 0f, 0.92f)
+        val targetFeedback = clamp(p.feedback, 0f, 0.86f)
         val targetWet = clamp(p.wetDryMix, 0f, 1f)
         val targetWidth = clamp(p.stereoWidth, 0f, 1f)
         if (targetWet <= 0.0005f && smoothWetMix <= 0.0005f) return
@@ -233,11 +233,13 @@ class EchoReverbProcessor(private val sampleRate: Int = 44100) {
             val echoOutL = (tapL1 * 0.58f + tapL2 * 0.27f + tapL3 * 0.15f) * smoothEchoStrength
             val echoOutR = (tapR1 * 0.58f + tapR2 * 0.27f + tapR3 * 0.15f) * smoothEchoStrength
 
-            val pingCross = 0.25f + smoothStereoWidth * 0.55f
-            val fbCoeff = smoothFeedback * (0.55f + smoothEchoDepth * 0.4f)
+            val pingCross = 0.25f + smoothStereoWidth * 0.50f
+            val fbCoeff = clamp(smoothFeedback * (0.58f + smoothEchoDepth * 0.30f), 0f, 0.78f)
             val echoColor = 0.35f + (1f - damp) * 0.45f
-            val rawFbL = tankInL + (tapL1 * (1f - pingCross) + tapR1 * pingCross) * fbCoeff * smoothEchoDepth
-            val rawFbR = tankInR + (tapR1 * (1f - pingCross) + tapL1 * pingCross) * fbCoeff * smoothEchoDepth
+            val fbReturnL = (tapL1 * (1f - pingCross) + tapR1 * pingCross) * fbCoeff
+            val fbReturnR = (tapR1 * (1f - pingCross) + tapL1 * pingCross) * fbCoeff
+            val rawFbL = tankInL * 0.88f + tanh((fbReturnL * 0.85).toDouble()).toFloat()
+            val rawFbR = tankInR * 0.88f + tanh((fbReturnR * 0.85).toDouble()).toFloat()
 
             echoLpL += (rawFbL - echoLpL) * echoColor
             echoLpR += (rawFbR - echoLpR) * echoColor
@@ -308,21 +310,21 @@ class EchoReverbProcessor(private val sampleRate: Int = 44100) {
             val reverbTailL = ((h0 + h2) * 0.22f + diffL * 0.85f) * lateGain * tailDepth
             val reverbTailR = ((h1 + h3) * 0.22f + diffR * 0.85f) * lateGain * tailDepth
 
-            val rawWetL = echoOutL * 0.85f + earlyL + reverbTailL
-            val rawWetR = echoOutR * 0.85f + earlyR + reverbTailR
+            val rawWetL = echoOutL * 0.68f + earlyL * 0.82f + reverbTailL * 0.82f
+            val rawWetR = echoOutR * 0.68f + earlyR * 0.82f + reverbTailR * 0.82f
             val wetL = wetToneLpf.processLeft(rawWetL)
             val wetR = wetToneLpf.processRight(rawWetR)
 
             val mid = (wetL + wetR) * 0.5f
-            val side = (wetL - wetR) * 0.5f * (0.3f + smoothStereoWidth * 1.35f)
+            val side = (wetL - wetR) * 0.5f * (0.3f + smoothStereoWidth * 1.25f)
             val wideWetL = mid + side
             val wideWetR = mid - side
 
-            val dryKeep = 1f - smoothWetMix * 0.45f
-            val wetGain = smoothWetMix * 1.15f
+            val dryKeep = 1f - smoothWetMix * 0.40f
+            val wetGain = smoothWetMix * 0.85f
 
-            left[i] = tanh((dryL * dryKeep + wideWetL * wetGain).toDouble()).toFloat()
-            right[i] = tanh((dryR * dryKeep + wideWetR * wetGain).toDouble()).toFloat()
+            left[i] = (0.94 * tanh(((dryL * dryKeep + wideWetL * wetGain) * 0.92).toDouble())).toFloat()
+            right[i] = (0.94 * tanh(((dryR * dryKeep + wideWetR * wetGain) * 0.92).toDouble())).toFloat()
         }
     }
 }

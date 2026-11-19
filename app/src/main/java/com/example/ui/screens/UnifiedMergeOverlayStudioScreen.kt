@@ -68,10 +68,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -79,6 +81,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -1094,7 +1097,6 @@ private fun DualTrackInteractiveTimelineCard(
                 ) {
                     val laneWidthDp = maxWidth
                     val laneWidthPx = with(LocalDensity.current) { laneWidthDp.toPx().coerceAtLeast(1f) }
-                    val playbackState = playbackFlow.collectAsStateWithLifecycle()
                     val latestParams by rememberUpdatedState(params)
 
                     Column(
@@ -1209,10 +1211,11 @@ private fun DualTrackInteractiveTimelineCard(
                         }
                     }
 
-                    // Continuous vertical synchronized Playhead spanning both tracks
+                    // Continuous vertical synchronized 60fps Playhead spanning both tracks
                     TimelinePlayheadOverlay(
-                        playbackState = playbackState,
+                        playbackFlow = playbackFlow,
                         spanMs = spanMs,
+                        laneWidthPx = laneWidthPx,
                         modifier = Modifier.matchParentSize(),
                     )
                 }
@@ -1223,24 +1226,56 @@ private fun DualTrackInteractiveTimelineCard(
 
 @Composable
 private fun TimelinePlayheadOverlay(
-    playbackState: State<PlaybackTelemetry>,
+    playbackFlow: StateFlow<PlaybackTelemetry>,
     spanMs: Long,
+    laneWidthPx: Float,
     modifier: Modifier = Modifier,
 ) {
-    Canvas(modifier = modifier) {
-        val playheadFrac = (playbackState.value.positionMs.toFloat() / spanMs.toFloat()).coerceIn(0f, 1f)
-        val px = (playheadFrac * size.width).coerceIn(2f, size.width - 2f)
-        drawLine(
-            color = StudioColors.TextPrimary,
-            start = Offset(px, 0f),
-            end = Offset(px, size.height),
-            strokeWidth = 2.2.dp.toPx(),
-        )
-        drawCircle(
-            color = StudioColors.Cyan,
-            radius = 5.dp.toPx(),
-            center = Offset(px, 12.dp.toPx()),
-        )
+    val playbackState by playbackFlow.collectAsStateWithLifecycle()
+    var smoothPosMs by remember { mutableLongStateOf(playbackState.positionMs) }
+
+    LaunchedEffect(playbackState.positionMs, playbackState.isPlaying, spanMs) {
+        smoothPosMs = playbackState.positionMs
+        if (!playbackState.isPlaying) return@LaunchedEffect
+        val anchor = playbackState.positionMs
+        val startNanos = withFrameNanos { it }
+        while (true) {
+            withFrameNanos { nowNanos ->
+                val elapsed = ((nowNanos - startNanos) / 1_000_000L).coerceAtLeast(0L)
+                smoothPosMs = if (spanMs > 0L) (anchor + elapsed).coerceIn(0L, spanMs) else anchor + elapsed
+            }
+        }
+    }
+
+    val density = LocalDensity.current
+    val indicatorWidthDp = 12.dp
+    val halfIndicatorPx = with(density) { (indicatorWidthDp / 2f).toPx() }
+    val safeSpan = spanMs.coerceAtLeast(1L)
+    val playheadFrac = (smoothPosMs.toFloat() / safeSpan.toFloat()).coerceIn(0f, 1f)
+    val px = (playheadFrac * laneWidthPx).coerceIn(2f, (laneWidthPx - 2f).coerceAtLeast(2f))
+
+    Box(modifier = modifier, contentAlignment = Alignment.TopStart) {
+        Canvas(
+            modifier = Modifier
+                .width(indicatorWidthDp)
+                .fillMaxHeight()
+                .graphicsLayer {
+                    translationX = px - halfIndicatorPx
+                },
+        ) {
+            val cx = size.width / 2f
+            drawLine(
+                color = StudioColors.TextPrimary,
+                start = Offset(cx, 0f),
+                end = Offset(cx, size.height),
+                strokeWidth = 2.2.dp.toPx(),
+            )
+            drawCircle(
+                color = StudioColors.Cyan,
+                radius = 5.dp.toPx(),
+                center = Offset(cx, 12.dp.toPx()),
+            )
+        }
     }
 }
 

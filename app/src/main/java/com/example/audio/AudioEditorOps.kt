@@ -463,7 +463,7 @@ fun formatDurationMs(ms: Long): String {
     val totalSeconds = max(0L, ms / 1000L)
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
-    return "%02d:%02d".format(minutes, seconds)
+    return "%02d:%02d".format(java.util.Locale.US, minutes, seconds)
 }
 
 fun formatDurationCentisMs(ms: Long): String {

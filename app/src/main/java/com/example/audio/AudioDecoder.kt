@@ -8,6 +8,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import com.aistudio.voicepro.sonixk.RealWaveformExtractor
 import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.CancellationException
@@ -270,7 +271,8 @@ object AudioDecoder {
      */
     suspend fun inspectLargeAudioStreaming(
         file: File,
-        buckets: Int = 120,
+        buckets: Int = 800,
+        context: Context? = null,
         onProgress: (Float) -> Unit,
     ): StreamedAudioMetadata? = withContext(Dispatchers.IO) {
         if (!file.exists() || file.length() <= 0L) return@withContext null
@@ -280,22 +282,35 @@ object AudioDecoder {
         val wavHeader = if (isRiffWavHeader(file)) parseWavHeaderMeta(file) else null
         val probe = if (wavHeader == null) probeAudioHeaderQuick(file) else null
         var durationMs = wavHeader?.durationMs ?: probe?.durationMs ?: 0L
+        if (durationMs <= 0L) {
+            durationMs = RealWaveformExtractor.extractTrueDurationMs(file)
+        }
         val sampleRate = wavHeader?.sampleRate ?: probe?.sampleRate ?: TARGET_SAMPLE_RATE
         val channelCount = wavHeader?.channels ?: probe?.channelCount ?: 2
 
         if (durationMs <= 0L) {
-            // Rough safe estimate (~128 kbps) only if container lacks duration header
+            // Safe rough fallback only if container, MMR, and FFprobe all lack duration headers
             durationMs = ((file.length() * 8L) / 128L).coerceAtLeast(1000L)
         }
         onProgress(0.18f)
 
         val safeBuckets = buckets.coerceIn(64, 1500)
-        val peaks: List<Float> = when {
-            wavHeader != null -> extractWavPeaksChunked8K(file, wavHeader, safeBuckets) { f ->
+        val peaks: List<Float> = RealWaveformExtractor.extractPeaks(
+            file = file,
+            buckets = safeBuckets,
+            context = context,
+            durationHintMs = durationMs,
+            onProgress = { f ->
                 onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
-            }
-            else -> extractCompressedPeaksFastZeroRam(file, durationMs, safeBuckets) { f ->
-                onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
+            },
+        ).ifEmpty {
+            when {
+                wavHeader != null -> extractWavPeaksChunked8K(file, wavHeader, safeBuckets) { f ->
+                    onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
+                }
+                else -> extractCompressedPeaksFastZeroRam(file, durationMs, safeBuckets) { f ->
+                    onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
+                }
             }
         }
 

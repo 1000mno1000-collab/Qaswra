@@ -122,16 +122,6 @@ fun EchoReverbScreen(
     val density = LocalDensity.current
     val rippleStroke = remember(density) { Stroke(width = with(density) { 1.5.dp.toPx() }) }
     val trailPoints = remember { mutableStateListOf<Offset>() }
-    val rippleTransition = rememberInfiniteTransition(label = "echoRipple")
-    val ripplePhase by rippleTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2600, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "ripplePhase",
-    )
 
     LaunchedEffect(Unit) {
         viewModel.beginLiveToolSession("echo_reverb")
@@ -366,10 +356,10 @@ fun EchoReverbScreen(
                         }
                         .testTag("echo_spatial_pad"),
                 ) {
+                    // Static pad glow, grid, trail & glowing orb (does not recompose at 60fps)
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val orbPos = Offset(padX * size.width, (1f - padY) * size.height)
 
-                        // Radial glow centered on orb
                         drawCircle(
                             brush = Brush.radialGradient(
                                 colors = listOf(
@@ -384,7 +374,6 @@ fun EchoReverbScreen(
                             radius = size.minDimension * 0.55f,
                         )
 
-                        // 4x4 grid crosshairs
                         for (i in 1..3) {
                             val gx = size.width * (i / 4f)
                             val gy = size.height * (i / 4f)
@@ -402,20 +391,6 @@ fun EchoReverbScreen(
                             )
                         }
 
-                        // 3 animated concentric ripple rings
-                        for (ringIdx in 0..2) {
-                            val phase = (ripplePhase + ringIdx / 3f) % 1f
-                            val radius = (18.dp.toPx() + phase * size.minDimension * 0.42f)
-                            val alpha = (1f - phase) * 0.55f
-                            drawCircle(
-                                color = StudioColors.Cyan.copy(alpha = alpha),
-                                radius = radius,
-                                center = orbPos,
-                                style = rippleStroke,
-                            )
-                        }
-
-                        // Drag trail
                         if (trailPoints.size > 1) {
                             for (i in 1 until trailPoints.size) {
                                 val p0 = Offset(trailPoints[i - 1].x * size.width, (1f - trailPoints[i - 1].y) * size.height)
@@ -431,22 +406,6 @@ fun EchoReverbScreen(
                             }
                         }
 
-                        // 4 orbiting purple satellites proportional to stereoWidth
-                        val orbitRadius = (18f + echo.stereoWidth * 36f).dp.toPx()
-                        for (sat in 0..3) {
-                            val angle = ripplePhase * 2f * PI.toFloat() + sat * (PI.toFloat() / 2f)
-                            val satPos = Offset(
-                                x = orbPos.x + cos(angle) * orbitRadius,
-                                y = orbPos.y + sin(angle) * orbitRadius * 0.65f,
-                            )
-                            drawCircle(
-                                color = StudioColors.Violet.copy(alpha = 0.85f),
-                                radius = 4.dp.toPx(),
-                                center = satPos,
-                            )
-                        }
-
-                        // Center cyan glowing orb
                         drawCircle(
                             color = StudioColors.Cyan.copy(alpha = 0.35f),
                             radius = 18.dp.toPx(),
@@ -463,6 +422,15 @@ fun EchoReverbScreen(
                             center = orbPos,
                         )
                     }
+
+                    // Isolated 60fps radar ripple rings & orbiting satellites
+                    EchoSpatialRippleOverlay(
+                        padX = padX,
+                        padY = padY,
+                        stereoWidth = echo.stereoWidth,
+                        rippleStroke = rippleStroke,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
 
                 // 3 Telemetry Badges
@@ -505,6 +473,20 @@ fun EchoReverbScreen(
                 )
 
                 StudioParamSlider(
+                    label = t(lang, "param_echo_strength"),
+                    value = echo.echoStrength,
+                    min = 0f,
+                    max = 1f,
+                    formattedValue = "${(echo.echoStrength * 100f).roundToInt()}%",
+                    accentColor = StudioColors.Emerald,
+                    testTag = "echo_strength_slider",
+                    onValueChange = { v ->
+                        viewModel.updateEchoReverbParams { it.copy(echoStrength = v) }
+                        viewModel.ensureLivePreviewPlaying()
+                    },
+                )
+
+                StudioParamSlider(
                     label = t(lang, "param_delay_time"),
                     value = echo.delayTimeMs,
                     min = 40f,
@@ -517,18 +499,24 @@ fun EchoReverbScreen(
                         viewModel.ensureLivePreviewPlaying()
                     },
                 )
+
+                StudioParamSlider(
+                    label = t(lang, "param_feedback"),
+                    value = echo.feedback,
+                    min = 0f,
+                    max = 0.86f,
+                    formattedValue = "${(echo.feedback * 100f).roundToInt()}%",
+                    accentColor = StudioColors.Amber,
+                    testTag = "echo_feedback_slider",
+                    onValueChange = { v ->
+                        viewModel.updateEchoReverbParams { it.copy(feedback = v) }
+                        viewModel.ensureLivePreviewPlaying()
+                    },
+                )
             }
         }
 
         if (!uiState.isSimpleEchoMode) {
-            StudioSectionCard(
-                title = t(lang, "echo_node_core"),
-                subtitle = "${t(lang, "param_echo_strength")}, ${t(lang, "param_echo_depth")}, ${t(lang, "param_feedback")}",
-                icon = Icons.Rounded.GraphicEq,
-                accentColor = StudioColors.Cyan,
-                testTag = "echo_group_core",
-                onClick = { onOpenDetail(EchoDetailGroup.CORE) },
-            )
             StudioSectionCard(
                 title = t(lang, "echo_node_reflections"),
                 subtitle = "${t(lang, "param_early_reflections")}, ${t(lang, "param_late_reflections")}, ${t(lang, "param_diffusion")}",
@@ -573,6 +561,56 @@ fun EchoReverbScreen(
         onDismiss = { saveDraftDialogOpen = false },
         onSaveDraft = { draftName -> viewModel.saveCloudDraft(draftName) },
     )
+}
+
+@Composable
+private fun EchoSpatialRippleOverlay(
+    padX: Float,
+    padY: Float,
+    stereoWidth: Float,
+    rippleStroke: Stroke,
+    modifier: Modifier = Modifier,
+) {
+    val rippleTransition = rememberInfiniteTransition(label = "echoRipple")
+    val ripplePhase by rippleTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "ripplePhase",
+    )
+
+    Canvas(modifier = modifier) {
+        val orbPos = Offset(padX * size.width, (1f - padY) * size.height)
+
+        for (ringIdx in 0..2) {
+            val phase = (ripplePhase + ringIdx / 3f) % 1f
+            val radius = 18.dp.toPx() + phase * size.minDimension * 0.42f
+            val alpha = (1f - phase) * 0.55f
+            drawCircle(
+                color = StudioColors.Cyan.copy(alpha = alpha),
+                radius = radius,
+                center = orbPos,
+                style = rippleStroke,
+            )
+        }
+
+        val orbitRadius = (18f + stereoWidth * 36f).dp.toPx()
+        for (sat in 0..3) {
+            val angle = ripplePhase * 2f * PI.toFloat() + sat * (PI.toFloat() / 2f)
+            val satPos = Offset(
+                x = orbPos.x + cos(angle) * orbitRadius,
+                y = orbPos.y + sin(angle) * orbitRadius * 0.65f,
+            )
+            drawCircle(
+                color = StudioColors.Violet.copy(alpha = 0.85f),
+                radius = 4.dp.toPx(),
+                center = satPos,
+            )
+        }
+    }
 }
 
 @Composable
@@ -814,19 +852,6 @@ fun EchoDetailScreen(
                             testTag = "echo_detail_damping",
                             onValueChange = { v ->
                                 viewModel.updateEchoReverbParams { it.copy(damping = v) }
-                                viewModel.ensureLivePreviewPlaying()
-                            },
-                        )
-                        StudioParamSlider(
-                            label = t(lang, "param_wet_dry"),
-                            value = echo.wetDryMix,
-                            min = 0f,
-                            max = 1f,
-                            formattedValue = "${(echo.wetDryMix * 100f).roundToInt()}%",
-                            accentColor = StudioColors.Cyan,
-                            testTag = "echo_detail_wetdry",
-                            onValueChange = { v ->
-                                viewModel.updateEchoReverbParams { it.copy(wetDryMix = v) }
                                 viewModel.ensureLivePreviewPlaying()
                             },
                         )

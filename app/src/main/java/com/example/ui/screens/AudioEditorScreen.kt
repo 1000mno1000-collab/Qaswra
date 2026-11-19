@@ -14,11 +14,13 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,16 +40,12 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.Crop
-import androidx.compose.material.icons.rounded.ExpandLess
-import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.SelectAll
-import androidx.compose.material.icons.rounded.SpatialAudioOff
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.ZoomIn
 import androidx.compose.material.icons.rounded.ZoomOut
@@ -63,8 +61,6 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -72,37 +68,40 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.audio.formatDurationCentisMs
 import com.example.audio.AudioSignalAnalyzer
+import com.example.audio.formatDurationCentisMs
 import com.example.audio.formatDurationMs
 import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.AudioPickerTarget
-import com.example.model.TTS_DIALECTS
-import com.example.model.TtsDeliveryStyle
-import com.example.model.TtsGender
-import com.example.model.VOICE_CHARACTER_PRESETS
+import com.example.model.PlaybackTelemetry
 import com.example.studio.ui.lit
 import com.example.ui.components.ExportFormatDialog
 import com.example.ui.components.PreviewAndApplyActionRow
@@ -113,6 +112,8 @@ import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
+import kotlinx.coroutines.flow.StateFlow
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.hypot
@@ -140,16 +141,6 @@ fun AudioEditorScreen(
     var mainMixGain by remember { mutableFloatStateOf(1.0f) }
     var bgMixGain by remember { mutableFloatStateOf(0.45f) }
 
-    var showVoiceCard by remember { mutableStateOf(false) }
-    var selectedCharId by remember { mutableStateOf<String?>(null) }
-    var charPitch by remember { mutableFloatStateOf(0f) }
-    var charFormant by remember { mutableFloatStateOf(1.0f) }
-
-    var showTtsCard by remember { mutableStateOf(false) }
-    var ttsText by remember { mutableStateOf("") }
-    var selectedDialectId by remember { mutableStateOf(TTS_DIALECTS.first().id) }
-    var selectedTtsStyle by remember { mutableStateOf(TtsDeliveryStyle.NATURAL_WARM) }
-
     var exportDialogOpen by remember { mutableStateOf(false) }
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
@@ -166,7 +157,7 @@ fun AudioEditorScreen(
         val restored = viewModel.consumeRestoredToolSession("editor")
         if (restored != null) {
             val fp = restored.floatParams
-            zoomLevel = (fp["zoomLevel"] ?: 1.0f).coerceIn(1f, 10f)
+            zoomLevel = (fp["zoomLevel"] ?: 1.0f).coerceIn(1f, 15f)
             panFraction = panFraction.coerceIn(0f, (1f - 1f / zoomLevel).coerceAtLeast(0f))
             autoFadeEdges = (fp["autoFadeEdges"] ?: 1f) >= 0.5f
             fadeInSec = (fp["fadeInSec"] ?: 0f).coerceIn(0f, 10f)
@@ -393,411 +384,492 @@ fun AudioEditorScreen(
                     }
                 }
 
-                // Zoom Bar (1.0x .. 10.0x)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    IconButton(
-                        onClick = {
-                            val nextZoom = (zoomLevel - 0.5f).coerceAtLeast(1f)
-                            val oldSpan = 1f / zoomLevel
-                            val newSpan = 1f / nextZoom
-                            val center = panFraction + oldSpan * 0.5f
-                            zoomLevel = nextZoom
-                            panFraction = (center - newSpan * 0.5f).coerceIn(0f, (1f - newSpan).coerceAtLeast(0f))
-                        },
-                        enabled = zoomLevel > 1f,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("editor_zoom_out_button"),
+                // Enforce consistent Left-to-Right timeline axis across Zoom, Waveform, Playhead, and Start/End boxes
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.ZoomOut,
-                            contentDescription = t(lang, "editor_zoom_label"),
-                            tint = StudioColors.Cyan,
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
+                        // Zoom Bar (1.0x .. 15.0x)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(
-                                text = t(lang, "editor_zoom_label"),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = StudioColors.TextSecondary,
-                            )
-                            Text(
-                                text = "${"%.1f".format(zoomLevel)}x",
-                                style = TelemetryTextStyle.copy(fontSize = 11.sp),
-                                color = StudioColors.Cyan,
-                            )
+                            IconButton(
+                                onClick = {
+                                    val nextZoom = (zoomLevel - 0.5f).coerceAtLeast(1f)
+                                    val oldSpan = 1f / zoomLevel
+                                    val newSpan = 1f / nextZoom
+                                    val center = panFraction + oldSpan * 0.5f
+                                    zoomLevel = nextZoom
+                                    panFraction = (center - newSpan * 0.5f).coerceIn(0f, (1f - newSpan).coerceAtLeast(0f))
+                                },
+                                enabled = zoomLevel > 1f,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("editor_zoom_out_button"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ZoomOut,
+                                    contentDescription = t(lang, "editor_zoom_label"),
+                                    tint = StudioColors.Cyan,
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "${"%.1f".format(Locale.US, zoomLevel)}x",
+                                        style = TelemetryTextStyle.copy(fontSize = 11.sp),
+                                        color = StudioColors.Cyan,
+                                        maxLines = 1,
+                                    )
+                                    Text(
+                                        text = t(lang, "editor_zoom_label"),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = StudioColors.TextSecondary,
+                                        maxLines = 1,
+                                    )
+                                }
+                                Slider(
+                                    value = zoomLevel,
+                                    onValueChange = { next ->
+                                        val clamped = next.coerceIn(1f, 15f)
+                                        val oldSpan = 1f / zoomLevel
+                                        val newSpan = 1f / clamped
+                                        val center = panFraction + oldSpan * 0.5f
+                                        zoomLevel = clamped
+                                        panFraction = (center - newSpan * 0.5f).coerceIn(0f, (1f - newSpan).coerceAtLeast(0f))
+                                    },
+                                    valueRange = 1f..15f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = StudioColors.Cyan,
+                                        activeTrackColor = StudioColors.Cyan,
+                                        inactiveTrackColor = StudioColors.BgTop,
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("editor_zoom_slider"),
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    val nextZoom = (zoomLevel + 0.5f).coerceAtMost(15f)
+                                    val oldSpan = 1f / zoomLevel
+                                    val newSpan = 1f / nextZoom
+                                    val center = panFraction + oldSpan * 0.5f
+                                    zoomLevel = nextZoom
+                                    panFraction = (center - newSpan * 0.5f).coerceIn(0f, (1f - newSpan).coerceAtLeast(0f))
+                                },
+                                enabled = zoomLevel < 15f,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("editor_zoom_in_button"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ZoomIn,
+                                    contentDescription = t(lang, "editor_zoom_label"),
+                                    tint = StudioColors.Cyan,
+                                )
+                            }
                         }
-                        Slider(
-                            value = zoomLevel,
-                            onValueChange = { next ->
-                                val clamped = next.coerceIn(1f, 10f)
-                                val oldSpan = 1f / zoomLevel
-                                val newSpan = 1f / clamped
-                                val center = panFraction + oldSpan * 0.5f
-                                zoomLevel = clamped
-                                panFraction = (center - newSpan * 0.5f).coerceIn(0f, (1f - newSpan).coerceAtLeast(0f))
-                            },
-                            valueRange = 1f..10f,
-                            colors = SliderDefaults.colors(
-                                thumbColor = StudioColors.Cyan,
-                                activeTrackColor = StudioColors.Cyan,
-                                inactiveTrackColor = StudioColors.BgTop,
-                            ),
+
+                        // Interactive Pinch-to-Zoom + Horizontal Pan + Viewport-Culled Waveform Canvas
+                        val density = LocalDensity.current
+                        val edgePadPx = remember(density) { with(density) { 10.dp.toPx() } }
+                        val handleRadiusPx = remember(density) { with(density) { 8.dp.toPx() } }
+                        val handleHitRadiusPx = remember(density) { with(density) { 28.dp.toPx() } }
+                        val lineHitRadiusPx = remember(density) { with(density) { 18.dp.toPx() } }
+                        val topHandleYPx = remember(density) { with(density) { 14.dp.toPx() } }
+                        val latestPan by rememberUpdatedState(panFraction)
+
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .testTag("editor_zoom_slider"),
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            val nextZoom = (zoomLevel + 0.5f).coerceAtMost(10f)
-                            val oldSpan = 1f / zoomLevel
-                            val newSpan = 1f / nextZoom
-                            val center = panFraction + oldSpan * 0.5f
-                            zoomLevel = nextZoom
-                            panFraction = (center - newSpan * 0.5f).coerceIn(0f, (1f - newSpan).coerceAtLeast(0f))
-                        },
-                        enabled = zoomLevel < 10f,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("editor_zoom_in_button"),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.ZoomIn,
-                            contentDescription = t(lang, "editor_zoom_label"),
-                            tint = StudioColors.Cyan,
-                        )
-                    }
-                }
+                                .height(154.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(StudioColors.BgTop)
+                                .border(1.dp, StudioColors.BorderBright.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                                .pointerInput(uiState.hasAudio) {
+                                    if (!uiState.hasAudio) return@pointerInput
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        val downPos = down.position
+                                        val w = size.width.toFloat().coerceAtLeast(1f)
+                                        val h = size.height.toFloat().coerceAtLeast(1f)
+                                        val usableW = (w - 2f * edgePadPx).coerceAtLeast(1f)
 
-                // Interactive Pinch-to-Zoom + Horizontal Pan + Viewport-Culled Waveform Canvas
-                val density = LocalDensity.current
-                val edgePadPx = remember(density) { with(density) { 10.dp.toPx() } }
-                val handleRadiusPx = remember(density) { with(density) { 8.dp.toPx() } }
-                val handleHitRadiusPx = remember(density) { with(density) { 28.dp.toPx() } }
-                val topHandleYPx = remember(density) { with(density) { 14.dp.toPx() } }
-                val latestPan by rememberUpdatedState(panFraction)
+                                        val curZoom = latestZoom.coerceIn(1f, 15f)
+                                        val curSpan = 1f / curZoom
+                                        val curStart = latestPan.coerceIn(0f, (1f - curSpan).coerceAtLeast(0f))
 
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(154.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(StudioColors.BgTop)
-                        .border(1.dp, StudioColors.BorderBright.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
-                        .pointerInput(uiState.hasAudio) {
-                            if (!uiState.hasAudio) return@pointerInput
-                            awaitEachGesture {
-                                val down = awaitFirstDown(requireUnconsumed = false)
-                                val downPos = down.position
-                                val w = size.width.toFloat().coerceAtLeast(1f)
-                                val h = size.height.toFloat().coerceAtLeast(1f)
-                                val usableW = (w - 2f * edgePadPx).coerceAtLeast(1f)
+                                        fun fracToPx(f: Float): Float =
+                                            edgePadPx + ((f - curStart) / curSpan) * usableW
 
-                                val curZoom = latestZoom.coerceIn(1f, 10f)
-                                val curSpan = 1f / curZoom
-                                val curStart = latestPan.coerceIn(0f, (1f - curSpan).coerceAtLeast(0f))
-
-                                fun fracToPx(f: Float): Float =
-                                    edgePadPx + ((f - curStart) / curSpan) * usableW
-
-                                fun pxToFrac(x: Float): Float {
-                                    val z = latestZoom.coerceIn(1f, 10f)
-                                    val s = 1f / z
-                                    val p = latestPan.coerceIn(0f, (1f - s).coerceAtLeast(0f))
-                                    return (p + ((x - edgePadPx) / usableW) * s).coerceIn(0f, 1f)
-                                }
-
-                                val st0 = viewModel.uiState.value
-                                val sx0 = fracToPx(st0.trimStart)
-                                val ex0 = fracToPx(st0.trimEnd)
-                                val distStart = (downPos - Offset(sx0, topHandleYPx)).getDistance()
-                                val distEnd = (downPos - Offset(ex0, h - topHandleYPx)).getDistance()
-
-                                // mode: 0 = UNDECIDED, 1 = HANDLE_START, 2 = HANDLE_END, 3 = PAN, 4 = SCRUB, 5 = PINCH
-                                var gestureMode = when {
-                                    distStart <= handleHitRadiusPx && distStart <= distEnd -> 1
-                                    distEnd <= handleHitRadiusPx -> 2
-                                    else -> 0
-                                }
-                                var movedPastSlop = false
-
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    val pressed = event.changes.filter { it.pressed }
-                                    if (pressed.isEmpty()) {
-                                        if (!movedPastSlop && gestureMode == 0) {
-                                            viewModel.seekToFraction(pxToFrac(downPos.x))
+                                        fun pxToFrac(x: Float): Float {
+                                            val z = latestZoom.coerceIn(1f, 15f)
+                                            val s = 1f / z
+                                            val p = latestPan.coerceIn(0f, (1f - s).coerceAtLeast(0f))
+                                            return (p + ((x - edgePadPx) / usableW) * s).coerceIn(0f, 1f)
                                         }
-                                        break
-                                    }
-                                    if (pressed.size >= 2) {
-                                        gestureMode = 5
-                                        movedPastSlop = true
-                                        val zFactor = event.calculateZoom()
-                                        val panVec = event.calculatePan()
-                                        val centroid = event.calculateCentroid(useCurrent = true)
-                                        val oldZ = latestZoom.coerceIn(1f, 10f)
-                                        val oldSpan = 1f / oldZ
-                                        val oldPan = latestPan.coerceIn(0f, (1f - oldSpan).coerceAtLeast(0f))
-                                        val centroidNormX = ((centroid.x - edgePadPx) / usableW).coerceIn(0f, 1f)
-                                        val anchorFrac = (oldPan + centroidNormX * oldSpan).coerceIn(0f, 1f)
 
-                                        val newZ = (oldZ * zFactor).coerceIn(1f, 10f)
-                                        val newSpan = 1f / newZ
-                                        val maxP = (1f - newSpan).coerceAtLeast(0f)
-                                        var nextPan = anchorFrac - centroidNormX * newSpan
-                                        nextPan -= (panVec.x / usableW) * newSpan
-                                        zoomLevel = newZ
-                                        panFraction = nextPan.coerceIn(0f, maxP)
-                                        event.changes.forEach { it.consume() }
-                                        continue
-                                    }
+                                        val st0 = viewModel.uiState.value
+                                        val sx0 = fracToPx(st0.trimStart)
+                                        val ex0 = fracToPx(st0.trimEnd)
+                                        val distStart = (downPos - Offset(sx0, topHandleYPx)).getDistance()
+                                        val distEnd = (downPos - Offset(ex0, h - topHandleYPx)).getDistance()
+                                        val dxStart = abs(downPos.x - sx0)
+                                        val dxEnd = abs(downPos.x - ex0)
 
-                                    val change = pressed.first()
-                                    if (gestureMode == 0) {
-                                        val dx = change.position.x - downPos.x
-                                        val dy = change.position.y - downPos.y
-                                        if (hypot(dx, dy) > viewConfiguration.touchSlop) {
-                                            movedPastSlop = true
-                                            if (abs(dy) > abs(dx) * 1.15f) {
-                                                // Yield vertical scrolling to LazyColumn cleanly
+                                        // mode: 0 = UNDECIDED, 1 = HANDLE_START, 2 = HANDLE_END, 3 = PAN, 4 = SCRUB, 5 = PINCH
+                                        var gestureMode = when {
+                                            distStart <= handleHitRadiusPx && distStart <= distEnd -> 1
+                                            distEnd <= handleHitRadiusPx -> 2
+                                            dxStart <= lineHitRadiusPx && dxStart <= dxEnd -> 1
+                                            dxEnd <= lineHitRadiusPx -> 2
+                                            else -> 0
+                                        }
+                                        var movedPastSlop = false
+
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            val pressed = event.changes.filter { it.pressed }
+                                            if (pressed.isEmpty()) {
+                                                if (!movedPastSlop && gestureMode == 0) {
+                                                    viewModel.seekToFraction(pxToFrac(downPos.x))
+                                                }
                                                 break
                                             }
-                                            gestureMode = if (latestZoom > 1.02f) 3 else 4
+                                            if (pressed.size >= 2) {
+                                                gestureMode = 5
+                                                movedPastSlop = true
+                                                val zFactor = event.calculateZoom()
+                                                val panVec = event.calculatePan()
+                                                val centroid = event.calculateCentroid(useCurrent = true)
+                                                val oldZ = latestZoom.coerceIn(1f, 15f)
+                                                val oldSpan = 1f / oldZ
+                                                val oldPan = latestPan.coerceIn(0f, (1f - oldSpan).coerceAtLeast(0f))
+                                                val centroidNormX = ((centroid.x - edgePadPx) / usableW).coerceIn(0f, 1f)
+                                                val anchorFrac = (oldPan + centroidNormX * oldSpan).coerceIn(0f, 1f)
+
+                                                val newZ = (oldZ * zFactor).coerceIn(1f, 15f)
+                                                val newSpan = 1f / newZ
+                                                val maxP = (1f - newSpan).coerceAtLeast(0f)
+                                                var nextPan = anchorFrac - centroidNormX * newSpan
+                                                nextPan -= (panVec.x / usableW) * newSpan
+                                                zoomLevel = newZ
+                                                panFraction = nextPan.coerceIn(0f, maxP)
+                                                event.changes.forEach { it.consume() }
+                                                continue
+                                            }
+
+                                            val change = pressed.first()
+                                            if (gestureMode == 0) {
+                                                val dx = change.position.x - downPos.x
+                                                val dy = change.position.y - downPos.y
+                                                if (hypot(dx, dy) > viewConfiguration.touchSlop) {
+                                                    movedPastSlop = true
+                                                    if (abs(dy) > abs(dx) * 1.15f) {
+                                                        // Yield vertical scrolling to LazyColumn cleanly
+                                                        break
+                                                    }
+                                                    gestureMode = if (latestZoom > 1.02f) 3 else 4
+                                                }
+                                            }
+
+                                            when (gestureMode) {
+                                                1 -> {
+                                                    change.consume()
+                                                    val st = viewModel.uiState.value
+                                                    viewModel.updateTrimRange(pxToFrac(change.position.x), st.trimEnd)
+                                                }
+                                                2 -> {
+                                                    change.consume()
+                                                    val st = viewModel.uiState.value
+                                                    viewModel.updateTrimRange(st.trimStart, pxToFrac(change.position.x))
+                                                }
+                                                3 -> {
+                                                    change.consume()
+                                                    val dx = change.position.x - change.previousPosition.x
+                                                    val z = latestZoom.coerceIn(1f, 15f)
+                                                    val span = 1f / z
+                                                    val maxP = (1f - span).coerceAtLeast(0f)
+                                                    panFraction = (latestPan - (dx / usableW) * span).coerceIn(0f, maxP)
+                                                }
+                                                4 -> {
+                                                    change.consume()
+                                                    viewModel.seekToFraction(pxToFrac(change.position.x))
+                                                }
+                                            }
                                         }
                                     }
+                                }
+                                .testTag("editor_waveform_canvas"),
+                        ) {
+                            val peaks = remember(uiState.waveformPeaks) {
+                                if (uiState.waveformPeaks.isNotEmpty()) {
+                                    uiState.waveformPeaks
+                                } else {
+                                    List(120) { 0.08f }
+                                }
+                            }
 
-                                    when (gestureMode) {
-                                        1 -> {
-                                            change.consume()
-                                            val st = viewModel.uiState.value
-                                            viewModel.updateTrimRange(pxToFrac(change.position.x), st.trimEnd)
+                            // Static Waveform + Trim Handles Canvas (never recomposes on 60fps playhead ticks)
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val usableW = (size.width - 2f * edgePadPx).coerceAtLeast(1f)
+                                val visSpan = 1f / zoomLevel.coerceIn(1f, 15f)
+                                val visStart = panFraction.coerceIn(0f, (1f - visSpan).coerceAtLeast(0f))
+                                val visEnd = (visStart + visSpan).coerceAtMost(1f)
+
+                                fun fracToX(f: Float): Float =
+                                    edgePadPx + ((f - visStart) / visSpan) * usableW
+
+                                val sxRaw = fracToX(uiState.trimStart)
+                                val exRaw = fracToX(uiState.trimEnd)
+                                val sxClip = sxRaw.coerceIn(0f, size.width)
+                                val exClip = exRaw.coerceIn(0f, size.width)
+
+                                if (exClip > sxClip) {
+                                    drawRect(
+                                        color = StudioColors.Cyan.copy(alpha = 0.12f),
+                                        topLeft = Offset(sxClip, 0f),
+                                        size = Size((exClip - sxClip).coerceAtLeast(1f), size.height),
+                                    )
+                                }
+
+                                // Viewport-culled & column-pooled waveform bars so peaks stay sharp at 1.0x and ultra-detailed at 15.0x
+                                val count = peaks.size
+                                val startIdx = (visStart * count).toInt().coerceIn(0, max(0, count - 1))
+                                val endIdx = ceil((visEnd * count).toDouble()).toInt().coerceIn(startIdx + 1, count)
+                                val visibleBars = (endIdx - startIdx).coerceAtLeast(1)
+                                val maxCols = (usableW / 2.6.dp.toPx()).toInt().coerceIn(48, 220)
+                                val cy = size.height / 2f
+
+                                if (visibleBars <= maxCols) {
+                                    val slotW = usableW / visibleBars
+                                    val barW = (slotW * 0.62f).coerceIn(1.5.dp.toPx(), 6.dp.toPx())
+                                    for (i in startIdx until endIdx) {
+                                        val barFrac = (i + 0.5f) / count
+                                        val inSelection = barFrac in uiState.trimStart..uiState.trimEnd
+                                        val h = peaks[i].coerceIn(0.04f, 1f) * size.height * 0.86f
+                                        val x = fracToX(barFrac) - barW / 2f
+                                        drawRoundRect(
+                                            color = if (inSelection) StudioColors.Cyan else StudioColors.WaveformInactive.copy(alpha = 0.5f),
+                                            topLeft = Offset(x, cy - h / 2f),
+                                            size = Size(barW, h),
+                                            cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+                                        )
+                                    }
+                                } else {
+                                    val slotW = usableW / maxCols
+                                    val barW = (slotW * 0.64f).coerceIn(1.5.dp.toPx(), 4.5.dp.toPx())
+                                    for (c in 0 until maxCols) {
+                                        val b0 = startIdx + ((c.toLong() * visibleBars) / maxCols).toInt()
+                                        val b1 = (startIdx + (((c + 1).toLong() * visibleBars) / maxCols).toInt())
+                                            .coerceIn(b0 + 1, endIdx)
+                                        var peak = 0.04f
+                                        for (bi in b0 until b1) {
+                                            if (peaks[bi] > peak) peak = peaks[bi]
                                         }
-                                        2 -> {
-                                            change.consume()
-                                            val st = viewModel.uiState.value
-                                            viewModel.updateTrimRange(st.trimStart, pxToFrac(change.position.x))
+                                        val barFrac = ((b0 + b1) * 0.5f) / count
+                                        val inSelection = barFrac in uiState.trimStart..uiState.trimEnd
+                                        val h = peak.coerceIn(0.04f, 1f) * size.height * 0.86f
+                                        val x = fracToX(barFrac) - barW / 2f
+                                        drawRoundRect(
+                                            color = if (inSelection) StudioColors.Cyan else StudioColors.WaveformInactive.copy(alpha = 0.5f),
+                                            topLeft = Offset(x, cy - h / 2f),
+                                            size = Size(barW, h),
+                                            cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+                                        )
+                                    }
+                                }
+
+                                // StartHandle (Green — Left edge of selection)
+                                if (sxRaw in -handleRadiusPx..(size.width + handleRadiusPx)) {
+                                    val sxDraw = sxRaw.coerceIn(edgePadPx, (size.width - edgePadPx).coerceAtLeast(edgePadPx))
+                                    drawLine(
+                                        color = StudioColors.Emerald,
+                                        start = Offset(sxDraw, 0f),
+                                        end = Offset(sxDraw, size.height),
+                                        strokeWidth = 2.5.dp.toPx(),
+                                    )
+                                    drawCircle(
+                                        color = StudioColors.Emerald,
+                                        radius = handleRadiusPx,
+                                        center = Offset(sxDraw, topHandleYPx),
+                                    )
+                                    drawCircle(
+                                        color = StudioColors.BgTop,
+                                        radius = 2.5.dp.toPx(),
+                                        center = Offset(sxDraw, topHandleYPx),
+                                    )
+                                }
+
+                                // EndHandle (Red — Right edge of selection)
+                                if (exRaw in -handleRadiusPx..(size.width + handleRadiusPx)) {
+                                    val exDraw = exRaw.coerceIn(edgePadPx, (size.width - edgePadPx).coerceAtLeast(edgePadPx))
+                                    drawLine(
+                                        color = StudioColors.RoseBright,
+                                        start = Offset(exDraw, 0f),
+                                        end = Offset(exDraw, size.height),
+                                        strokeWidth = 2.5.dp.toPx(),
+                                    )
+                                    drawCircle(
+                                        color = StudioColors.RoseBright,
+                                        radius = handleRadiusPx,
+                                        center = Offset(exDraw, size.height - topHandleYPx),
+                                    )
+                                    drawCircle(
+                                        color = StudioColors.BgTop,
+                                        radius = 2.5.dp.toPx(),
+                                        center = Offset(exDraw, size.height - topHandleYPx),
+                                    )
+                                }
+                            }
+
+                            // Isolated 60fps Playhead Cursor (uses withFrameNanos + graphicsLayer GPU translation)
+                            EditorPlayheadOverlay(
+                                playbackFlow = viewModel.playbackTelemetry,
+                                durationMs = durationMs,
+                                zoomLevel = zoomLevel,
+                                panFraction = panFraction,
+                                edgePadPx = edgePadPx,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+
+                        // Centisecond Readouts + (-0.1s / +0.1s) Nudge Controls aligned 1:1 with Left(Start) & Right(End) handles
+                        val nudgeStepFrac = if (durationMs > 0L) (100f / durationMs.toFloat()).coerceAtLeast(0.0005f) else 0.01f
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = StudioColors.BgMid,
+                                border = BorderStroke(1.dp, StudioColors.Emerald.copy(alpha = 0.45f)),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        text = if (lang == AppLanguage.EN) "Start" else "البداية",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = StudioColors.Emerald.copy(alpha = 0.85f),
+                                        maxLines = 1,
+                                    )
+                                    Text(
+                                        text = formatDurationCentisMs(startMs),
+                                        style = TelemetryTextStyle.copy(fontWeight = FontWeight.Bold),
+                                        color = StudioColors.Emerald,
+                                        maxLines = 1,
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        OutlinedButton(
+                                            onClick = { viewModel.updateTrimRange(uiState.trimStart - nudgeStepFrac, uiState.trimEnd) },
+                                            enabled = uiState.hasAudio,
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .defaultMinSize(minHeight = 48.dp)
+                                                .testTag("editor_start_minus_button"),
+                                        ) {
+                                            Text(
+                                                text = "-0.1s",
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                            )
                                         }
-                                        3 -> {
-                                            change.consume()
-                                            val dx = change.position.x - change.previousPosition.x
-                                            val z = latestZoom.coerceIn(1f, 10f)
-                                            val span = 1f / z
-                                            val maxP = (1f - span).coerceAtLeast(0f)
-                                            panFraction = (latestPan - (dx / usableW) * span).coerceIn(0f, maxP)
-                                        }
-                                        4 -> {
-                                            change.consume()
-                                            viewModel.seekToFraction(pxToFrac(change.position.x))
+                                        OutlinedButton(
+                                            onClick = { viewModel.updateTrimRange(uiState.trimStart + nudgeStepFrac, uiState.trimEnd) },
+                                            enabled = uiState.hasAudio,
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .defaultMinSize(minHeight = 48.dp)
+                                                .testTag("editor_start_plus_button"),
+                                        ) {
+                                            Text(
+                                                text = "+0.1s",
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                            )
                                         }
                                     }
                                 }
                             }
-                        }
-                        .testTag("editor_waveform_canvas"),
-                ) {
-                    val peaks = if (uiState.waveformPeaks.isNotEmpty()) {
-                        uiState.waveformPeaks
-                    } else {
-                        List(120) { 0.08f }
-                    }
-                    val playbackState = viewModel.playbackTelemetry.collectAsStateWithLifecycle()
 
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val usableW = (size.width - 2f * edgePadPx).coerceAtLeast(1f)
-                        val visSpan = 1f / zoomLevel.coerceIn(1f, 10f)
-                        val visStart = panFraction.coerceIn(0f, (1f - visSpan).coerceAtLeast(0f))
-                        val visEnd = (visStart + visSpan).coerceAtMost(1f)
-
-                        fun fracToX(f: Float): Float =
-                            edgePadPx + ((f - visStart) / visSpan) * usableW
-
-                        val sxRaw = fracToX(uiState.trimStart)
-                        val exRaw = fracToX(uiState.trimEnd)
-                        val sxClip = sxRaw.coerceIn(0f, size.width)
-                        val exClip = exRaw.coerceIn(0f, size.width)
-
-                        if (exClip > sxClip) {
-                            drawRect(
-                                color = StudioColors.Cyan.copy(alpha = 0.12f),
-                                topLeft = Offset(sxClip, 0f),
-                                size = Size((exClip - sxClip).coerceAtLeast(1f), size.height),
-                            )
-                        }
-
-                        // Viewport-culled waveform bars for steady 60fps rendering
-                        val count = peaks.size
-                        val startIdx = (visStart * count).toInt().coerceIn(0, max(0, count - 1))
-                        val endIdx = ceil((visEnd * count).toDouble()).toInt().coerceIn(startIdx + 1, count)
-                        val visibleBars = (endIdx - startIdx).coerceAtLeast(1)
-                        val slotW = usableW / visibleBars
-                        val barW = (slotW * 0.62f).coerceIn(1.5.dp.toPx(), 6.dp.toPx())
-                        val cy = size.height / 2f
-
-                        for (i in startIdx until endIdx) {
-                            val barFrac = (i + 0.5f) / count
-                            val inSelection = barFrac in uiState.trimStart..uiState.trimEnd
-                            val h = peaks[i].coerceIn(0.06f, 1f) * size.height * 0.84f
-                            val x = fracToX(barFrac) - barW / 2f
-                            drawRoundRect(
-                                color = if (inSelection) StudioColors.Cyan else StudioColors.WaveformInactive.copy(alpha = 0.5f),
-                                topLeft = Offset(x, cy - h / 2f),
-                                size = Size(barW, h),
-                                cornerRadius = CornerRadius(barW / 2f, barW / 2f),
-                            )
-                        }
-
-                        val playFrac = if (durationMs > 0L) {
-                            (playbackState.value.positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                        } else {
-                            0f
-                        }
-                        if (playFrac in visStart..visEnd) {
-                            val px = fracToX(playFrac).coerceIn(2.dp.toPx(), (size.width - 2.dp.toPx()).coerceAtLeast(2.dp.toPx()))
-                            drawLine(
-                                color = StudioColors.RoseBright,
-                                start = Offset(px, 0f),
-                                end = Offset(px, size.height),
-                                strokeWidth = 2.5.dp.toPx(),
-                            )
-                            drawCircle(
-                                color = StudioColors.RoseBright,
-                                radius = 4.5.dp.toPx(),
-                                center = Offset(px, 6.dp.toPx()),
-                            )
-                        }
-
-                        if (sxRaw in -handleRadiusPx..(size.width + handleRadiusPx)) {
-                            val sxDraw = sxRaw.coerceIn(edgePadPx, (size.width - edgePadPx).coerceAtLeast(edgePadPx))
-                            drawLine(
-                                color = StudioColors.Emerald,
-                                start = Offset(sxDraw, 0f),
-                                end = Offset(sxDraw, size.height),
-                                strokeWidth = 2.5.dp.toPx(),
-                            )
-                            drawCircle(
-                                color = StudioColors.Emerald,
-                                radius = handleRadiusPx,
-                                center = Offset(sxDraw, topHandleYPx),
-                            )
-                            drawCircle(
-                                color = StudioColors.BgTop,
-                                radius = 2.5.dp.toPx(),
-                                center = Offset(sxDraw, topHandleYPx),
-                            )
-                        }
-
-                        if (exRaw in -handleRadiusPx..(size.width + handleRadiusPx)) {
-                            val exDraw = exRaw.coerceIn(edgePadPx, (size.width - edgePadPx).coerceAtLeast(edgePadPx))
-                            drawLine(
-                                color = StudioColors.Amber,
-                                start = Offset(exDraw, 0f),
-                                end = Offset(exDraw, size.height),
-                                strokeWidth = 2.5.dp.toPx(),
-                            )
-                            drawCircle(
-                                color = StudioColors.Amber,
-                                radius = handleRadiusPx,
-                                center = Offset(exDraw, size.height - topHandleYPx),
-                            )
-                            drawCircle(
-                                color = StudioColors.BgTop,
-                                radius = 2.5.dp.toPx(),
-                                center = Offset(exDraw, size.height - topHandleYPx),
-                            )
-                        }
-                    }
-                }
-
-                // Centisecond Readouts + (-0.1s / +0.1s) Nudge Controls
-                val nudgeStepFrac = if (durationMs > 0L) (100f / durationMs.toFloat()).coerceAtLeast(0.0005f) else 0.01f
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = StudioColors.BgMid,
-                        border = BorderStroke(1.dp, StudioColors.Emerald.copy(alpha = 0.4f)),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(8.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                text = formatDurationCentisMs(startMs),
-                                style = TelemetryTextStyle.copy(fontWeight = FontWeight.Bold),
-                                color = StudioColors.Emerald,
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(
-                                    onClick = { viewModel.updateTrimRange(uiState.trimStart - nudgeStepFrac, uiState.trimEnd) },
-                                    enabled = uiState.hasAudio,
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .defaultMinSize(minHeight = 48.dp)
-                                        .testTag("editor_start_minus_button"),
-                                ) { Text("-0.1s", fontSize = 11.sp) }
-                                OutlinedButton(
-                                    onClick = { viewModel.updateTrimRange(uiState.trimStart + nudgeStepFrac, uiState.trimEnd) },
-                                    enabled = uiState.hasAudio,
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .defaultMinSize(minHeight = 48.dp)
-                                        .testTag("editor_start_plus_button"),
-                                ) { Text("+0.1s", fontSize = 11.sp) }
-                            }
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = StudioColors.BgMid,
-                        border = BorderStroke(1.dp, StudioColors.Amber.copy(alpha = 0.4f)),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(8.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                text = formatDurationCentisMs(endMs),
-                                style = TelemetryTextStyle.copy(fontWeight = FontWeight.Bold),
-                                color = StudioColors.Amber,
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(
-                                    onClick = { viewModel.updateTrimRange(uiState.trimStart, uiState.trimEnd - nudgeStepFrac) },
-                                    enabled = uiState.hasAudio,
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .defaultMinSize(minHeight = 48.dp)
-                                        .testTag("editor_end_minus_button"),
-                                ) { Text("-0.1s", fontSize = 11.sp) }
-                                OutlinedButton(
-                                    onClick = { viewModel.updateTrimRange(uiState.trimStart, uiState.trimEnd + nudgeStepFrac) },
-                                    enabled = uiState.hasAudio,
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .defaultMinSize(minHeight = 48.dp)
-                                        .testTag("editor_end_plus_button"),
-                                ) { Text("+0.1s", fontSize = 11.sp) }
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = StudioColors.BgMid,
+                                border = BorderStroke(1.dp, StudioColors.RoseBright.copy(alpha = 0.45f)),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        text = if (lang == AppLanguage.EN) "End" else "النهاية",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = StudioColors.RoseBright.copy(alpha = 0.85f),
+                                        maxLines = 1,
+                                    )
+                                    Text(
+                                        text = formatDurationCentisMs(endMs),
+                                        style = TelemetryTextStyle.copy(fontWeight = FontWeight.Bold),
+                                        color = StudioColors.RoseBright,
+                                        maxLines = 1,
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        OutlinedButton(
+                                            onClick = { viewModel.updateTrimRange(uiState.trimStart, uiState.trimEnd - nudgeStepFrac) },
+                                            enabled = uiState.hasAudio,
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .defaultMinSize(minHeight = 48.dp)
+                                                .testTag("editor_end_minus_button"),
+                                        ) {
+                                            Text(
+                                                text = "-0.1s",
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                            )
+                                        }
+                                        OutlinedButton(
+                                            onClick = { viewModel.updateTrimRange(uiState.trimStart, uiState.trimEnd + nudgeStepFrac) },
+                                            enabled = uiState.hasAudio,
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .defaultMinSize(minHeight = 48.dp)
+                                                .testTag("editor_end_plus_button"),
+                                        ) {
+                                            Text(
+                                                text = "+0.1s",
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1011,7 +1083,7 @@ fun AudioEditorScreen(
         } // end item(key = "editor_clip_gain_card")
 
         item(key = "editor_fade_card") {
-        // Fade In & Fade Out Card (starts at 0.0s, Preview FIRST, preserves sliders)
+        // Fade In & Fade Out Card (clean 2 sliders + 1 unified Apply button — no duplicate preview/bottom buttons)
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -1045,73 +1117,26 @@ fun AudioEditorScreen(
                     onValueChange = { fadeOutSec = it },
                 )
 
-                val previewFadeInteraction = remember { MutableInteractionSource() }
+                val applyFadeInteraction = remember { MutableInteractionSource() }
                 Button(
-                    onClick = {
-                        viewModel.previewEditorSelectionOrFade(
-                            fadeInSec = fadeInSec,
-                            fadeOutSec = fadeOutSec,
-                            autoFadeEdges = autoFadeEdges,
-                            previewSelectionOnly = false,
-                        )
-                    },
-                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
-                    interactionSource = previewFadeInteraction,
+                    onClick = { viewModel.applyFadeInOutSeconds(fadeInSec, fadeOutSec) },
+                    enabled = uiState.hasAudio && (fadeInSec > 0.02f || fadeOutSec > 0.02f) && !uiState.isBusy && !uiState.isProcessing,
+                    interactionSource = applyFadeInteraction,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Cyan,
+                        containerColor = StudioColors.Emerald,
                         contentColor = StudioColors.BgTop,
                     ),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
-                        .lit(previewFadeInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                        .testTag("editor_fade_preview_button"),
+                        .lit(applyFadeInteraction, StudioColors.Emerald, cornerRadius = 14.dp)
+                        .testTag("editor_apply_fade_button"),
                 ) {
-                    Icon(
-                        imageVector = if (uiState.isToolPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
                     Text(
-                        text = if (uiState.isToolPreviewPlaying) t(lang, "stop_preview_edit") else t(lang, "preview_edit"),
+                        text = if (lang == AppLanguage.EN) "Apply Fade In / Out" else "تطبيق التدرج (Fade)",
                         style = MaterialTheme.typography.labelLarge,
                     )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    val fadeInInteraction = remember { MutableInteractionSource() }
-                    OutlinedButton(
-                        onClick = { viewModel.applyFadeInSeconds(fadeInSec) },
-                        enabled = uiState.hasAudio && fadeInSec > 0.02f && !uiState.isBusy && !uiState.isProcessing,
-                        interactionSource = fadeInInteraction,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(fadeInInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
-                            .testTag("editor_apply_fade_in_button"),
-                    ) {
-                        Text(t(lang, "fade_in_title"), maxLines = 1)
-                    }
-                    val fadeOutInteraction = remember { MutableInteractionSource() }
-                    OutlinedButton(
-                        onClick = { viewModel.applyFadeOutSeconds(fadeOutSec) },
-                        enabled = uiState.hasAudio && fadeOutSec > 0.02f && !uiState.isBusy && !uiState.isProcessing,
-                        interactionSource = fadeOutInteraction,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(fadeOutInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
-                            .testTag("editor_apply_fade_out_button"),
-                    ) {
-                        Text(t(lang, "fade_out_title"), maxLines = 1)
-                    }
                 }
             }
         }
@@ -1221,282 +1246,6 @@ fun AudioEditorScreen(
             }
         }
         } // end item(key = "editor_dual_mix_card")
-
-        item(key = "editor_voice_card") {
-        // Expandable Inline Voice Character Transformer Card
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-            border = BorderStroke(1.dp, StudioColors.Border),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                val expandVoiceInteraction = remember { MutableInteractionSource() }
-                Surface(
-                    onClick = { showVoiceCard = !showVoiceCard },
-                    interactionSource = expandVoiceInteraction,
-                    color = StudioColors.CardSurface,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(expandVoiceInteraction, MaterialTheme.colorScheme.primary, selected = showVoiceCard, cornerRadius = 12.dp)
-                        .testTag("editor_expand_voice_transformer"),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(Icons.Rounded.SpatialAudioOff, contentDescription = null, tint = StudioColors.Violet)
-                            Text(t(lang, "section_voice_transformer_title"), style = MaterialTheme.typography.titleSmall)
-                        }
-                        Icon(
-                            imageVector = if (showVoiceCard) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                            contentDescription = null,
-                            tint = StudioColors.TextSecondary,
-                        )
-                    }
-                }
-
-                if (showVoiceCard) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 4.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        VOICE_CHARACTER_PRESETS.forEach { preset ->
-                            val chipInteraction = remember { MutableInteractionSource() }
-                            val isCharSel = selectedCharId == preset.id
-                            FilterChip(
-                                selected = isCharSel,
-                                onClick = {
-                                    selectedCharId = preset.id
-                                    charPitch = preset.pitchSemitones
-                                    charFormant = preset.formantShift
-                                },
-                                interactionSource = chipInteraction,
-                                label = { Text(t(lang, preset.titleKey)) },
-                                modifier = Modifier
-                                    .defaultMinSize(minHeight = 48.dp)
-                                    .lit(chipInteraction, MaterialTheme.colorScheme.primary, selected = isCharSel, cornerRadius = 10.dp),
-                            )
-                        }
-                    }
-
-                    StudioParamSlider(
-                        label = t(lang, "voice_pitch_semitones"),
-                        value = charPitch,
-                        min = -8f,
-                        max = 8f,
-                        formattedValue = "${"%.1f".format(charPitch)} st",
-                        accentColor = StudioColors.Violet,
-                        testTag = "editor_char_pitch_slider",
-                        onValueChange = { charPitch = it },
-                    )
-                    StudioParamSlider(
-                        label = t(lang, "voice_formant_shift"),
-                        value = charFormant,
-                        min = 0.72f,
-                        max = 1.4f,
-                        formattedValue = "${"%.2f".format(charFormant)}x",
-                        accentColor = StudioColors.Cyan,
-                        testTag = "editor_char_formant_slider",
-                        onValueChange = { charFormant = it },
-                    )
-
-                    val chosen = VOICE_CHARACTER_PRESETS.firstOrNull { it.id == selectedCharId }
-                    val applyVoiceCharInteraction = remember { MutableInteractionSource() }
-                    Button(
-                        onClick = {
-                            viewModel.transformVoiceOffline(
-                                pitchSemitones = charPitch,
-                                formantShift = charFormant,
-                                warmthDb = chosen?.warmthDb ?: 0f,
-                                presenceDb = chosen?.presenceDb ?: 0f,
-                                mix = 1f,
-                                characterLabel = chosen?.let { t(lang, it.titleKey) }
-                                    ?: t(lang, "section_voice_transformer_title"),
-                                bassBoostDb = chosen?.bassBoostDb ?: 0f,
-                                bassFreqHz = chosen?.bassFreqHz ?: 75f,
-                                vibratoHz = chosen?.vibratoHz ?: 0f,
-                                vibratoDepth = chosen?.vibratoDepth ?: 0f,
-                                echoDelayMs = chosen?.echoDelayMs ?: 0f,
-                                echoDecay = chosen?.echoDecay ?: 0f,
-                                dualLayerPitchSemitones = chosen?.dualLayerPitchSemitones ?: 0f,
-                                dualLayerFormantShift = chosen?.dualLayerFormantShift ?: 1.0f,
-                                dualLayerMix = chosen?.dualLayerMix ?: 0f,
-                            )
-                        },
-                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
-                        interactionSource = applyVoiceCharInteraction,
-                        colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Violet, contentColor = StudioColors.BgTop),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(applyVoiceCharInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
-                            .testTag("editor_apply_voice_char_button"),
-                    ) {
-                        Text(t(lang, "voice_apply_transform"))
-                    }
-                }
-            }
-        }
-        } // end item(key = "editor_voice_card")
-
-        item(key = "editor_tts_card") {
-        // Expandable Inline 10-Dialect TTS Card
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-            border = BorderStroke(1.dp, StudioColors.Border),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                val expandTtsInteraction = remember { MutableInteractionSource() }
-                Surface(
-                    onClick = { showTtsCard = !showTtsCard },
-                    interactionSource = expandTtsInteraction,
-                    color = StudioColors.CardSurface,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(expandTtsInteraction, MaterialTheme.colorScheme.primary, selected = showTtsCard, cornerRadius = 12.dp)
-                        .testTag("editor_expand_tts"),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(Icons.Rounded.RecordVoiceOver, contentDescription = null, tint = StudioColors.Cyan)
-                            Text(t(lang, "section_tts_title"), style = MaterialTheme.typography.titleSmall)
-                        }
-                        Icon(
-                            imageVector = if (showTtsCard) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                            contentDescription = null,
-                            tint = StudioColors.TextSecondary,
-                        )
-                    }
-                }
-
-                if (showTtsCard) {
-                    val dialect = TTS_DIALECTS.first { it.id == selectedDialectId }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 4.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        TTS_DIALECTS.forEach { d ->
-                            val dialectChipInteraction = remember { MutableInteractionSource() }
-                            val isDialectSel = d.id == selectedDialectId
-                            FilterChip(
-                                selected = isDialectSel,
-                                onClick = {
-                                    selectedDialectId = d.id
-                                    if (ttsText.isBlank()) ttsText = d.sampleText
-                                },
-                                interactionSource = dialectChipInteraction,
-                                label = { Text(t(lang, d.titleKey)) },
-                                modifier = Modifier
-                                    .defaultMinSize(minHeight = 48.dp)
-                                    .lit(dialectChipInteraction, MaterialTheme.colorScheme.primary, selected = isDialectSel, cornerRadius = 10.dp),
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 4.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        TtsDeliveryStyle.entries.forEach { st ->
-                            val styleChipInteraction = remember { MutableInteractionSource() }
-                            val isStyleSel = st == selectedTtsStyle
-                            FilterChip(
-                                selected = isStyleSel,
-                                onClick = { selectedTtsStyle = st },
-                                interactionSource = styleChipInteraction,
-                                label = { Text(t(lang, st.titleKey)) },
-                                modifier = Modifier
-                                    .defaultMinSize(minHeight = 44.dp)
-                                    .lit(styleChipInteraction, MaterialTheme.colorScheme.primary, selected = isStyleSel, cornerRadius = 10.dp),
-                            )
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = ttsText,
-                        onValueChange = { ttsText = it },
-                        label = { Text(t(lang, "tts_input_label")) },
-                        minLines = 2,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = StudioColors.Cyan,
-                            unfocusedBorderColor = StudioColors.Border,
-                            focusedTextColor = StudioColors.TextPrimary,
-                            unfocusedTextColor = StudioColors.TextPrimary,
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("editor_tts_input"),
-                    )
-
-                    val ttsInsertInteraction = remember { MutableInteractionSource() }
-                    Button(
-                        onClick = {
-                            viewModel.generateTtsToStudio(
-                                text = ttsText.ifBlank { dialect.sampleText },
-                                dialect = dialect,
-                                gender = TtsGender.MALE,
-                                style = selectedTtsStyle,
-                                speechRate = dialect.defaultRate,
-                                pitch = dialect.defaultPitch,
-                                appendToExisting = uiState.hasAudio,
-                            )
-                        },
-                        enabled = !uiState.isBusy && !uiState.isProcessing,
-                        interactionSource = ttsInsertInteraction,
-                        colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Cyan, contentColor = StudioColors.BgTop),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(ttsInsertInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
-                            .testTag("editor_tts_insert_button"),
-                    ) {
-                        Text(t(lang, "approve_and_start_processing"))
-                    }
-                }
-            }
-        }
-        } // end item(key = "editor_tts_card")
 
         item(key = "editor_export_card") {
         // Append File + Append Saved Projects + Export
@@ -1639,4 +1388,80 @@ fun AudioEditorScreen(
         onSaveForUnity = { name -> viewModel.exportAudioForUnity(name, shareAfter = false) },
         onShareForUnity = { name -> viewModel.exportAudioForUnity(name, shareAfter = true) },
     )
+}
+
+@Composable
+private fun EditorPlayheadOverlay(
+    playbackFlow: StateFlow<PlaybackTelemetry>,
+    durationMs: Long,
+    zoomLevel: Float,
+    panFraction: Float,
+    edgePadPx: Float,
+    modifier: Modifier = Modifier,
+) {
+    val playback by playbackFlow.collectAsStateWithLifecycle()
+    var smoothPosMs by remember { mutableLongStateOf(playback.positionMs) }
+
+    LaunchedEffect(playback.positionMs, playback.isPlaying, durationMs) {
+        smoothPosMs = playback.positionMs
+        if (!playback.isPlaying) return@LaunchedEffect
+        val anchorPos = playback.positionMs
+        val startFrameNanos = withFrameNanos { it }
+        while (true) {
+            withFrameNanos { nowNanos ->
+                val elapsedMs = ((nowNanos - startFrameNanos) / 1_000_000L).coerceAtLeast(0L)
+                smoothPosMs = if (durationMs > 0L) {
+                    (anchorPos + elapsedMs).coerceIn(0L, durationMs)
+                } else {
+                    anchorPos + elapsedMs
+                }
+            }
+        }
+    }
+
+    BoxWithConstraints(
+        modifier = modifier,
+        contentAlignment = Alignment.TopStart,
+    ) {
+        val density = LocalDensity.current
+        val boxWidthPx = with(density) { maxWidth.toPx() }
+        val indicatorWidthDp = 12.dp
+        val halfIndicatorPx = with(density) { (indicatorWidthDp / 2f).toPx() }
+
+        val usableW = (boxWidthPx - 2f * edgePadPx).coerceAtLeast(1f)
+        val visSpan = 1f / zoomLevel.coerceIn(1f, 15f)
+        val visStart = panFraction.coerceIn(0f, (1f - visSpan).coerceAtLeast(0f))
+        val visEnd = (visStart + visSpan).coerceAtMost(1f)
+        val playFrac = if (durationMs > 0L) {
+            (smoothPosMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        val visible = playFrac in visStart..visEnd
+        val px = (edgePadPx + ((playFrac - visStart) / visSpan) * usableW)
+            .coerceIn(2f, (boxWidthPx - 2f).coerceAtLeast(2f))
+
+        Canvas(
+            modifier = Modifier
+                .width(indicatorWidthDp)
+                .fillMaxHeight()
+                .graphicsLayer {
+                    translationX = px - halfIndicatorPx
+                    alpha = if (visible) 1f else 0f
+                },
+        ) {
+            val cx = size.width / 2f
+            drawLine(
+                color = StudioColors.TextPrimary,
+                start = Offset(cx, 0f),
+                end = Offset(cx, size.height),
+                strokeWidth = 2.4.dp.toPx(),
+            )
+            drawCircle(
+                color = StudioColors.Cyan,
+                radius = 4.5.dp.toPx(),
+                center = Offset(cx, 6.dp.toPx()),
+            )
+        }
+    }
 }

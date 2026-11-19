@@ -1019,7 +1019,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         recordUndo: Boolean = false,
         appliedToolLabel: String? = null,
     ) {
-        val meta = AudioDecoder.inspectLargeAudioStreaming(newFile, buckets = 800) {}
+        val meta = AudioDecoder.inspectLargeAudioStreaming(newFile, buckets = 800, context = getApplication()) {}
         if (meta == null) {
             runCatching { newFile.delete() }
             postBanner("تعذر قراءة الملف المعالج")
@@ -1287,6 +1287,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         appliedLabel: String? = null,
     ) {
         sliderDebounceJob?.cancel()
+        com.example.diagnostics.FfmpegKitBridge.cancelActiveSessions()
+        stopToolPreview()
+        stopMixPreviewPlayer()
+        AudioPlayerManager.releaseAll()
         collapseSessionSliderUndoSnapshots(toolKey, activeBuffer)
         val st = _uiState.value
         syncPlayerConfig(st.dspConfig)
@@ -1678,7 +1682,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     // inspect <1s via 8192-byte streaming & pass file.absolutePath to player/FFmpegKit.
                     val stagedFile = stageLargeFileToCleanAsciiCache(app, uploaded.file, prefix = "main")
                     tempCachedFile = null // Ownership transferred to staged activeSourceFile
-                    val meta = AudioDecoder.inspectLargeAudioStreaming(stagedFile, buckets = 800) { frac ->
+                    val meta = AudioDecoder.inspectLargeAudioStreaming(stagedFile, buckets = 800, context = app) { frac ->
                         _uiState.update {
                             it.copy(importProgress = (0.50f + frac * 0.46f).coerceIn(0.50f, 0.96f))
                         }
@@ -1875,8 +1879,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun updateTrimRange(s: Float, e: Float) {
-        val cs = clamp(s, 0f, 0.98f)
-        val ce = clamp(e, cs + 0.02f, 1f)
+        val durMs = _uiState.value.durationMs
+        val minGapFrac = if (durMs > 500L) (500f / durMs.toFloat()).coerceIn(0.0005f, 0.98f) else 0.02f
+        val curStart = _uiState.value.trimStart
+        val curEnd = _uiState.value.trimEnd
+        val movingStart = abs(s - curStart) >= abs(e - curEnd)
+        val cs: Float
+        val ce: Float
+        if (movingStart) {
+            cs = clamp(s, 0f, (curEnd - minGapFrac).coerceAtLeast(0f))
+            ce = clamp(e, (cs + minGapFrac).coerceAtMost(1f), 1f)
+        } else {
+            ce = clamp(e, (curStart + minGapFrac).coerceAtMost(1f), 1f)
+            cs = clamp(s, 0f, (ce - minGapFrac).coerceAtLeast(0f))
+        }
         _uiState.update { it.copy(trimStart = cs, trimEnd = ce) }
         val st = _uiState.value
         player.setLoop(st.loopSelection || st.autoLoopOnPlayback, cs, ce)
@@ -2112,6 +2128,55 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun applyFadeInOutSeconds(fadeInSec: Float, fadeOutSec: Float) {
+        val hasIn = fadeInSec > 0.02f
+        val hasOut = fadeOutSec > 0.02f
+        if (!hasIn && !hasOut) {
+            postBanner("اضبط مدة التلاشي أولاً")
+            return
+        }
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
+            postBanner("قم بتسجيل أو استيراد صوت أولاً لتطبيق التدرج")
+            return
+        }
+        val durSec = (_uiState.value.durationMs / 1000.0).coerceAtLeast(0.1)
+        launchSingleFlightProcessing {
+            if (src != null) {
+                val faded = withContext(Dispatchers.Default) {
+                    var res = src
+                    if (hasIn) res = applyFadeIn(res, fadeInSec)
+                    if (hasOut) res = applyFadeOut(res, fadeOutSec)
+                    res
+                }
+                setActiveBuffer(faded, recordUndo = true)
+            } else if (srcFile != null) {
+                val filters = buildList {
+                    if (hasIn) {
+                        add("afade=t=in:st=0:d=${String.format(Locale.US, "%.2f", fadeInSec.coerceAtLeast(0.05f))}")
+                    }
+                    if (hasOut) {
+                        val fadeLen = fadeOutSec.toDouble().coerceIn(0.05, durSec)
+                        val startAt = String.format(Locale.US, "%.3f", (durSec - fadeLen).coerceAtLeast(0.0))
+                        add("afade=t=out:st=$startAt:d=${String.format(Locale.US, "%.2f", fadeLen)}")
+                    }
+                }.joinToString(",")
+                val outFile = processAudioFileWithFfmpeg(
+                    context = getApplication(),
+                    inputFile = srcFile,
+                    audioFilter = filters,
+                    toolName = "FadeInOutLarge",
+                ) ?: run {
+                    postBanner("تعذر تطبيق التلاشي التدريجي")
+                    return@launchSingleFlightProcessing
+                }
+                applyProcessedDiskSourceFile(outFile, appliedToolLabel = "FadeInOut")
+            }
+            postBanner("تم تطبيق التلاشي التدريجي بنجاح")
+        }
+    }
+
     fun loadMixBackgroundUri(
         uri: Uri,
         onComplete: (() -> Unit)? = null,
@@ -2173,7 +2238,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 if (withContext(Dispatchers.IO) { AudioDecoder.shouldStreamOnDisk(uploaded.file) }) {
                     val stagedBg = stageLargeFileToCleanAsciiCache(app, uploaded.file, prefix = "bg")
                     cachedFile = null // Ownership transferred to mixBgSourceFile
-                    val meta = AudioDecoder.inspectLargeAudioStreaming(stagedBg, buckets = 96) { frac ->
+                    val meta = AudioDecoder.inspectLargeAudioStreaming(stagedBg, buckets = 240, context = app) { frac ->
                         _uiState.update {
                             it.copy(importProgress = (0.50f + frac * 0.46f).coerceIn(0.50f, 0.96f))
                         }
@@ -4336,7 +4401,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 if (withContext(Dispatchers.IO) { AudioDecoder.shouldStreamOnDisk(file) }) {
                     val staged = stageLargeFileToCleanAsciiCache(getApplication(), file, prefix = "recent")
-                    val meta = AudioDecoder.inspectLargeAudioStreaming(staged, buckets = 800) {}
+                    val meta = AudioDecoder.inspectLargeAudioStreaming(staged, buckets = 800, context = getApplication()) {}
                     if (meta == null) {
                         runCatching { staged.delete() }
                         postBanner("تعذر استرجاع الملف المؤقت")

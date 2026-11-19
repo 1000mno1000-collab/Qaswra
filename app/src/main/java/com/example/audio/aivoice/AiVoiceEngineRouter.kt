@@ -8,6 +8,7 @@ import com.example.audio.OnlineGuard
 import com.example.audio.TARGET_SAMPLE_RATE
 import com.example.audio.network.NetworkImmunityManager
 import com.example.audio.transformVoiceOffline
+import com.example.audio.tts.ArabicTextDiacritizer
 import com.example.audio.tts.SmartVoiceRouter
 import com.example.audio.tts.VoiceRouteOutcome
 import com.example.audio.writeStereoWavFile
@@ -912,22 +913,24 @@ class AiVoiceStudioCoordinator(
         bearerToken: String = "",
         onProgress: (Float, String) -> Unit = { _, _ -> },
     ): AiVoiceSynthOutcome = withContext(Dispatchers.IO) {
-        val clean = request.text.trim()
-        if (clean.isEmpty()) {
+        val rawTrimmed = request.text.trim()
+        if (rawTrimmed.isEmpty()) {
             return@withContext AiVoiceSynthOutcome.Error(
                 engine = request.engine,
                 messageAr = "يرجى كتابة النص أولاً.",
                 messageEn = "Please enter script text first.",
             )
         }
+        val clean = ArabicTextDiacritizer.normalizeAndHintForTts(rawTrimmed, applyLightDiacritics = true)
+            .ifBlank { rawTrimmed }
 
         val autoSwitchedOffline = request.engine != AiVoiceEngineKind.SONIX_LOCAL_STUDIO &&
             !OnlineGuard.isOnline(context)
         val effectiveEngine = if (autoSwitchedOffline) AiVoiceEngineKind.SONIX_LOCAL_STUDIO else request.engine
         val effectiveRequest = if (autoSwitchedOffline) {
-            request.copy(engine = effectiveEngine)
+            request.copy(engine = effectiveEngine, text = clean)
         } else {
-            request
+            request.copy(text = clean)
         }
 
         val chunks = AiVoicePromptBuilder.splitTextIntoChunks(clean, maxCharsPerChunk = 260)

@@ -241,8 +241,8 @@ class StudioAudioPlayer(
 
     fun setLoop(enabled: Boolean, startFrac: Float = 0f, endFrac: Float = 1f) {
         loopEnabled = enabled
-        loopStartFrac = clamp(startFrac, 0f, 0.99f)
-        loopEndFrac = clamp(endFrac, loopStartFrac + 0.01f, 1f)
+        loopStartFrac = clamp(startFrac, 0f, 0.9995f)
+        loopEndFrac = clamp(endFrac, (loopStartFrac + 0.0005f).coerceAtMost(1f), 1f)
     }
 
     fun seekToFraction(frac: Float) {
@@ -1181,7 +1181,15 @@ class StudioAudioPlayer(
             }
             val sr = (buffer?.sampleRate ?: sourceSampleRate).coerceAtLeast(8000)
             while (playbackJob?.isActive == true && isPlaying.get() && !completed) {
-                val curMs = try { playerInstance.currentPosition } catch (_: Exception) { 0 }.coerceAtLeast(0)
+                var curMs = try { playerInstance.currentPosition } catch (_: Exception) { 0 }.coerceAtLeast(0)
+                if (loopEnabled && dur > 0L && loopEndFrac < 0.9995f && loopStartFrac < loopEndFrac) {
+                    val endBoundMs = (loopEndFrac * dur).toInt()
+                    if (curMs >= endBoundMs) {
+                        val sMs = (loopStartFrac * dur).toInt().coerceIn(0, max(0, endBoundMs - 100))
+                        runCatching { playerInstance.seekTo(sMs) }
+                        curMs = sMs
+                    }
+                }
                 playhead = (curMs.toDouble() * sr) / 1000.0
                 latestBars = List(48) { idx ->
                     val phase = ((curMs / 80.0) + idx * 0.4)

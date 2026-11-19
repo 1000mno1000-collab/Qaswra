@@ -34,7 +34,7 @@ object FfmpegKitBridge {
     }
 
     fun cancelActiveSessions() {
-        if (nativeCheckCache == false || activeExecutions.get() <= 0) return
+        if (nativeCheckCache == false || !isAvailable()) return
         runCatching {
             val ffmpegClass = Class.forName("com.arthenica.ffmpegkit.FFmpegKit")
             ffmpegClass.getMethod("cancel").invoke(null)

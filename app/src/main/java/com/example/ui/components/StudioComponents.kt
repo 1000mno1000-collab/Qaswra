@@ -64,6 +64,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -1072,40 +1073,42 @@ private fun TransportSeekRow(
         0f
     }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            text = formatDurationMs(telemetry.positionMs),
-            style = TelemetryTextStyle,
-            color = StudioColors.Cyan,
-        )
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = formatDurationMs(telemetry.positionMs),
+                style = TelemetryTextStyle,
+                color = StudioColors.Cyan,
+            )
 
-        Slider(
-            value = progress,
-            onValueChange = onSeekFraction,
-            enabled = hasAudio,
-            colors = SliderDefaults.colors(
-                thumbColor = StudioColors.Cyan,
-                activeTrackColor = StudioColors.Cyan,
-                inactiveTrackColor = StudioColors.ElevatedSurface,
-                disabledThumbColor = StudioColors.TextMuted,
-                disabledActiveTrackColor = StudioColors.WaveformInactive,
-                disabledInactiveTrackColor = StudioColors.BgTop,
-            ),
-            modifier = Modifier
-                .weight(1f)
-                .height(28.dp)
-                .testTag("transport_seek_slider"),
-        )
+            Slider(
+                value = progress,
+                onValueChange = onSeekFraction,
+                enabled = hasAudio,
+                colors = SliderDefaults.colors(
+                    thumbColor = StudioColors.Cyan,
+                    activeTrackColor = StudioColors.Cyan,
+                    inactiveTrackColor = StudioColors.ElevatedSurface,
+                    disabledThumbColor = StudioColors.TextMuted,
+                    disabledActiveTrackColor = StudioColors.WaveformInactive,
+                    disabledInactiveTrackColor = StudioColors.BgTop,
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(28.dp)
+                    .testTag("transport_seek_slider"),
+            )
 
-        Text(
-            text = formatDurationMs(durationMs),
-            style = TelemetryTextStyle,
-            color = StudioColors.TextSecondary,
-        )
+            Text(
+                text = formatDurationMs(durationMs),
+                style = TelemetryTextStyle,
+                color = StudioColors.TextSecondary,
+            )
+        }
     }
 }
 
