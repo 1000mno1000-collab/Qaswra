@@ -9,7 +9,7 @@ import kotlin.math.roundToInt
  * Guarantees that at most ONE audio stream ([StudioAudioPlayer] or [AudioPlayerManager])
  * is active at any moment, preventing echo overlap, jitter, or competing AudioTrack/MediaPlayer instances.
  */
-object AudioPlaybackController {
+object ExclusiveAudioController {
 
     private val lock = Any()
 
@@ -34,7 +34,18 @@ object AudioPlaybackController {
         synchronized(lock) {
             studioPlayer = player
         }
+
+        fun activePlaybackCount(): Int {
+            val activeStudio = synchronized(lock) { studioPlayer }
+            val studioIsPlaying = runCatching { activeStudio?.isCurrentlyPlaying() == true }.getOrDefault(false)
+            val previewIsPlaying = AudioPlayerManager.isPlaying()
+            return (if (studioIsPlaying) 1 else 0) + (if (previewIsPlaying) 1 else 0)
+        }
         FfmpegKitBridge.cancelActiveSessions()
+        AudioPlayerManager.releaseAll()
+    }
+
+    fun onBeforeStudioPlayerSeek(@Suppress("UNUSED_PARAMETER") player: StudioAudioPlayer) {
         AudioPlayerManager.releaseAll()
     }
 

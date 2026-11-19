@@ -298,6 +298,15 @@ fun AuthScreen(
             val auth = runCatching { FirebaseAuth.getInstance() }.getOrNull()
             val existingUser = runCatching { auth?.currentUser }.getOrNull()
             if (existingUser != null) {
+                try {
+                    kotlinx.coroutines.withTimeoutOrNull(4_000L) {
+                        existingUser.getIdToken(false).await()
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
+                    Log.w("Auth", "Silent Firebase token refresh failed; retaining local session.", e)
+                }
                 finishFirebaseGoogleUser(existingUser)
                 return@LaunchedEffect
             }
@@ -422,7 +431,11 @@ fun AuthScreen(
                                 cm.getCredential(activityContextWrapper, cachedHandle)
                             }
                         } catch (e: GetCredentialCancellationException) {
-                            throw e
+                            if (!isTechnicalAuthRejection(e.errorMessage?.toString() ?: e.message)) throw e
+                            Log.w("Auth", "Prepared Google credential was rejected; retrying with a fresh chooser.")
+                            kotlinx.coroutines.withTimeoutOrNull(18_000L) {
+                                cm.getCredential(activityContextWrapper, request)
+                            }
                         } catch (e: Exception) {
                             Log.w("Auth", "Prepared handle expired/failed; opening direct chooser: ${e.message}")
                             kotlinx.coroutines.withTimeoutOrNull(18_000L) {

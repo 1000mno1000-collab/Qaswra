@@ -99,7 +99,7 @@ fun AiVoiceConfigurationBanner(
     state: AiVoiceStudioUiState,
     isEnglish: Boolean,
     onDismiss: () -> Unit,
-    onUseLocalFallback: () -> Unit,
+    onRetryCloud: () -> Unit,
 ) {
     val title = state.errorTitle ?: return
     val isConfigRequired = !state.setupRequiredGuide.isNullOrBlank()
@@ -177,7 +177,7 @@ fun AiVoiceConfigurationBanner(
                 }
 
                 Button(
-                    onClick = onUseLocalFallback,
+                    onClick = onRetryCloud,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = StudioColors.Cyan,
                         contentColor = StudioColors.BgTop,
@@ -186,10 +186,10 @@ fun AiVoiceConfigurationBanner(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 48.dp)
-                        .testTag("ai_voice_use_local_fallback_btn"),
+                        .testTag("ai_voice_retry_cloud_btn"),
                 ) {
                     Text(
-                        text = if (isEnglish) "Use Local Studio Engine Now" else "تشغيل بالمحرك المحلي الآن",
+                        text = if (isEnglish) "Retry VoxCPM2 Cloud" else "إعادة المحاولة عبر VoxCPM2",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         fontWeight = FontWeight.Bold,
@@ -1050,18 +1050,27 @@ fun AiVoiceServerSetupTab(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Rounded.Memory, contentDescription = null, tint = StudioColors.Cyan)
                     Text(
-                        text = if (isEnglish) "Built-in Engine: Nabra-82M + FFmpegKit" else "المحرك المدمج: Nabra-82M + FFmpegKit",
+                        text = if (isEnglish) "VoxCPM2 Public Cloud Engine" else "محرك VoxCPM2 السحابي العام",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = StudioColors.Cyan,
                     )
                 }
                 Text(
                     text = if (isEnglish) {
-                        "Voice synthesis, emotion shaping, and multi-speaker dialogue run directly on-device via the built-in Nabra-82M + FFmpegKit engine with zero external server required."
+                        "Voice synthesis runs on demand through the public VoxCPM2 service and requires an internet connection."
                     } else {
-                        "يعمل استوديو الصوت والتوليد الفوري والحوار متعدد الشخصيات مباشرة على جهازك عبر المحرك المدمج (Nabra-82M + FFmpegKit) دون الحاجة لإدخال رابط خادم أو إعدادات خارجية."
+                        "يعمل توليد الصوت عند الطلب عبر خدمة VoxCPM2 العامة ويتطلب اتصالاً بالإنترنت."
                     },
                     style = MaterialTheme.typography.bodySmall,
+                    color = StudioColors.TextSecondary,
+                )
+                Text(
+                    text = if (isEnglish) {
+                        "The public demo may be unavailable and does not expose a fixed speaker ID or seed; exact voice locking is not guaranteed."
+                    } else {
+                        "قد تتوقف الخدمة العامة مؤقتاً، ولا توفر معرف متحدث أو بذرة ثابتة؛ لذلك لا يمكن ضمان تطابق البصمة الصوتية تماماً."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
                     color = StudioColors.TextSecondary,
                 )
             }
@@ -1094,12 +1103,16 @@ fun AiVoiceServerSetupTab(
                         )
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
-                                text = if (isEnglish) "Nabra-82M + FFmpegKit Ready" else "محرك Nabra-82M + FFmpegKit جاهز للعمل الفوري",
+                                text = if (isEnglish) "VoxCPM2 Cloud Endpoint" else "نقطة خدمة VoxCPM2 السحابية",
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                                 color = StudioColors.TextPrimary,
                             )
                             Text(
-                                text = if (isEnglish) "On-device deterministic processing • No server URL needed" else "معالجة مدمجة وفورية • لا يتطلب رابط خادم",
+                                text = if (isEnglish) {
+                                    "Cloud synthesis; no local model is required."
+                                } else {
+                                    "التوليد سحابي ولا يتطلب تثبيت نموذج محلي."
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = StudioColors.Emerald,
                             )
@@ -1122,7 +1135,7 @@ fun AiVoiceServerSetupTab(
                         Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     Spacer(Modifier.width(6.dp))
-                    Text(if (isEnglish) "Verify Built-in Engine" else "التحقق من جاهزية المحرك المدمج")
+                    Text(if (isEnglish) "Check Cloud Availability" else "التحقق من توفر الخدمة السحابية")
                 }
 
                 if (health.isChecked) {
@@ -1139,11 +1152,11 @@ fun AiVoiceServerSetupTab(
                                 Icon(
                                     imageVector = Icons.Rounded.CheckCircle,
                                     contentDescription = null,
-                                    tint = StudioColors.Emerald,
+                                    tint = if (health.serverReachable) StudioColors.Emerald else StudioColors.RoseBright,
                                 )
                                 Text(
                                     text = health.statusDetail.ifBlank {
-                                        if (isEnglish) "Nabra-82M + FFmpegKit engine is active and ready." else "المحرك المدمج (Nabra-82M + FFmpegKit) نشط وجاهز."
+                                        if (isEnglish) "VoxCPM2 cloud availability checked." else "تم التحقق من توفر خدمة VoxCPM2 السحابية."
                                     },
                                     style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                                     color = StudioColors.TextPrimary,

@@ -623,7 +623,7 @@ internal fun TestRunnerTab(
                 FilterChip(
                     selected = devState.selectedTestEngineId == "sonix_local_studio",
                     onClick = { onSelectEngine("sonix_local_studio") },
-                    label = { Text("Local Studio", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    label = { Text("VoxCPM2 Cloud", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     leadingIcon = { Icon(Icons.Rounded.Memory, contentDescription = null, modifier = Modifier.size(16.dp)) },
                     modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("dev_test_engine_local_studio"),
                 )

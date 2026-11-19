@@ -353,7 +353,7 @@ class DeveloperPanelController(
 
         val engineId = _uiState.value.selectedTestEngineId
         val engineKind = when (engineId) {
-            "sonix_local_studio" -> AiVoiceEngineKind.SONIX_LOCAL_STUDIO
+            "sonix_local_studio" -> AiVoiceEngineKind.VOXCPM_2
             else -> AiVoiceEngineKind.VOXCPM_2
         }
 

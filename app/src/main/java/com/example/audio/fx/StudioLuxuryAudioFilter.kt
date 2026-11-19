@@ -124,6 +124,7 @@ object StudioLuxuryAudioFilter {
         style: TtsDeliveryStyle = TtsDeliveryStyle.NATURAL_WARM,
         gender: TtsGender = TtsGender.MALE,
         luxuryBoost: Boolean = true,
+        cancelPreviousFfmpeg: Boolean = true,
     ): StereoAudioBuffer = withContext(Dispatchers.IO) {
         if (decodedBuffer.frameCount <= 0) return@withContext decodedBuffer
         val candidates = buildAcousticMasteringFfmpegGraphCandidates(
@@ -142,7 +143,12 @@ object StudioLuxuryAudioFilter {
                 for (graph in candidates) {
                     if (outWav.exists()) outWav.delete()
                     val cmd = "-y -i \"${inWav.absolutePath}\" -af \"$graph\" -ar $sr -ac 2 \"${outWav.absolutePath}\""
-                    val ok = FfmpegKitBridge.execute(cmd, toolName = "AcousticMastering_${mode.name}", logNonZeroFailure = false)
+                    val ok = FfmpegKitBridge.execute(
+                        command = cmd,
+                        toolName = "AcousticMastering_${mode.name}",
+                        logNonZeroFailure = false,
+                        cancelPrevious = cancelPreviousFfmpeg,
+                    )
                     if (ok && outWav.exists() && outWav.length() > 44L) {
                         val res = AudioDecoder.decodeFile(outWav)
                         if (res != null && res.frameCount > 0) {

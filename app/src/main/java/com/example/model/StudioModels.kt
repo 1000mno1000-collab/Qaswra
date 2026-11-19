@@ -1,7 +1,6 @@
 package com.example.model
 
 import androidx.compose.runtime.Immutable
-import com.aistudio.voicepro.sonixk.NabraDownloadState
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -602,8 +601,7 @@ enum class TtsGender {
 }
 
 enum class TtsEngineMode {
-    NABRA_ONNX_DIRECT,
-    LOCAL_ARABIC_STUDIO,
+    VOX_NEURAL_ONLINE,
 }
 
 enum class TtsPersonaAcousticMode(
@@ -809,7 +807,7 @@ val TTS_VOICE_PERSONAS: List<TtsVoicePersona> = listOf(
     // أصوات خاصة
     TtsVoicePersona(
         id = "child_voice",
-        gender = TtsGender.FEMALE,
+        gender = TtsGender.MALE,
         titleAr = "طفل لطيف وواضح",
         titleEn = "Clear Child Voice",
         descAr = "نبرة طفل حيوية وصافية للقصص التعليمية والمحتوى الإبداعي",
@@ -822,6 +820,22 @@ val TTS_VOICE_PERSONAS: List<TtsVoicePersona> = listOf(
         defaultWarmthDb = 1.0f,
         defaultPresenceDb = 2.6f,
         geminiDirectionPromptAr = "تحدث بصوت طفل لطيف وطبيعي وواضح تماماً.",
+    ),
+    TtsVoicePersona(
+        id = "male_elderly",
+        gender = TtsGender.MALE,
+        titleAr = "رجل مسن هادئ",
+        titleEn = "Elderly Male Narrator",
+        descAr = "صوت رجل كبير السن هادئ ورصين للقصص والتعليق الوثائقي",
+        descEn = "A mature elderly male voice with measured, dignified narration.",
+        geminiVoiceName = "Charon",
+        defaultStyle = TtsDeliveryStyle.DRAMATIC,
+        defaultAcousticMode = TtsPersonaAcousticMode.DOCUMENTARY,
+        defaultPitchSemitones = -3.2f,
+        defaultFormantShift = 0.88f,
+        defaultWarmthDb = 3.8f,
+        defaultPresenceDb = 1.8f,
+        geminiDirectionPromptAr = "تحدث بصوت رجل مسن هادئ ورصين.",
     ),
 )
 
@@ -1008,7 +1022,7 @@ data class AiStreamState(
 
 @Immutable
 data class TtsStudioUiState(
-    val selectedEngine: TtsEngineMode = TtsEngineMode.NABRA_ONNX_DIRECT,
+    val selectedEngine: TtsEngineMode = TtsEngineMode.VOX_NEURAL_ONLINE,
     val activeEngineUsed: TtsEngineMode? = null,
     val isSynthesizingPreview: Boolean = false,
     val isPreviewing: Boolean = false,
@@ -1016,7 +1030,6 @@ data class TtsStudioUiState(
     val usedFallbackEngine: Boolean = false,
     val isOffline: Boolean = false,
     val errorMessage: String? = null,
-    val nabraDownloadState: NabraDownloadState = NabraDownloadState(),
 )
 
 @Immutable

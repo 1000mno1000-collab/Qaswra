@@ -1008,15 +1008,11 @@ fun TextToSpeechStudioScreen(
             },
         )
 
-        // Nabra-82M Sherpa-ONNX + FFmpegKit Studio Engine Card
-        val nabraState = uiState.ttsUiState.nabraDownloadState
+        // VoxCPM2 online neural engine
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-            border = BorderStroke(
-                1.dp,
-                if (nabraState.isReady) StudioColors.Emerald.copy(alpha = 0.65f) else StudioColors.Cyan.copy(alpha = 0.55f),
-            ),
+            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.55f)),
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(
@@ -1044,16 +1040,12 @@ fun TextToSpeechStudioScreen(
                     )
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = (if (nabraState.isReady) StudioColors.Emerald else StudioColors.Cyan).copy(alpha = 0.16f),
+                        color = StudioColors.Cyan.copy(alpha = 0.16f),
                     ) {
                         Text(
-                            text = if (nabraState.isReady) {
-                                t(lang, "tts_engine_free_badge")
-                            } else {
-                                "${nabraState.completedFiles}/${nabraState.totalFiles}"
-                            },
+                            text = if (lang == AppLanguage.EN) "Online" else "سحابي",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = if (nabraState.isReady) StudioColors.Emerald else StudioColors.Cyan,
+                            color = StudioColors.Cyan,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         )
                     }
@@ -1062,7 +1054,7 @@ fun TextToSpeechStudioScreen(
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = StudioColors.ElevatedSurface,
-                    border = BorderStroke(1.dp, if (nabraState.isReady) StudioColors.Emerald else StudioColors.Border),
+                    border = BorderStroke(1.dp, StudioColors.Border),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("tts_engine_free_card"),
@@ -1080,32 +1072,24 @@ fun TextToSpeechStudioScreen(
                                 verticalArrangement = Arrangement.spacedBy(2.dp),
                             ) {
                                 Text(
-                                    text = t(lang, "tts_engine_free_label"),
+                                    text = if (lang == AppLanguage.EN) "VoxCPM2 Neural TTS" else "محرك VoxCPM2 العصبي",
                                     style = MaterialTheme.typography.titleSmall,
-                                    color = if (nabraState.isReady) StudioColors.Emerald else StudioColors.Cyan,
+                                    color = StudioColors.Cyan,
                                 )
                                 Text(
-                                    text = t(lang, "tts_engine_free_desc"),
+                                    text = if (lang == AppLanguage.EN) {
+                                        "Generated on demand by the public VoxCPM2 cloud service."
+                                    } else {
+                                        "يُولّد الصوت عند الطلب عبر خدمة VoxCPM2 السحابية العامة."
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = StudioColors.TextSecondary,
                                 )
                                 Text(
-                                    text = when {
-                                        nabraState.isReady -> if (lang == AppLanguage.EN) {
-                                            "Nabra-82M files ready in nabra_onnx • Offline Kokoro + FFmpegKit"
-                                        } else {
-                                            "ملفات Nabra-82M جاهزة داخل nabra_onnx • معالجة FFmpegKit أوفلاين"
-                                        }
-                                        nabraState.isDownloading -> if (lang == AppLanguage.EN) {
-                                            "Downloading ${nabraState.currentFileName} (${nabraState.progressPercent}%)"
-                                        } else {
-                                            "جاري تحميل ${nabraState.currentFileName} (${nabraState.progressPercent}%)"
-                                        }
-                                        else -> if (lang == AppLanguage.EN) {
-                                            "Missing Nabra-82M files (${nabraState.completedFiles}/3) — instant local fallback active"
-                                        } else {
-                                            "ملفات Nabra-82M غير مكتملة (${nabraState.completedFiles}/3) — يعمل التوليد المحلي الفوري أو يمكنك تنزيلها"
-                                        }
+                                    text = if (lang == AppLanguage.EN) {
+                                        "Internet is required. The public API has no speaker-ID or seed controls, so exact voice locking is not guaranteed."
+                                    } else {
+                                        "يتطلب اتصالاً بالإنترنت. لا توفر الخدمة العامة تحكماً بمعرف المتحدث أو البذرة، لذلك لا يمكن ضمان تطابق البصمة الصوتية تماماً."
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = StudioColors.Cyan,
@@ -1114,69 +1098,9 @@ fun TextToSpeechStudioScreen(
                             Icon(
                                 imageVector = Icons.Rounded.CheckCircle,
                                 contentDescription = null,
-                                tint = if (nabraState.isReady) StudioColors.Emerald else StudioColors.TextSecondary,
+                                tint = StudioColors.Cyan,
                                 modifier = Modifier.size(20.dp),
                             )
-                        }
-
-                        if (nabraState.isDownloading) {
-                            LinearProgressIndicator(
-                                progress = { nabraState.progress.coerceIn(0f, 1f) },
-                                color = StudioColors.Cyan,
-                                trackColor = StudioColors.BgTop,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(6.dp)
-                                    .clip(CircleShape)
-                                    .testTag("tts_nabra_download_progress"),
-                            )
-                            val dlMb = String.format(java.util.Locale.US, "%.1f", nabraState.downloadedBytes / (1024.0 * 1024.0))
-                            val totMb = String.format(java.util.Locale.US, "%.1f", nabraState.totalBytes.coerceAtLeast(1L) / (1024.0 * 1024.0))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = "$dlMb / $totMb MB (${nabraState.progressPercent}%)",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = StudioColors.TextSecondary,
-                                )
-                                TextButton(
-                                    onClick = { viewModel.cancelActiveOnlineRequest() },
-                                    modifier = Modifier
-                                        .defaultMinSize(minHeight = 48.dp)
-                                        .testTag("tts_cancel_nabra_download"),
-                                ) {
-                                    Text(t(lang, "cancel_request"), color = StudioColors.RoseBright)
-                                }
-                            }
-                        } else if (!nabraState.isReady) {
-                            val dlBtnInteraction = remember { MutableInteractionSource() }
-                            OutlinedButton(
-                                onClick = { viewModel.downloadNabraOnnxModels() },
-                                interactionSource = dlBtnInteraction,
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.7f)),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .defaultMinSize(minHeight = 48.dp)
-                                    .lit(dlBtnInteraction, StudioColors.Cyan, cornerRadius = 12.dp)
-                                    .testTag("tts_download_nabra_button"),
-                            ) {
-                                Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text = if (lang == AppLanguage.EN) {
-                                        "Download Nabra-82M Model (${nabraState.completedFiles}/3)"
-                                    } else {
-                                        "تحميل نموذج Nabra-82M الآن (${nabraState.completedFiles}/3)"
-                                    },
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
                         }
                     }
                 }

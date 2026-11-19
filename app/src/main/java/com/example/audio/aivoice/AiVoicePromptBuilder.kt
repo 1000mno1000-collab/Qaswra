@@ -10,11 +10,14 @@ object AiVoicePromptBuilder {
     fun buildVoxCpmInstruction(request: AiVoiceSynthRequest): String {
         val parts = mutableListOf<String>()
 
-        val catHint = when (request.category) {
-            AiVoiceCategory.MALE -> "male adult speaker"
-            AiVoiceCategory.FEMALE -> "female adult speaker"
+        val profile = request.voiceDescriptionPrompt.lowercase()
+        val catHint = when {
+            "child" in profile || "طفل" in profile -> "child speaker"
+            "elder" in profile || "مسن" in profile -> "elderly male speaker"
+            request.category == AiVoiceCategory.MALE -> "male adult speaker"
+            else -> "female adult speaker"
         }
-        parts.add("$catHint (sid=${request.fixedSid}, seed=${request.fixedSeed})")
+        parts.add(catHint)
         parts.add("speaking ${request.language.titleEn}")
 
         val intensityLabel = when {

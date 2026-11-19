@@ -84,7 +84,7 @@ import com.example.audio.aivoice.AiVoiceEngineKind
 import com.example.audio.aivoice.AiVoiceGroupFilter
 import com.example.audio.aivoice.AiVoiceLanguage
 import com.example.audio.aivoice.AiVoiceStudioUiState
-import com.example.audio.aivoice.countScriptWords
+import com.example.audio.tts.TtsTextLimits
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
 import java.util.Locale
@@ -211,7 +211,7 @@ internal fun AiVoiceGroup1TextCard(
     isEnglish: Boolean,
     onScriptChange: (String) -> Unit,
 ) {
-    val words = remember(scriptText) { countScriptWords(scriptText) }
+    val words = remember(scriptText) { TtsTextLimits.countWords(scriptText) }
     val chars = scriptText.length
 
     Card(
@@ -261,9 +261,9 @@ internal fun AiVoiceGroup1TextCard(
                         border = BorderStroke(1.dp, StudioColors.Border),
                     ) {
                         Text(
-                            text = if (isEnglish) "$words words • $chars chars" else "$words كلمة • $chars حرف",
+                            text = if (isEnglish) "$words / ${TtsTextLimits.MAX_WORDS} words • $chars chars" else "$words / ${TtsTextLimits.MAX_WORDS} كلمة • $chars حرف",
                             style = TelemetryTextStyle,
-                            color = StudioColors.Cyan,
+                            color = if (words > TtsTextLimits.MAX_WORDS) StudioColors.RoseBright else StudioColors.Cyan,
                             modifier = Modifier
                                 .padding(horizontal = 9.dp, vertical = 4.dp)
                                 .testTag("ai_voice_text_counters"),
@@ -289,7 +289,7 @@ internal fun AiVoiceGroup1TextCard(
 
             OutlinedTextField(
                 value = scriptText,
-                onValueChange = onScriptChange,
+                onValueChange = { onScriptChange(TtsTextLimits.limitWords(it)) },
                 placeholder = {
                     Text(
                         text = if (isEnglish) {
@@ -408,11 +408,7 @@ internal fun AiVoiceEngineSelectionCard(
                                 textAlign = TextAlign.Center,
                             )
                             Text(
-                                text = if (engine == AiVoiceEngineKind.VOXCPM_2) {
-                                    "Nabra-82M • Pro"
-                                } else {
-                                    if (isEnglish) "Nabra-82M + FFmpegKit" else "مدمج • بدون سيرفر"
-                                },
+                                text = if (isEnglish) "Cloud Neural" else "عصبي سحابي",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = StudioColors.TextSecondary,
                                 maxLines = 1,

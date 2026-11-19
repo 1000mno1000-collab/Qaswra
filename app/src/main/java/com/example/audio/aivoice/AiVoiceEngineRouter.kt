@@ -4,12 +4,12 @@ import android.content.Context
 import android.util.Base64
 import com.example.audio.AudioDecodeOutcome
 import com.example.audio.AudioDecoder
-import com.example.audio.OnlineGuard
 import com.example.audio.TARGET_SAMPLE_RATE
 import com.example.audio.network.NetworkImmunityManager
 import com.example.audio.transformVoiceOffline
 import com.example.audio.tts.ArabicTextDiacritizer
 import com.example.audio.tts.SmartVoiceRouter
+import com.example.audio.tts.TtsTextLimits
 import com.example.audio.tts.VoiceRouteOutcome
 import com.example.audio.writeStereoWavFile
 import com.example.model.AppLanguage
@@ -41,7 +41,7 @@ import kotlin.coroutines.coroutineContext
 import kotlin.math.pow
 
 /**
- * Pluggable AI Voice Engine interface supporting VoxCPM2 (Cloud GPU) and Sonix Local Studio (Deterministic Offline).
+ * Pluggable AI Voice Engine interface for VoxCPM2 neural cloud synthesis.
  */
 interface AiVoiceStudioEngine {
     val kind: AiVoiceEngineKind
@@ -236,12 +236,10 @@ internal object BackendHttpHelper {
 }
 
 /**
- * Direct Built-in Engine Delegate: routes directly through [SonixLocalStudioEngineProvider] (Nabra-82M + FFmpegKit)
- * with zero external GPU server configuration required.
+ * Uses the public VoxCPM2 Space unless the user has configured a private GPU backend.
  */
 class VoxCpm2CloudProvider : AiVoiceStudioEngine {
     override val kind: AiVoiceEngineKind = AiVoiceEngineKind.VOXCPM_2
-    private val builtInProvider = SonixLocalStudioEngineProvider()
 
     companion object {
         private const val PUBLIC_SPACE_BASE = "https://openbmb-voxcpm-demo.hf.space"
@@ -251,7 +249,12 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         context: Context,
         backendUrl: String,
         bearerToken: String,
-    ): Boolean = true
+    ): Boolean {
+        val base = backendUrl.trim().trimEnd('/')
+        val url = if (base.isNotEmpty()) "$base/health" else "$PUBLIC_SPACE_BASE/gradio_api/info"
+        val (code, body) = BackendHttpHelper.getJson(url, timeoutMs = 10_000)
+        return code in 200..299 && body.isNotBlank()
+    }
 
     override suspend fun synthesizeChunk(
         context: Context,
@@ -260,14 +263,21 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         backendUrl: String,
         outWavFile: File,
         bearerToken: String,
-    ): AiVoiceSynthOutcome = builtInProvider.synthesizeChunk(
-        context = context,
-        request = request.copy(engine = AiVoiceEngineKind.SONIX_LOCAL_STUDIO),
-        textChunk = textChunk,
-        backendUrl = backendUrl,
-        outWavFile = outWavFile,
-        bearerToken = bearerToken,
-    )
+    ): AiVoiceSynthOutcome {
+        val cleanBase = backendUrl.trim().trimEnd('/')
+        return if (cleanBase.isNotEmpty()) {
+            callDedicatedGpuBackend(
+                context = context,
+                cleanBase = cleanBase,
+                bearerToken = bearerToken,
+                request = request,
+                textChunk = textChunk,
+                outWavFile = outWavFile,
+            )
+        } else {
+            callPublicVoxCpmSpace(context, request, textChunk, outWavFile)
+        }
+    }
 
     private suspend fun callDedicatedGpuBackend(
         context: Context,
@@ -323,8 +333,8 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                 titleEn = "Voice Cloning Requires Your GPU Backend URL",
                 explanationAr = "الفضاء العام التجريبي على Hugging Face لا يدعم رفع عينات الاستنساخ الخاصة بك مباشرة.",
                 explanationEn = "The public Space does not support private reference audio cloning directly.",
-                setupStepsAr = "1. استخدم «محرك الاستوديو المحلي (بدون سيرفر)» مباشرة للتوليد الفوري.\n2. أو أدخل رابط خادم GPU الخاص بك للاستنساخ السحابي.",
-                setupStepsEn = "1. Switch to Local Studio Engine for immediate synthesis.\n2. Or configure your GPU backend URL for cloud cloning.",
+                setupStepsAr = "يمكنك استخدام تصميم صوتي دون عينة، أو ربط خادم GPU خاص يدعم الاستنساخ.",
+                setupStepsEn = "Use voice design without a reference, or configure a private GPU backend that supports cloning.",
             )
         }
 
@@ -337,10 +347,10 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                 engine = kind,
                 titleAr = "خادم VoxCPM2 غير متاح حالياً (HTTP $infoCode)",
                 titleEn = "VoxCPM2 Cloud Server Unavailable",
-                explanationAr = "الفضاء التجريبي العام متوقف أو مشغول حالياً. يمكنك التوليد فوراً باستخدام محرك الاستوديو المحلي.",
-                explanationEn = "The public VoxCPM2 Space is sleeping or busy (HTTP $infoCode). Switch to Local Studio Engine immediately.",
-                setupStepsAr = "اضغط «تشغيل بالمحرك المحلي الآن» للمتابعة فوراً بدون سيرفر.",
-                setupStepsEn = "Tap 'Use Local Studio Engine Now' for instant offline synthesis.",
+                explanationAr = "فضاء VoxCPM2 العام متوقف أو مشغول حالياً.",
+                explanationEn = "The public VoxCPM2 Space is sleeping or busy (HTTP $infoCode).",
+                setupStepsAr = "تحقق من الاتصال وأعد المحاولة لاحقاً.",
+                setupStepsEn = "Check your connection and retry later.",
             )
         }
 
@@ -352,10 +362,10 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                 engine = kind,
                 titleAr = "تعذر مطابقة واجهة VoxCPM2 العامة",
                 titleEn = "VoxCPM2 Endpoint Unavailable",
-                explanationAr = "الرجاء استخدام «محرك الاستوديو المحلي» للمتابعة فوراً.",
-                explanationEn = "Please use Local Studio Engine for immediate synthesis.",
-                setupStepsAr = "اضغط «تشغيل بالمحرك المحلي الآن».",
-                setupStepsEn = "Tap 'Use Local Studio Engine Now'.",
+                explanationAr = "تعذر مطابقة واجهة VoxCPM2 الحالية.",
+                explanationEn = "The current VoxCPM2 Space API could not be matched.",
+                setupStepsAr = "أعد المحاولة لاحقاً أو اربط خادم VoxCPM2 خاصاً.",
+                setupStepsEn = "Retry later or configure a private VoxCPM2 backend.",
             )
         }
 
@@ -385,10 +395,10 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                 engine = kind,
                 titleAr = "خادم VoxCPM2 العام مزدحم (HTTP $submitCode)",
                 titleEn = "Public Space Queue Busy (HTTP $submitCode)",
-                explanationAr = "لم يتمكن الفضاء العام من قبول الطلب حالياً، يمكنك المتابعة فوراً بالمحرك المحلي.",
+                explanationAr = "لم يتمكن الفضاء العام من قبول الطلب حالياً.",
                 explanationEn = "The public VoxCPM2 Space queue is busy (HTTP $submitCode).",
-                setupStepsAr = "اضغط «تشغيل بالمحرك المحلي الآن».",
-                setupStepsEn = "Tap 'Use Local Studio Engine Now'.",
+                setupStepsAr = "أعد المحاولة بعد قليل.",
+                setupStepsEn = "Retry in a few moments.",
             )
         }
 
@@ -468,6 +478,9 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                     arr.put(instruction)
                 }
                 key.contains("randomize") || key.contains("random_seed") -> arr.put(false)
+                key.contains("speaker id") || pName == "sid" || pName == "speaker_id" || pName == "speakerid" -> {
+                    arr.put(request.fixedSid)
+                }
                 key.contains("seed") -> arr.put(request.fixedSeed)
                 key.contains("cfg") -> arr.put(request.cfgValue.toDouble())
                 key.contains("step") -> arr.put(request.inferenceTimesteps)
@@ -509,13 +522,13 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
 }
 
 /**
- * Deterministic On-Device Studio Engine (No Server Required).
+ * Compatibility adapter for saved studio profiles; synthesis is performed by VoxCPM2 online.
  * Strictly binds each voice to its fixed speaker ID (`fixedSid`), fixed acoustic signature
  * (pitch, formant shift, EQ), and mathematically locks every emotion + intensity % + speechRate
  * with zero randomness.
  */
 class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
-    override val kind: AiVoiceEngineKind = AiVoiceEngineKind.SONIX_LOCAL_STUDIO
+    override val kind: AiVoiceEngineKind = AiVoiceEngineKind.VOXCPM_2
     private val smartRouter = SmartVoiceRouter()
 
     override suspend fun checkHealth(
@@ -573,7 +586,6 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
             language = appLang,
             studioLuxuryEnhancement = true,
             acousticMode = acousticMode,
-            autoDownloadIfOnline = OnlineGuard.isOnline(context),
             fixedSid = request.fixedSid,
         )
 
@@ -596,8 +608,8 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
                     sampleRate = buf.sampleRate,
                     durationMs = buf.durationMs,
                     engineUsed = kind,
-                    appliedPromptSummary = "Nabra-82M + FFmpegKit (SID ${request.fixedSid}) • ${request.emotion.titleAr} ${(intensity * 100).toInt()}%",
-                    isCloudGenerated = false,
+                    appliedPromptSummary = "VoxCPM2 Cloud • ${request.emotion.titleAr} ${(intensity * 100).toInt()}%",
+                    isCloudGenerated = true,
                 )
             }
         }
@@ -771,13 +783,11 @@ internal suspend fun persistAudioBytesAsWav(
 }
 
 /**
- * Central Coordinator routing Single Synthesis & Multi-Character Dialogue requests across
- * VoxCPM2 and Sonix Local Studio Engine with strict determinism.
+ * Central coordinator for online VoxCPM2 single-voice and dialogue synthesis.
  */
 class AiVoiceStudioCoordinator(
     providers: List<AiVoiceStudioEngine> = listOf(
         VoxCpm2CloudProvider(),
-        SonixLocalStudioEngineProvider(),
     ),
 ) {
     private val registry: Map<AiVoiceEngineKind, AiVoiceStudioEngine> = providers.associateBy { it.kind }
@@ -790,20 +800,27 @@ class AiVoiceStudioCoordinator(
         backendUrl: String,
         bearerToken: String = "",
     ): AiVoiceBackendHealth = withContext(Dispatchers.IO) {
+        val reachable = try {
+            getProvider(AiVoiceEngineKind.VOXCPM_2).checkHealth(context, backendUrl, bearerToken)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            false
+        }
         AiVoiceBackendHealth(
             isChecked = true,
             isChecking = false,
-            serverReachable = true,
-            voxCpm2Ready = true,
-            voxcpm2PackageInstalled = true,
-            voxcpm2Loaded = true,
+            serverReachable = reachable,
+            voxCpm2Ready = reachable,
+            voxcpm2PackageInstalled = false,
+            voxcpm2Loaded = false,
             cudaAvailable = false,
             authRequired = false,
             voxcpm2LoadError = "",
-            voxCpmPublicSpaceChecked = true,
-            voxCpmPublicSpaceAvailable = true,
-            statusDetail = "المحرك المدمج (Nabra-82M + FFmpegKit) جاهز للعمل الفوري بدون خادم خارجي",
-            serverGpuInfo = "Nabra-82M ONNX + FFmpegKit Studio",
+            voxCpmPublicSpaceChecked = backendUrl.isBlank(),
+            voxCpmPublicSpaceAvailable = reachable,
+            statusDetail = if (reachable) "VoxCPM2 endpoint is reachable." else "VoxCPM2 endpoint is unavailable.",
+            serverGpuInfo = if (backendUrl.isBlank()) "Public VoxCPM2 Space" else backendUrl,
         )
     }
 
@@ -823,11 +840,22 @@ class AiVoiceStudioCoordinator(
                 messageEn = "Please enter script text first.",
             )
         }
+        if (TtsTextLimits.countWords(rawTrimmed) > TtsTextLimits.MAX_WORDS) {
+            return@withContext AiVoiceSynthOutcome.Error(
+                engine = AiVoiceEngineKind.VOXCPM_2,
+                messageAr = "الحد الأقصى للنص هو ${TtsTextLimits.MAX_WORDS} كلمة.",
+                messageEn = "Text is limited to ${TtsTextLimits.MAX_WORDS} words.",
+            )
+        }
         val clean = ArabicTextDiacritizer.normalizeAndHintForTts(rawTrimmed, applyLightDiacritics = true)
             .ifBlank { rawTrimmed }
 
-        val effectiveEngine = AiVoiceEngineKind.SONIX_LOCAL_STUDIO
-        val effectiveRequest = request.copy(engine = effectiveEngine, text = clean)
+        val effectiveEngine = AiVoiceEngineKind.VOXCPM_2
+        val effectiveRequest = request.copy(
+            engine = effectiveEngine,
+            text = clean,
+            fixedSeed = FIXED_DETERMINISTIC_SEED,
+        )
 
         val chunks = AiVoicePromptBuilder.splitTextIntoChunks(clean, maxCharsPerChunk = 260)
         val provider = getProvider(effectiveEngine)
@@ -839,7 +867,7 @@ class AiVoiceStudioCoordinator(
             for ((idx, chunk) in chunks.withIndex()) {
                 coroutineContext.ensureActive()
                 val pct = 0.08f + (idx.toFloat() / chunks.size.toFloat()) * 0.78f
-                onProgress(pct, "جاري التوليد عبر Nabra-82M + FFmpegKit (${idx + 1}/${chunks.size})...")
+                onProgress(pct, "جاري التوليد عبر VoxCPM2 (${idx + 1}/${chunks.size})...")
                 val chunkFile = File(outputDir, "aivoice_chunk_${UUID.randomUUID()}.wav")
                 tempFiles.add(chunkFile)
 
@@ -858,7 +886,7 @@ class AiVoiceStudioCoordinator(
             }
 
             onProgress(0.92f, "جاري الدمج ومعالجة FFmpegKit الاحترافية...")
-            val finalFile = File(outputDir, "sonix_aivoice_${System.currentTimeMillis()}.wav")
+            val finalFile = File(outputDir, "sonix_aivoice_${UUID.randomUUID()}.wav")
             val stitched = AiVoiceAudioStitcher.stitchWavSegments(
                 segments = segments,
                 outFile = finalFile,
@@ -871,7 +899,7 @@ class AiVoiceStudioCoordinator(
                 durationMs = stitched.durationMs,
                 engineUsed = effectiveEngine,
                 appliedPromptSummary = lastPrompt,
-                isCloudGenerated = false,
+                isCloudGenerated = true,
             )
         } finally {
             tempFiles.forEach { runCatching { it.delete() } }
@@ -891,15 +919,23 @@ class AiVoiceStudioCoordinator(
         val activeTurns = turns.filter { it.text.trim().isNotEmpty() }
         if (activeTurns.isEmpty()) {
             return@withContext AiVoiceSynthOutcome.Error(
-                engine = selectedEngineOverride ?: AiVoiceEngineKind.SONIX_LOCAL_STUDIO,
+                engine = selectedEngineOverride ?: AiVoiceEngineKind.VOXCPM_2,
                 messageAr = "يرجى إضافة جملة واحدة على الأقل داخل الحوار.",
                 messageEn = "Please add at least one non-empty dialogue turn.",
+            )
+        }
+        val dialogueWordCount = TtsTextLimits.countWords(activeTurns.joinToString(" ") { it.text })
+        if (dialogueWordCount > TtsTextLimits.MAX_WORDS) {
+            return@withContext AiVoiceSynthOutcome.Error(
+                engine = selectedEngineOverride ?: AiVoiceEngineKind.VOXCPM_2,
+                messageAr = "الحد الأقصى للحوار هو ${TtsTextLimits.MAX_WORDS} كلمة.",
+                messageEn = "Dialogue is limited to ${TtsTextLimits.MAX_WORDS} words.",
             )
         }
 
         val tempTurnFiles = mutableListOf<File>()
         val segments = mutableListOf<WavStitchSegment>()
-        var primaryEngine = AiVoiceEngineKind.SONIX_LOCAL_STUDIO
+        var primaryEngine = AiVoiceEngineKind.VOXCPM_2
         var anyCloud = false
 
         try {
@@ -950,7 +986,7 @@ class AiVoiceStudioCoordinator(
             }
 
             onProgress(0.92f, "جاري دمج الحوار في ملف صوتي واحد متصل...")
-            val finalDialogueWav = File(outputDir, "sonix_dialogue_${System.currentTimeMillis()}.wav")
+            val finalDialogueWav = File(outputDir, "sonix_dialogue_${UUID.randomUUID()}.wav")
             val stitched = AiVoiceAudioStitcher.stitchWavSegments(
                 segments = segments,
                 outFile = finalDialogueWav,

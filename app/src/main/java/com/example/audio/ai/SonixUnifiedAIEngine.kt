@@ -252,7 +252,7 @@ object SonixUnifiedAIEngine {
             }
         }
 
-        // Priority 3: Built-in Hybrid Studio Engine (Nabra-82M / LocalArabicTtsEngine + FFmpegKit)
+        // Priority 3: VoxCPM2 neural cloud fallback.
         val routed = SmartVoiceRouter().synthesizeStudioVoiceWithStatus(
             context = context,
             text = text,
@@ -264,13 +264,12 @@ object SonixUnifiedAIEngine {
             language = language,
             studioLuxuryEnhancement = true,
             acousticMode = effectiveMode,
-            autoDownloadIfOnline = OnlineGuard.isOnline(context),
         )
         when (routed) {
             is VoiceRouteOutcome.Success -> UnifiedSpeechResult.Success(
                 buffer = routed.result.buffer,
-                usedLocalOnnx = true,
-                engineSummaryAr = if (routed.usedFallback) "المحرك المدمج (Local + FFmpegKit)" else "Nabra-82M Neural + FFmpegKit",
+                usedLocalOnnx = false,
+                engineSummaryAr = "VoxCPM2 Neural Cloud",
             )
             is VoiceRouteOutcome.ProviderError -> UnifiedSpeechResult.Error(routed.message)
         }

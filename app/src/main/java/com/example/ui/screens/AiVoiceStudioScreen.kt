@@ -110,11 +110,11 @@ fun AiVoiceStudioScreen(
         onBack = onBack,
         onSelectTab = viewModel::setAiVoiceTab,
         onDismissError = viewModel::dismissAiVoiceError,
-        onUseLocalFallback = {
+        onRetryCloud = {
             if (isDialogueMode) {
-                viewModel.synthesizeAiVoiceDialogue(AiVoiceEngineKind.SONIX_LOCAL_STUDIO)
+                viewModel.synthesizeAiVoiceDialogue(AiVoiceEngineKind.VOXCPM_2)
             } else {
-                viewModel.synthesizeAiVoiceSingle(AiVoiceEngineKind.SONIX_LOCAL_STUDIO)
+                viewModel.synthesizeAiVoiceSingle(AiVoiceEngineKind.VOXCPM_2)
             }
         },
         onPlayPause = viewModel::playOrPauseAiVoiceOutput,
@@ -227,7 +227,7 @@ fun AiVoiceStudioContentLayout(
     onBack: () -> Unit,
     onSelectTab: (Int) -> Unit,
     onDismissError: () -> Unit,
-    onUseLocalFallback: () -> Unit,
+    onRetryCloud: () -> Unit,
     onPlayPause: () -> Unit,
     onReplay: () -> Unit,
     onStopPlayback: () -> Unit,
@@ -301,7 +301,7 @@ fun AiVoiceStudioContentLayout(
             ) {
                 StudioFocusTopBar(
                     title = if (isEnglish) "AI VOICE STUDIO" else "AI VOICE STUDIO – استوديو الصوت",
-                    subtitle = if (isEnglish) "Nabra-82M • FFmpegKit Built-in Engine" else "Nabra-82M • محرك الاستوديو المدمج",
+                    subtitle = if (isEnglish) "VoxCPM2 • Neural Cloud TTS" else "VoxCPM2 • تحويل عصبي سحابي",
                     language = language,
                     onBack = onBack,
                 )
@@ -360,7 +360,7 @@ fun AiVoiceStudioContentLayout(
                                 state = state,
                                 isEnglish = isEnglish,
                                 onDismiss = onDismissError,
-                                onUseLocalFallback = onUseLocalFallback,
+                                onRetryCloud = onRetryCloud,
                             )
                         }
                     }
@@ -435,7 +435,7 @@ fun AiVoiceStudioContentLayout(
                                     val subItems = listOf(
                                         0 to (if (isEnglish) "Dialogue" else "الحوار المتعدد"),
                                         1 to (if (isEnglish) "Clone & Save" else "استنساخ الصوت"),
-                                        2 to (if (isEnglish) "Engine" else "المحرك المدمج"),
+                                        2 to (if (isEnglish) "Engine" else "المحرك السحابي"),
                                     )
                                     subItems.forEach { (idx, title) ->
                                         val selected = advancedSubTab == idx

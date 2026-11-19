@@ -88,7 +88,8 @@ class PreferencesStore(private val context: Context) {
         val migrated = raw
             .replace("\"AUDAR_TTS_V1_FLASH\"", "\"VOXCPM_2\"")
             .replace("\"AUDAR_TTS_V1_TURBO\"", "\"VOXCPM_2\"")
-            .replace("\"EDGE_NEURAL_FREE\"", "\"SONIX_LOCAL_STUDIO\"")
+            .replace("\"EDGE_NEURAL_FREE\"", "\"VOXCPM_2\"")
+            .replace("\"SONIX_LOCAL_STUDIO\"", "\"VOXCPM_2\"")
             .replace("\"ELDERLY\"", "\"MALE\"")
             .replace("\"NARRATOR\"", "\"MALE\"")
             .replace("\"CARTOON\"", "\"MALE\"")

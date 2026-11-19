@@ -1,10 +1,20 @@
 package com.example.audio.tts
 
 import android.content.Context
-import com.aistudio.voicepro.sonixk.LocalTtsSynthResult
-import com.aistudio.voicepro.sonixk.NabraOnnxDirectEngine
-import com.aistudio.voicepro.sonixk.NabraSynthOutcome
+import com.example.audio.AudioDecoder
+import com.example.audio.OnlineGuard
+import com.example.audio.fx.StudioLuxuryAudioFilter
+import com.example.audio.writeStereoWavFile
+import com.example.audio.aivoice.AiArabicDialect
+import com.example.audio.aivoice.AiVoiceCategory
+import com.example.audio.aivoice.AiVoiceEmotion
+import com.example.audio.aivoice.AiVoiceEngineKind
+import com.example.audio.aivoice.AiVoiceLanguage
+import com.example.audio.aivoice.AiVoiceStudioCoordinator
+import com.example.audio.aivoice.AiVoiceSynthOutcome
+import com.example.audio.aivoice.AiVoiceSynthRequest
 import com.example.model.AppLanguage
+import com.example.model.StereoAudioBuffer
 import com.example.model.TTS_DIALECTS
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
@@ -12,26 +22,28 @@ import com.example.model.TtsEngineMode
 import com.example.model.TtsGender
 import com.example.model.TtsPersonaAcousticMode
 import com.example.model.TtsVoicePersona
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
+
+data class TtsSynthResult(
+    val buffer: StereoAudioBuffer,
+    val audioFile: File,
+)
 
 sealed interface VoiceRouteOutcome {
     data class Success(
-        val result: LocalTtsSynthResult,
-        val engineUsed: TtsEngineMode,
+        val result: TtsSynthResult,
+        val engineUsed: TtsEngineMode = TtsEngineMode.VOX_NEURAL_ONLINE,
         val usedFallback: Boolean = false,
     ) : VoiceRouteOutcome
 
     data class ProviderError(val message: String) : VoiceRouteOutcome
 }
 
-class SmartVoiceRouter {
-
-    /**
-     * يوجّه طلبات التحويل الصوتي مباشرة إلى محرك [NabraOnnxDirectEngine] (Nabra-82M Sherpa-ONNX + FFmpegKit)،
-     * مع مسار احتياطي فوري عبر المحرك المحلي عندما تكون ملفات أو بيئة Sherpa-ONNX قيد التنزيل أو غير متاحة.
-     */
+class SmartVoiceRouter(
+    private val coordinator: AiVoiceStudioCoordinator = AiVoiceStudioCoordinator(),
+) {
     suspend fun synthesizeStudioVoiceWithStatus(
         context: Context,
         text: String,
@@ -44,8 +56,7 @@ class SmartVoiceRouter {
         studioLuxuryEnhancement: Boolean = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(context),
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
-        autoDownloadIfOnline: Boolean = true,
-        fixedSid: Int? = NabraOnnxDirectEngine.DEFAULT_FIXED_SID,
+        fixedSid: Int? = 0,
     ): VoiceRouteOutcome = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) {
@@ -53,34 +64,113 @@ class SmartVoiceRouter {
                 if (language == AppLanguage.EN) "Please enter text first." else "يرجى إدخال النص أولاً.",
             )
         }
+        if (TtsTextLimits.countWords(cleanText) > TtsTextLimits.MAX_WORDS) {
+            return@withContext VoiceRouteOutcome.ProviderError(
+                if (language == AppLanguage.EN) {
+                    "Text is limited to ${TtsTextLimits.MAX_WORDS} words."
+                } else {
+                    "الحد الأقصى للنص هو ${TtsTextLimits.MAX_WORDS} كلمة."
+                },
+            )
+        }
+        if (!OnlineGuard.isOnline(context)) {
+            return@withContext VoiceRouteOutcome.ProviderError(
+                if (language == AppLanguage.EN) {
+                    "VoxCPM2 requires an internet connection."
+                } else {
+                    "يتطلب محرك VoxCPM2 اتصالاً بالإنترنت."
+                },
+            )
+        }
 
+        val outputDir = File(context.cacheDir, "vox_tts").apply { mkdirs() }
+        val prompt = buildString {
+            append(persona?.titleEn ?: if (gender == TtsGender.MALE) "adult male voice" else "adult female voice")
+            append(". ")
+            append(persona?.descEn.orEmpty())
+            append(". ")
+            append("Delivery style: ")
+            append(style.name.lowercase().replace('_', ' '))
+            append(". Dialect: ")
+            append(dialect.id)
+            if (acousticMode != null) {
+                append(". Acoustic profile: ")
+                append(acousticMode.name.lowercase().replace('_', ' '))
+            }
+            if (studioLuxuryEnhancement) append(". Clean studio mastering.")
+        }
+        val request = AiVoiceSynthRequest(
+            engine = AiVoiceEngineKind.VOXCPM_2,
+            text = cleanText,
+            language = dialect.toAiLanguage(language),
+            dialect = AiArabicDialect.MSA,
+            category = if (gender == TtsGender.MALE) AiVoiceCategory.MALE else AiVoiceCategory.FEMALE,
+            voiceDescriptionPrompt = prompt,
+            emotion = style.toAiEmotion(),
+            emotionIntensity = 0.65f,
+            speechRate = speechRate.coerceIn(0.60f, 1.50f),
+            pitchOffsetSemitones = (12.0 * kotlin.math.ln(pitch.coerceIn(0.62f, 1.65f)) / kotlin.math.ln(2.0)).toFloat(),
+            fixedSid = fixedSid ?: 0,
+            fixedSeed = 42,
+        )
         when (
-            val outcome = NabraOnnxDirectEngine.synthesize(
+            val outcome = coordinator.synthesizeSingle(
                 context = context,
-                text = cleanText,
-                dialect = dialect,
-                gender = gender,
-                style = style,
-                speed = speechRate,
-                pitch = pitch,
-                language = language,
-                studioLuxuryEnhancement = studioLuxuryEnhancement,
-                persona = persona,
-                acousticMode = acousticMode,
-                autoDownloadIfOnline = autoDownloadIfOnline,
-                fixedSid = fixedSid,
+                request = request,
+                backendUrl = "",
+                outputDir = outputDir,
             )
         ) {
-            is NabraSynthOutcome.Success -> VoiceRouteOutcome.Success(
-                result = outcome.result,
-                engineUsed = if (outcome.usedNabraNeural) {
-                    TtsEngineMode.NABRA_ONNX_DIRECT
+            is AiVoiceSynthOutcome.Success -> {
+                val file = File(outcome.audioFilePath)
+                val decoded = AudioDecoder.decodeFile(file)
+                if (decoded == null || decoded.frameCount <= 0) {
+                    file.delete()
+                    VoiceRouteOutcome.ProviderError(
+                        if (language == AppLanguage.EN) {
+                            "VoxCPM2 returned audio that could not be decoded."
+                        } else {
+                            "أعاد VoxCPM2 ملفاً صوتياً تعذر فك ترميزه."
+                        },
+                    )
                 } else {
-                    TtsEngineMode.LOCAL_ARABIC_STUDIO
-                },
-                usedFallback = !outcome.usedNabraNeural,
+                    try {
+                        val mastered = if (studioLuxuryEnhancement) {
+                            StudioLuxuryAudioFilter.applyAcousticMastering(
+                                context = context,
+                                decodedBuffer = decoded,
+                                mode = acousticMode ?: persona?.defaultAcousticMode ?: TtsPersonaAcousticMode.NATURAL,
+                                style = style,
+                                gender = gender,
+                                luxuryBoost = true,
+                                cancelPreviousFfmpeg = false,
+                            )
+                        } else {
+                            decoded
+                        }
+                        if (mastered !== decoded) writeStereoWavFile(file, mastered)
+                        VoiceRouteOutcome.Success(TtsSynthResult(mastered, file))
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        file.delete()
+                        throw ce
+                    } catch (e: Exception) {
+                        file.delete()
+                        VoiceRouteOutcome.ProviderError(
+                            if (language == AppLanguage.EN) {
+                                "VoxCPM2 audio mastering failed: ${e.localizedMessage ?: e.javaClass.simpleName}"
+                            } else {
+                                "فشلت معالجة صوت VoxCPM2: ${e.localizedMessage ?: e.javaClass.simpleName}"
+                            },
+                        )
+                    }
+                }
+            }
+            is AiVoiceSynthOutcome.Error -> VoiceRouteOutcome.ProviderError(
+                if (language == AppLanguage.EN) outcome.messageEn else outcome.messageAr,
             )
-            is NabraSynthOutcome.Error -> VoiceRouteOutcome.ProviderError(outcome.message)
+            is AiVoiceSynthOutcome.ConfigurationRequired -> VoiceRouteOutcome.ProviderError(
+                if (language == AppLanguage.EN) outcome.explanationEn else outcome.explanationAr,
+            )
         }
     }
 
@@ -91,25 +181,22 @@ class SmartVoiceRouter {
         outputFile: File,
         context: Context,
     ): Boolean = withContext(Dispatchers.IO) {
-        val outcome = NabraOnnxDirectEngine.synthesize(
+        val outcome = synthesizeStudioVoiceWithStatus(
             context = context,
             text = text,
             dialect = dialect,
             gender = gender,
             style = TtsDeliveryStyle.NATURAL_WARM,
-            speed = 1.0f,
+            speechRate = 1.0f,
             pitch = 1.0f,
         )
-        if (outcome is NabraSynthOutcome.Success) {
+        if (outcome !is VoiceRouteOutcome.Success) return@withContext false
+        try {
             outputFile.parentFile?.mkdirs()
-            val copied = runCatching {
-                outcome.result.audioFile.copyTo(outputFile, overwrite = true)
-                true
-            }.getOrDefault(false)
-            runCatching { outcome.result.audioFile.delete() }
-            copied && outputFile.exists() && outputFile.length() > 44L
-        } else {
-            false
+            val copied = outcome.result.audioFile.copyTo(outputFile, overwrite = true)
+            copied.exists() && copied.length() > 44L
+        } finally {
+            outcome.result.audioFile.delete()
         }
     }
 
@@ -123,22 +210,42 @@ class SmartVoiceRouter {
         pitch: Float,
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
-    ): LocalTtsSynthResult? = withContext(Dispatchers.IO) {
-        when (
-            val outcome = synthesizeStudioVoiceWithStatus(
-                context = context,
-                text = text,
-                dialect = dialect,
-                gender = gender,
-                style = style,
-                speechRate = speechRate,
-                pitch = pitch,
-                persona = persona,
-                acousticMode = acousticMode,
-            )
-        ) {
-            is VoiceRouteOutcome.Success -> outcome.result
-            else -> null
-        }
+    ): TtsSynthResult? = when (
+        val outcome = synthesizeStudioVoiceWithStatus(
+            context = context,
+            text = text,
+            dialect = dialect,
+            gender = gender,
+            style = style,
+            speechRate = speechRate,
+            pitch = pitch,
+            persona = persona,
+            acousticMode = acousticMode,
+        )
+    ) {
+        is VoiceRouteOutcome.Success -> outcome.result
+        is VoiceRouteOutcome.ProviderError -> null
     }
+
+    private fun TtsDeliveryStyle.toAiEmotion(): AiVoiceEmotion = when (this) {
+        TtsDeliveryStyle.SAD -> AiVoiceEmotion.SAD
+        TtsDeliveryStyle.ANGRY -> AiVoiceEmotion.SERIOUS
+        TtsDeliveryStyle.ENERGETIC -> AiVoiceEmotion.EXCITED
+        TtsDeliveryStyle.DRAMATIC, TtsDeliveryStyle.RADIO_ANCHOR -> AiVoiceEmotion.SERIOUS
+        TtsDeliveryStyle.STORYTELLING -> AiVoiceEmotion.CALM
+        TtsDeliveryStyle.NATURAL_WARM -> AiVoiceEmotion.NEUTRAL
+    }
+
+    private fun TtsDialect.toAiLanguage(fallback: AppLanguage): AiVoiceLanguage =
+        when (localeTag.substringBefore('-').lowercase()) {
+            "en" -> AiVoiceLanguage.EN
+            "fa" -> AiVoiceLanguage.FA
+            "tr" -> AiVoiceLanguage.TR
+            "ar" -> AiVoiceLanguage.AR
+            else -> when (fallback) {
+                AppLanguage.EN -> AiVoiceLanguage.EN
+                AppLanguage.FA -> AiVoiceLanguage.FA
+                AppLanguage.AR -> AiVoiceLanguage.AR
+            }
+        }
 }

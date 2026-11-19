@@ -253,6 +253,7 @@ class StudioAudioPlayer(
     }
 
     fun seekToFraction(frac: Float) {
+        ExclusiveAudioController.onBeforeStudioPlayerSeek(this)
         val total = totalFrameCount()
         if (total <= 0L) return
         val clampedFrac = clamp(frac, 0f, 1f)
@@ -313,7 +314,7 @@ class StudioAudioPlayer(
     }
 
     fun play(): Boolean {
-        AudioPlaybackController.onBeforeStudioPlayerPlay(this)
+        ExclusiveAudioController.onBeforeStudioPlayerPlay(this)
         val buf = buffer
         val diskFile = sourceFile
         if (buf == null) {
@@ -748,7 +749,7 @@ class StudioAudioPlayer(
     }
 
     fun dispose() {
-        AudioPlaybackController.unregisterStudioPlayer(this)
+        ExclusiveAudioController.unregisterStudioPlayer(this)
         stop()
     }
 
@@ -1205,7 +1206,7 @@ class StudioAudioPlayer(
                 latestLevel = 0.45f
                 latestDbfs = -7f
                 emitTelemetry()
-                delay(65L)
+                delay(16L)
             }
         } catch (e: Exception) {
             Log.e("StudioAudioPlayer", "streamDiskFileWithMediaPlayer failed safely", e)

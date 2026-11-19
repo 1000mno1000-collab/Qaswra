@@ -13,12 +13,11 @@ import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.aistudio.voicepro.sonixk.NabraOnnxDirectEngine
 import com.example.BuildConfig
 import com.example.audio.AudioDecodeOutcome
 import com.example.audio.AudioDecoder
 import com.example.audio.AudioFileUploader
-import com.example.audio.AudioPlaybackController
+import com.example.audio.ExclusiveAudioController
 import com.example.audio.AudioPlayerManager
 import com.example.audio.AudioSignalAnalyzer
 import com.example.audio.AudioUploadOutcome
@@ -291,7 +290,7 @@ data class StudioUiState(
     val importBytesProgress: Float? = null,
     val exportProgress: Float? = null,
     val purifyProgress: Float? = null,
-    val ttsEngineMode: TtsEngineMode = TtsEngineMode.NABRA_ONNX_DIRECT,
+    val ttsEngineMode: TtsEngineMode = TtsEngineMode.VOX_NEURAL_ONLINE,
     val studioLuxuryEnhancement: Boolean = true,
     val homeScrollIndex: Int = 0,
     val homeScrollOffset: Int = 0,
@@ -619,7 +618,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
-        AudioPlaybackController.registerStudioPlayer(player)
+        ExclusiveAudioController.registerStudioPlayer(player)
         StudioPlaybackBridge.onTogglePlayPause = { togglePlayPause() }
         StudioPlaybackBridge.onStopPlayback = { stopPlayback() }
         AudioPlayerManager.onBeforeStartExclusive = {
@@ -629,17 +628,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val appCtx = getApplication<Application>()
-        viewModelScope.launch {
-            NabraOnnxDirectEngine.progressFlow.collect { dlState ->
-                _uiState.update { cur ->
-                    cur.copy(ttsUiState = cur.ttsUiState.copy(nabraDownloadState = dlState))
-                }
-            }
-        }
         viewModelScope.launch(Dispatchers.IO + safeCoroutineHandler) {
             AppDiagnosticLog.init(appCtx)
             RecentEditsCacheManager.init(appCtx)
-            NabraOnnxDirectEngine.refreshStatus(appCtx)
             val luxury = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(appCtx)
             val modelStatus = LocalNeuralVoiceEngine.detectLocalModels(appCtx)
             _uiState.update {
@@ -1305,7 +1296,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         lastLivePreviewRequestMs = now
         stopToolPreview()
         stopMixPreviewPlayer()
-        AudioPlaybackController.onBeforeStudioPlayerPlay(player)
+        ExclusiveAudioController.onBeforeStudioPlayerPlay(player)
         livePreviewStartedPlayback = true
         player.play()
     }
@@ -1603,7 +1594,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             if (_playbackTelemetry.value.isPlaying) {
                 player.pause()
             } else {
-                AudioPlaybackController.onBeforeStudioPlayerPlay(player)
+                ExclusiveAudioController.onBeforeStudioPlayerPlay(player)
                 val started = player.play()
                 if (!started) {
                     val msg = if (_uiState.value.language == AppLanguage.EN) {
@@ -1626,7 +1617,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun stopPlayback() {
-        AudioPlaybackController.stopAllExclusive()
+        ExclusiveAudioController.stopAllExclusive()
         player.stop()
         stopMixPreviewPlayer()
         SonixMediaPlaybackService.stopService(getApplication())
@@ -2196,16 +2187,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     val cmd = when {
                         sSec <= 0.02 -> {
                             val startAt = String.format(Locale.US, "%.3f", eSec)
-                            "-y -ss $startAt -i \"${safeIn.absolutePath}\" -vn -ar 44100 -ac 2 -c:a aac -b:a 192k \"${target.absolutePath}\""
+                            "-y -ss $startAt -i \"${safeIn.absolutePath}\" -af \"afade=t=in:st=0:d=0.015\" -vn -ar 44100 -ac 2 -c:a aac -b:a 192k \"${target.absolutePath}\""
                         }
                         eSec >= durSec - 0.02 -> {
                             val endAt = String.format(Locale.US, "%.3f", sSec)
-                            "-y -i \"${safeIn.absolutePath}\" -t $endAt -vn -ar 44100 -ac 2 -c:a aac -b:a 192k \"${target.absolutePath}\""
+                            val fadeStart = String.format(Locale.US, "%.3f", (sSec - 0.015).coerceAtLeast(0.0))
+                            "-y -i \"${safeIn.absolutePath}\" -t $endAt -af \"afade=t=out:st=$fadeStart:d=0.015\" -vn -ar 44100 -ac 2 -c:a aac -b:a 192k \"${target.absolutePath}\""
                         }
                         else -> {
                             val sStr = String.format(Locale.US, "%.3f", sSec)
                             val eStr = String.format(Locale.US, "%.3f", eSec)
-                            val fc = "[0:a]atrim=0:$sStr,asetpts=PTS-STARTPTS[a0];[0:a]atrim=start=$eStr,asetpts=PTS-STARTPTS[a1];[a0][a1]concat=n=2:v=0:a=1[out]"
+                            val fc = "[0:a]atrim=duration=$sStr,asetpts=PTS-STARTPTS[a0];[0:a]atrim=start=$eStr,asetpts=PTS-STARTPTS[a1];[a0][a1]acrossfade=d=0.015:c1=tri:c2=tri[out]"
                             "-y -i \"${safeIn.absolutePath}\" -filter_complex \"$fc\" -map \"[out]\" -vn -ar 44100 -ac 2 -c:a aac -b:a 192k \"${target.absolutePath}\""
                         }
                     }
@@ -5306,47 +5298,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // TTS Studio (Nabra-82M Sherpa-ONNX Direct + FFmpegKit Studio Mastering + Offline Local Fallback)
+    // TTS Studio (VoxCPM2 neural cloud synthesis)
     fun setStudioLuxuryEnhancement(enabled: Boolean) {
         FreeEmotionalTtsClient.saveStudioLuxuryEnhancement(getApplication(), enabled)
         _uiState.update { it.copy(studioLuxuryEnhancement = enabled) }
-    }
-
-    fun downloadNabraOnnxModels() {
-        val lang = _uiState.value.language
-        activeOnlineJob?.cancel()
-        activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
-            _uiState.update {
-                it.copy(
-                    isOnlineTaskRunning = true,
-                    onlineTaskLabel = "Nabra-82M Download",
-                    ttsUiState = it.ttsUiState.copy(errorMessage = null),
-                )
-            }
-            try {
-                val res = NabraOnnxDirectEngine.ensureModelsDownloaded(getApplication(), lang)
-                if (res.isReady) {
-                    postBanner(
-                        if (lang == AppLanguage.EN) {
-                            "Nabra-82M ONNX models downloaded and ready offline."
-                        } else {
-                            "تم تحميل ملفات نموذج Nabra-82M الثلاثة بنجاح داخل nabra_onnx"
-                        },
-                    )
-                } else if (!res.errorMessage.isNullOrBlank()) {
-                    _uiState.update {
-                        it.copy(ttsUiState = it.ttsUiState.copy(errorMessage = res.errorMessage))
-                    }
-                }
-            } finally {
-                _uiState.update {
-                    it.copy(
-                        isOnlineTaskRunning = false,
-                        onlineTaskLabel = "",
-                    )
-                }
-            }
-        }
     }
 
     private fun releaseTtsPreviewPlayer() {
@@ -5390,7 +5345,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
             return
         }
-        val engineMode = TtsEngineMode.NABRA_ONNX_DIRECT
+        val engineMode = TtsEngineMode.VOX_NEURAL_ONLINE
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             stopTtsPreview()
@@ -5412,7 +5367,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val appCtx = getApplication<Application>()
                 val cur = _uiState.value
-                val allowAutoDownload = com.aistudio.voicepro.sonixk.NabraOnnxDirectEngine.areCoreWeightsPresent(appCtx)
                 val outcome = smartVoiceRouter.synthesizeStudioVoiceWithStatus(
                     context = appCtx,
                     text = text.trim(),
@@ -5425,8 +5379,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
                     persona = persona,
                     acousticMode = acousticMode,
-                    autoDownloadIfOnline = allowAutoDownload,
-                    fixedSid = NabraOnnxDirectEngine.DEFAULT_FIXED_SID,
+                    fixedSid = 0,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -5580,7 +5533,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         if (text.isBlank()) return
-        val engineMode = TtsEngineMode.NABRA_ONNX_DIRECT
+        val engineMode = TtsEngineMode.VOX_NEURAL_ONLINE
         activeOnlineJob?.cancel()
         activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
             _uiState.update {
@@ -5611,7 +5564,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
                     persona = persona,
                     acousticMode = acousticMode,
-                    fixedSid = NabraOnnxDirectEngine.DEFAULT_FIXED_SID,
+                    fixedSid = 0,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -5650,13 +5603,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         val personaTag = persona?.let {
                             if (lang == AppLanguage.EN) it.titleEn else it.titleAr
                         }
-                        val engineTag = if (outcome.engineUsed == TtsEngineMode.NABRA_ONNX_DIRECT) {
-                            "Nabra-82M • Studio"
-                        } else if (cur.studioLuxuryEnhancement) {
-                            "Sonix Local • Studio"
-                        } else {
-                            "Sonix Local"
-                        }
+                        val engineTag = "VoxCPM2 Neural • Cloud"
                         val titleLabel = listOfNotNull(engineTag, personaTag, dialectLabel).joinToString(" • ")
                         repository.indexAudioRecording(titleLabel, rawBuf, RecordingSourceType.TTS)
                         _uiState.update {
@@ -5671,7 +5618,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             )
                         }
                         val bannerPersona = personaTag?.let { " — $it" }.orEmpty()
-                        val modeNote = if (outcome.engineUsed == TtsEngineMode.NABRA_ONNX_DIRECT) "Nabra-82M" else "الاستوديو المحلي"
+                        val modeNote = "VoxCPM2"
                         postBanner("تم توليد وإدراج الصوت ($modeNote • $dialectLabel$bannerPersona) بنجاح")
                     }
                     is VoiceRouteOutcome.ProviderError -> {
@@ -7516,7 +7463,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 speechRate = character.defaultSpeechRate,
                 pitchOffsetSemitones = character.pitchOffsetSemitones,
                 fixedSid = character.fixedSid,
-                fixedSeed = character.fixedSeed,
+                fixedSeed = 42,
                 fixedFormantShift = character.fixedFormantShift,
                 fixedEqLowDb = character.fixedEqLowDb,
                 fixedEqPresenceDb = character.fixedEqPresenceDb,
@@ -7621,7 +7568,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             defaultSpeechRate = cur.speechRate,
             pitchOffsetSemitones = cur.pitchOffsetSemitones,
             fixedSid = cur.fixedSid,
-            fixedSeed = cur.fixedSeed,
+            fixedSeed = 42,
             fixedFormantShift = cur.fixedFormantShift,
             fixedEqLowDb = cur.fixedEqLowDb,
             fixedEqPresenceDb = cur.fixedEqPresenceDb,
@@ -7697,7 +7644,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(safeCoroutineHandler) {
             repository.saveAiVoiceBackendUrl("")
             _aiVoiceUiState.update { it.copy(backendServerUrl = "") }
-            postBanner("يعمل استوديو الصوت مباشرة عبر المحرك المدمج (Nabra-82M + FFmpegKit)")
+            postBanner("يستخدم استوديو الصوت خدمة VoxCPM2 السحابية")
         }
     }
 
@@ -7759,7 +7706,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     selectedEngine = engine,
                     isSynthesizing = true,
                     synthesisProgress = 0.04f,
-                    synthesisStatusLabel = "جاري تحضير المحرك المدمج (Nabra-82M + FFmpegKit)...",
+                    synthesisStatusLabel = "جاري الاتصال بمحرك VoxCPM2 السحابي...",
                     errorTitle = null,
                     errorDetail = null,
                     setupRequiredGuide = null,
@@ -7780,7 +7727,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 speechRate = cur.speechRate,
                 pitchOffsetSemitones = cur.pitchOffsetSemitones,
                 fixedSid = cur.fixedSid,
-                fixedSeed = cur.fixedSeed,
+                fixedSeed = 42,
                 fixedFormantShift = cur.fixedFormantShift,
                 fixedEqLowDb = cur.fixedEqLowDb,
                 fixedEqPresenceDb = cur.fixedEqPresenceDb,
@@ -8160,7 +8107,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         replaceActiveSourceFile(null)
         replaceMixBgSourceFile(null)
         voiceProcessor.stop()
-        AudioPlaybackController.stopAllExclusive()
+        ExclusiveAudioController.stopAllExclusive()
         player.dispose()
         recorder.discard()
         stopToolPreview()

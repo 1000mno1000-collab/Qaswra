@@ -163,7 +163,7 @@ object AudioPlayerManager {
         onCompletion: () -> Unit,
         onError: (String) -> Unit,
     ): Boolean {
-        runCatching { AudioPlaybackController.onBeforePreviewManagerPlay(tag) }
+        runCatching { ExclusiveAudioController.onBeforePreviewManagerPlay(tag) }
         runCatching { onBeforeStartExclusive?.invoke() }
 
         val priorCleanup: (() -> Unit)?
