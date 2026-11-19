@@ -441,16 +441,16 @@ fun InAppAudioPickerScreen(
                                 .padding(14.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            val phaseLabel = if (prog >= 0.50f && !activeLabel.isNullOrBlank()) {
+                                activeLabel
+                            } else {
+                                t(lang, "uploading_to_cache_label")
+                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                val phaseLabel = if (prog >= 0.50f && !activeLabel.isNullOrBlank()) {
-                                    activeLabel
-                                } else {
-                                    t(lang, "uploading_to_cache_label")
-                                }
                                 Text(
                                     text = if (byteTransferActive && byteFraction == null) {
                                         phaseLabel.orEmpty()
