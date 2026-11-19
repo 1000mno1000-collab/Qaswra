@@ -2,5 +2,4 @@
 <full-backup-content>
     <include domain="sharedpref" path="." />
     <exclude domain="sharedpref" path="sonix_crash_guard.xml" />
-    <exclude domain="sharedpref" path="sonix_nabra_native_guard.xml" />
 </full-backup-content>

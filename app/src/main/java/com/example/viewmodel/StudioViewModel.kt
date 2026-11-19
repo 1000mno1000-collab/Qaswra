@@ -282,6 +282,7 @@ data class StudioUiState(
     val deviceAudios: List<DeviceAudioItem> = emptyList(),
     val isScanningDeviceAudio: Boolean = false,
     val statusBanner: String? = null,
+    val statusBannerRepeatCount: Int = 1,
     val isBusy: Boolean = false,
     val isProcessing: Boolean = false,
     val importProgress: Float? = null,
@@ -845,7 +846,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun postBanner(msg: String) {
         bannerJob?.cancel()
-        _uiState.update { it.copy(statusBanner = msg) }
+        _uiState.update { state ->
+            val clean = msg.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty().take(160)
+            val repeated = state.statusBanner == clean
+            state.copy(
+                statusBanner = clean,
+                statusBannerRepeatCount = if (repeated) state.statusBannerRepeatCount + 1 else 1,
+            )
+        }
         bannerJob = viewModelScope.launch {
             delay(4200L)
             _uiState.update { it.copy(statusBanner = null) }
@@ -854,7 +862,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearBanner() {
         bannerJob?.cancel()
-        _uiState.update { it.copy(statusBanner = null) }
+        _uiState.update { it.copy(statusBanner = null, statusBannerRepeatCount = 1) }
     }
 
     fun showStatusBanner(msg: String) {

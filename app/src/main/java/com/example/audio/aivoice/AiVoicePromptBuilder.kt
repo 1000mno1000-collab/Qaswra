@@ -66,6 +66,7 @@ object AiVoicePromptBuilder {
             put("speaking_rate", request.speechRate.toDouble())
             put("pitch_semitones", request.pitchOffsetSemitones.toDouble())
             put("seed", request.fixedSeed)
+            put("randomize_seed", false)
             put("fixed_sid", request.fixedSid)
             put("speaker_id", request.fixedSid)
             put("cfg_value", request.cfgValue.toDouble())

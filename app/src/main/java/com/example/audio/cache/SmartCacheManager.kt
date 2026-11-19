@@ -24,7 +24,6 @@ object SmartCacheManager {
         "silence_stream",
         "reels_audio_fx",
         "free_emotional_tts",
-        "nabra_tts",
         "local_arabic_tts",
         "exports",
         "audio_upload_cache",

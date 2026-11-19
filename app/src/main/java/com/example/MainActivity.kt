@@ -1249,6 +1249,7 @@ private fun SonixRootApp(
                     exit = fadeOut() + slideOutVertically { -it / 2 },
                 ) {
                     val banner = uiState.statusBanner.orEmpty()
+                    val repeatBadge = if (uiState.statusBannerRepeatCount > 1) " ×${uiState.statusBannerRepeatCount}" else ""
                     val isErr = banner.contains("تعذر") || banner.contains("خطأ") ||
                         banner.contains("فشل") || banner.contains("failed", ignoreCase = true) ||
                         banner.contains("error", ignoreCase = true)
@@ -1292,7 +1293,7 @@ private fun SonixRootApp(
                                 modifier = Modifier.size(18.dp),
                             )
                             Text(
-                                text = banner,
+                                text = banner + repeatBadge,
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                                 color = StudioColors.TextPrimary,
                                 textAlign = TextAlign.Start,

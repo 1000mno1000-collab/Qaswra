@@ -257,7 +257,8 @@ class StudioAudioPlayer(
         val total = totalFrameCount()
         if (total <= 0L) return
         val clampedFrac = clamp(frac, 0f, 1f)
-        playhead = clampedFrac * max(0L, total - 1L).toDouble()
+        val boundedFrac = if (loopEnabled) clamp(clampedFrac, loopStartFrac, loopEndFrac) else clampedFrac
+        playhead = boundedFrac * max(0L, total - 1L).toDouble()
         pipeline?.reset()
         val mp = streamMediaPlayer
         if (mp != null) {

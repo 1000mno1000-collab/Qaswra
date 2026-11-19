@@ -1239,7 +1239,13 @@ fun HomeScreen(
     SonixExitConfirmDialog(
         open = exitConfirmDialogOpen,
         language = lang,
+        hasUnsavedChanges = uiState.hasUnsavedChanges,
         onStay = { exitConfirmDialogOpen = false },
+        onSaveToDraftsAndExit = {
+            exitConfirmDialogOpen = false
+            viewModel.saveCloudDraft(uiState.activeProjectName.ifBlank { "مسودة Sonix" })
+            context.findHostActivity()?.finish()
+        },
         onConfirmExit = {
             exitConfirmDialogOpen = false
             context.findHostActivity()?.finish()

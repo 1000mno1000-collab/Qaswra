@@ -59,6 +59,9 @@ data class EchoReverbParams(
     val diffusion: Float = 0f,
 )
 
+/** Single immutable source of truth for every Professional Echo control. */
+typealias ProEchoState = EchoReverbParams
+
 val EQ_10_FREQUENCIES_HZ: IntArray = intArrayOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
 
 val EQ_10_LABELS: List<String> = listOf(

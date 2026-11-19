@@ -636,6 +636,7 @@ fun AuthScreen(
     SonixExitConfirmDialog(
         open = exitConfirmDialogOpen,
         language = lang,
+        hasUnsavedChanges = uiState.hasUnsavedChanges,
         onStay = { exitConfirmDialogOpen = false },
         onConfirmExit = {
             exitConfirmDialogOpen = false

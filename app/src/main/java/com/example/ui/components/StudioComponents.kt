@@ -1195,8 +1195,10 @@ private fun TransportOutputMeter(
 fun SonixExitConfirmDialog(
     open: Boolean,
     language: AppLanguage,
+    hasUnsavedChanges: Boolean = false,
     onStay: () -> Unit,
     onConfirmExit: () -> Unit,
+    onSaveToDraftsAndExit: () -> Unit = onConfirmExit,
 ) {
     if (!open) return
     val isEn = language == AppLanguage.EN
@@ -1214,49 +1216,55 @@ fun SonixExitConfirmDialog(
             )
         },
         text = {
-            Text(
-                text = if (isEn) {
-                    "Would you like to leave Sonix ✦ or stay?"
-                } else {
-                    "هل تريد الخروج من تطبيق Sonix ✦ أم البقاء؟"
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = StudioColors.TextSecondary,
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = if (isEn) "Choose how to leave Sonix ✦." else "اختر كيفية مغادرة Sonix ✦.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = StudioColors.TextSecondary,
+                )
+                if (hasUnsavedChanges) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Button(
+                            onClick = onSaveToDraftsAndExit,
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                        ) { Text(if (isEn) "Save draft" else "حفظ في المسودات والخروج", textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
+                        OutlinedButton(
+                            onClick = onConfirmExit,
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, StudioColors.RoseBright.copy(alpha = 0.75f)),
+                        ) { Text(if (isEn) "Exit" else "خروج بدون حفظ", textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = StudioColors.RoseBright) }
+                        OutlinedButton(
+                            onClick = onStay,
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.65f)),
+                        ) { Text(if (isEn) "Stay" else "البقاء", textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = StudioColors.Cyan) }
+                    }
+                }
+            }
         },
         confirmButton = {
-            Button(
-                onClick = onConfirmExit,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = StudioColors.RoseBright,
-                    contentColor = StudioColors.BgTop,
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .defaultMinSize(minHeight = 48.dp)
-                    .testTag("exit_dialog_confirm_button"),
-            ) {
-                Text(
-                    text = if (isEn) "Exit" else "خروج",
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                )
-            }
+            if (!hasUnsavedChanges) {
+                Button(
+                    onClick = onConfirmExit,
+                    colors = ButtonDefaults.buttonColors(containerColor = StudioColors.RoseBright, contentColor = StudioColors.BgTop),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("exit_dialog_confirm_button"),
+                ) { Text(if (isEn) "Exit" else "خروج", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)) }
+            } else Unit
         },
         dismissButton = {
-            OutlinedButton(
-                onClick = onStay,
-                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.6f)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .defaultMinSize(minHeight = 48.dp)
-                    .testTag("exit_dialog_stay_button"),
-            ) {
-                Text(
-                    text = if (isEn) "Stay" else "البقاء",
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                    color = StudioColors.Cyan,
-                )
-            }
+            if (!hasUnsavedChanges) OutlinedButton(onClick = onStay, border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.6f)),
+                shape = RoundedCornerShape(12.dp), modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("exit_dialog_stay_button")) {
+                Text(if (isEn) "Stay" else "البقاء", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold), color = StudioColors.Cyan)
+            } else Unit
         },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.padding(20.dp)
     )
 }

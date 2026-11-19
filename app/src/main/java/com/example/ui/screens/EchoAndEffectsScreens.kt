@@ -41,17 +41,23 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -112,6 +118,7 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EchoReverbScreen(
     uiState: StudioUiState,
@@ -124,6 +131,7 @@ fun EchoReverbScreen(
     val enabled = uiState.dspConfig.isEnabled(EffectType.ECHO_REVERB)
     val (padX, padY) = viewModel.getEchoPadAxes()
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
+    var echoPresetExpanded by remember { mutableStateOf(false) }
 
     val density = LocalDensity.current
     val rippleStroke = remember(density) { Stroke(width = with(density) { 1.5.dp.toPx() }) }
@@ -271,45 +279,42 @@ fun EchoReverbScreen(
             }
         }
 
-        // 5 Iconic Acoustic Spaces (Mosque & Dome, Banquet Hall, Broadcast Studio, Cave, Cinema)
-        Text(
-            text = t(lang, "echo_spaces_title"),
-            style = MaterialTheme.typography.titleSmall,
-            color = StudioColors.Cyan,
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        // Ready-made echo presets stay compact; the custom Pro Echo studio remains foreground.
+        ExposedDropdownMenuBox(
+            expanded = echoPresetExpanded,
+            onExpandedChange = { echoPresetExpanded = it },
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            ECHO_SPACE_PRESETS.forEach { space ->
-                val spaceTitle = t(lang, space.titleKey)
-                val isSpaceActive = enabled && uiState.selectedPresetLabel == spaceTitle
-                val spaceInteraction = remember { MutableInteractionSource() }
-                FilterChip(
-                    selected = isSpaceActive,
-                    onClick = { viewModel.applyEchoSpacePreset(space) },
-                    interactionSource = spaceInteraction,
-                    label = { Text(spaceTitle, maxLines = 1) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = StudioColors.Violet.copy(alpha = 0.24f),
-                        selectedLabelColor = StudioColors.VioletBright,
-                        containerColor = StudioColors.CardSurface,
-                        labelColor = StudioColors.TextSecondary,
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = isSpaceActive,
-                        borderColor = StudioColors.Border,
-                        selectedBorderColor = StudioColors.VioletBright,
-                    ),
-                    modifier = Modifier
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(spaceInteraction, MaterialTheme.colorScheme.primary, selected = isSpaceActive, cornerRadius = 10.dp)
-                        .testTag("echo_space_${space.id}"),
-                )
+            val presetLabel = ECHO_SPACE_PRESETS.firstOrNull { it.titleKey == uiState.selectedPresetLabel }
+                ?.let { t(lang, it.titleKey) }
+                ?: t(lang, "echo_spaces_title")
+            OutlinedTextField(
+                value = presetLabel,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text(t(lang, "echo_spaces_title")) },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = echoPresetExpanded) },
+                modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable),
+            )
+            ExposedDropdownMenu(
+                expanded = echoPresetExpanded,
+                onDismissRequest = { echoPresetExpanded = false },
+            ) {
+                ECHO_SPACE_PRESETS.forEach { space ->
+                    DropdownMenuItem(
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(t(lang, space.titleKey))
+                                Text(t(lang, space.descKey), style = MaterialTheme.typography.bodySmall, color = StudioColors.TextSecondary)
+                            }
+                        },
+                        onClick = {
+                            echoPresetExpanded = false
+                            viewModel.applyEchoSpacePreset(space)
+                        },
+                        modifier = Modifier.testTag("echo_space_${space.id}"),
+                    )
+                }
             }
         }
 

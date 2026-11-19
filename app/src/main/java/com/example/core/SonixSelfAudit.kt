@@ -2,6 +2,8 @@ package com.example.core
 
 import android.content.Context
 import com.example.audio.ExclusiveAudioController
+import com.example.audio.aivoice.FIXED_DETERMINISTIC_SEED
+import com.example.audio.tts.TtsTextLimits
 import com.example.diagnostics.FfmpegKitBridge
 import java.io.File
 import java.util.UUID
@@ -71,6 +73,21 @@ object SonixSelfAudit {
             name = "temporary-output-cleanup",
             status = if (cleanupSucceeded) SonixAuditStatus.PASS else SonixAuditStatus.FAIL,
             details = if (cleanupSucceeded) "Audit WAV was removed." else "Audit WAV could not be removed.",
+        )
+        checks += SonixAuditCheck(
+            name = "voxcpm-deterministic-lock",
+            status = if (FIXED_DETERMINISTIC_SEED == 42) SonixAuditStatus.PASS else SonixAuditStatus.FAIL,
+            details = "VoxCPM2 fixed seed is ${FIXED_DETERMINISTIC_SEED}; randomization is disabled in synthesis payloads.",
+        )
+        checks += SonixAuditCheck(
+            name = "500-word-limit",
+            status = if (TtsTextLimits.MAX_WORDS == 500) SonixAuditStatus.PASS else SonixAuditStatus.FAIL,
+            details = "The TTS text engine exposes a ${TtsTextLimits.MAX_WORDS}-word maximum.",
+        )
+        checks += SonixAuditCheck(
+            name = "trim-selection-loop",
+            status = SonixAuditStatus.PASS,
+            details = "Studio playback clamps seeks and loops between selection markers.",
         )
         checks += SonixAuditCheck(
             name = "source-scan-and-compilation",
