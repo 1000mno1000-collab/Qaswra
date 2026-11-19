@@ -4,12 +4,14 @@ import com.example.audio.aivoice.AiArabicDialect
 import com.example.audio.aivoice.AiDeliveryPace
 import com.example.audio.aivoice.AiDialogueTurn
 import com.example.audio.aivoice.AiVoiceAudioStitcher
+import com.example.audio.aivoice.AiVoiceBackendHealth
 import com.example.audio.aivoice.AiVoiceCategory
 import com.example.audio.aivoice.AiVoiceCharacter
 import com.example.audio.aivoice.AiVoiceEmotion
 import com.example.audio.aivoice.AiVoiceEngineKind
 import com.example.audio.aivoice.AiVoiceLanguage
 import com.example.audio.aivoice.AiVoicePromptBuilder
+import com.example.audio.aivoice.AiVoiceStudioUiState
 import com.example.audio.aivoice.AiVoiceSynthRequest
 import com.example.audio.aivoice.BUILT_IN_AI_VOICE_CHARACTERS
 import com.example.audio.aivoice.WavStitchSegment
@@ -32,12 +34,12 @@ class AiVoiceStudioTests {
     val tempFolder = TemporaryFolder()
 
     @Test
-    fun voxCpmInstructionIncludesDialectCategoryEmotionAndFreeText() {
+    fun voxCpmInstructionIncludesCategoryLanguageEmotionAndFreeText() {
         val request = AiVoiceSynthRequest(
             engine = AiVoiceEngineKind.VOXCPM_2,
             text = "مرحباً بكم في الاستوديو.",
             language = AiVoiceLanguage.AR,
-            dialect = AiArabicDialect.IRAQI,
+            dialect = AiArabicDialect.MSA,
             category = AiVoiceCategory.MALE,
             voiceDescriptionPrompt = "رجل عراقي في الأربعين بصوت دافئ عميق",
             emotion = AiVoiceEmotion.SAD,
@@ -48,29 +50,11 @@ class AiVoiceStudioTests {
         val instruction = AiVoicePromptBuilder.buildVoxCpmInstruction(request)
 
         assertTrue(instruction.contains("male adult speaker"))
-        assertTrue(instruction.contains("Iraqi Arabic dialect"))
+        assertTrue(instruction.contains("speaking Arabic"))
         assertTrue(instruction.contains("strong intense"))
-        assertTrue(instruction.contains("sad"))
-        assertTrue(instruction.contains("measured unhurried"))
+        assertTrue(instruction.contains("melancholic tone"))
+        assertTrue(instruction.contains("measured unhurried pacing"))
         assertTrue(instruction.contains("رجل عراقي في الأربعين"))
-    }
-
-    @Test
-    fun audarExpressiveTagsPrependExpectedTokensPreservingArabic() {
-        val sample = "يا هلا والله شلونكم اليوم"
-        val whisper = AiVoicePromptBuilder.buildAudarExpressiveText(sample, AiVoiceEmotion.WHISPER, 0.8f)
-        val laugh = AiVoicePromptBuilder.buildAudarExpressiveText(sample, AiVoiceEmotion.LAUGH, 0.7f)
-        val sad = AiVoicePromptBuilder.buildAudarExpressiveText(sample, AiVoiceEmotion.SAD, 0.9f)
-        val neutral = AiVoicePromptBuilder.buildAudarExpressiveText(sample, AiVoiceEmotion.NEUTRAL, 0.5f)
-
-        assertEquals("[whispers] $sample", whisper)
-        assertEquals("[laughs] $sample", laugh)
-        assertEquals("[sighs] $sample", sad)
-        assertEquals(sample, neutral)
-
-        // Ensure no duplicate tag if already present
-        val alreadyTagged = AiVoicePromptBuilder.buildAudarExpressiveText("[whispers] همسة هادئة", AiVoiceEmotion.WHISPER, 0.7f)
-        assertEquals("[whispers] همسة هادئة", alreadyTagged)
     }
 
     @Test
@@ -107,13 +91,12 @@ class AiVoiceStudioTests {
         val stitched = AiVoiceAudioStitcher.stitchWavSegments(
             segments = listOf(
                 WavStitchSegment(f1, pauseAfterMs = 500),
-                WavStitchSegment(f2, pauseAfterMs = 400), // trailing pause skipped cleanly
+                WavStitchSegment(f2, pauseAfterMs = 400),
             ),
             outFile = stitchedOut,
             targetSampleRate = 48000,
         )
 
-        // Expected total = 250ms (turn1) + 500ms (silence) + 250ms (turn2) = ~1000ms at 48kHz
         assertEquals(48000, stitched.sampleRate)
         assertTrue("Expected stitched duration ~1000ms, got ${stitched.durationMs}", stitched.durationMs in 980L..1020L)
 
@@ -121,10 +104,8 @@ class AiVoiceStudioTests {
         assertNotNull(parsed)
         assertEquals(48000, parsed!!.sampleRate)
 
-        // Verify silence gap at ~500ms (halfway mark) has near-zero amplitude
         val gapIndex = (48000 * 0.50).toInt()
         assertTrue("Expected silent pause in inter-turn gap", abs(parsed.left[gapIndex]) < 0.005f)
-        // Verify audio energy exists in turn 1 and turn 2
         val turn1Sample = (48000 * 0.125).toInt()
         val turn2Sample = (48000 * 0.875).toInt()
         assertTrue(abs(parsed.left[turn1Sample]) > 0.05f || abs(parsed.left[turn1Sample + 10]) > 0.05f)
@@ -138,13 +119,9 @@ class AiVoiceStudioTests {
         val decodedChars = json.decodeFromString<List<AiVoiceCharacter>>(encodedChars)
 
         assertEquals(BUILT_IN_AI_VOICE_CHARACTERS.size, decodedChars.size)
-        assertTrue(decodedChars.any { it.dialect == AiArabicDialect.IRAQI })
-        assertTrue(decodedChars.any { it.category == AiVoiceCategory.ELDERLY })
-        assertTrue(decodedChars.any { it.category == AiVoiceCategory.CHILD })
-        assertTrue(decodedChars.any { it.category == AiVoiceCategory.CARTOON })
-        assertTrue(decodedChars.any { it.category == AiVoiceCategory.NARRATOR })
-        assertTrue(decodedChars.none { it.preferredEngine == AiVoiceEngineKind.AUDAR_TTS_V1_TURBO })
-        assertTrue(decodedChars.any { it.preferredEngine == AiVoiceEngineKind.AUDAR_TTS_V1_FLASH })
+        assertTrue(decodedChars.any { it.category == AiVoiceCategory.MALE })
+        assertTrue(decodedChars.any { it.category == AiVoiceCategory.FEMALE })
+        assertTrue(decodedChars.all { it.preferredEngine == AiVoiceEngineKind.VOXCPM_2 })
 
         val turn = AiDialogueTurn(
             id = "t1",
@@ -160,19 +137,14 @@ class AiVoiceStudioTests {
     }
 
     @Test
-    fun allElevenRequiredEmotionsArePresent() {
-        assertEquals(11, AiVoiceEmotion.entries.size)
+    fun allSixStudioEmotionsArePresent() {
+        assertEquals(6, AiVoiceEmotion.entries.size)
         assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.NEUTRAL))
-        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.SAD))
-        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.CRYING))
-        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.JOY))
-        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.ANGER))
-        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.FEAR))
-        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.CALM))
         assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.EXCITED))
-        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.SURPRISED))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.CALM))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.SAD))
+        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.SERIOUS))
         assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.WHISPER))
-        assertTrue(AiVoiceEmotion.entries.contains(AiVoiceEmotion.LAUGH))
     }
 
     @Test
@@ -181,32 +153,23 @@ class AiVoiceStudioTests {
         assertEquals("voxcpm2", AiVoiceEngineKind.VOXCPM_2.id)
         assertTrue(AiVoiceEngineKind.VOXCPM_2.requiresRemoteGpu)
 
-        val defaultHealth = com.example.audio.aivoice.AiVoiceBackendHealth()
+        val defaultHealth = AiVoiceBackendHealth()
         assertEquals(false, defaultHealth.voxCpm2Ready)
         assertEquals(false, defaultHealth.voxcpm2PackageInstalled)
         assertEquals(false, defaultHealth.voxcpm2Loaded)
         assertEquals(false, defaultHealth.cudaAvailable)
         assertEquals("", defaultHealth.voxcpm2LoadError)
 
-        val defaultUi = com.example.audio.aivoice.AiVoiceStudioUiState()
+        val defaultUi = AiVoiceStudioUiState()
         assertEquals("", defaultUi.backendServerUrl)
         assertEquals("", defaultUi.backendBearerToken)
         assertEquals(AiVoiceEngineKind.VOXCPM_2, defaultUi.selectedEngine)
     }
 
     @Test
-    fun userSelectableEnginesExcludeUnapprovedTurboAndPreservePrimaryAndOfflineFallback() {
+    fun userSelectableEnginesContainPrimaryVoxCpm2AndOfflineLocalStudio() {
         val selectable = AiVoiceEngineKind.entries.filter { it.isUserSelectable }
         assertTrue(selectable.contains(AiVoiceEngineKind.VOXCPM_2))
         assertTrue(selectable.contains(AiVoiceEngineKind.SONIX_LOCAL_STUDIO))
-        assertTrue(selectable.none { it == AiVoiceEngineKind.AUDAR_TTS_V1_TURBO })
-    }
-
-    @Test
-    fun globalBuiltInCharactersProvideMaleFemaleRegionalAndGlobalVoices() {
-        assertTrue(BUILT_IN_AI_VOICE_CHARACTERS.any { it.category == AiVoiceCategory.MALE })
-        assertTrue(BUILT_IN_AI_VOICE_CHARACTERS.any { it.category == AiVoiceCategory.FEMALE })
-        assertTrue(BUILT_IN_AI_VOICE_CHARACTERS.any { it.language == AiVoiceLanguage.EN })
-        assertTrue(BUILT_IN_AI_VOICE_CHARACTERS.map { it.dialect }.toSet().size >= 4)
     }
 }

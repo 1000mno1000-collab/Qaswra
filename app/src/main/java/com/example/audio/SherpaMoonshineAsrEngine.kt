@@ -8,6 +8,8 @@ import android.media.MediaRecorder
 import android.speech.SpeechRecognizer
 import androidx.compose.runtime.Immutable
 import com.example.diagnostics.AppDiagnosticLog
+import com.example.diagnostics.FfmpegKitBridge
+import com.example.model.StereoAudioBuffer
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig
@@ -399,6 +401,69 @@ class SherpaMoonshineAsrEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Decodes a pre-loaded 16 kHz mono float array offline through Silero VAD + Moonshine ASR
+     * on a managed single-session worker thread without requiring microphone hardware.
+     */
+    fun startOfflineClipTranscription(
+        samples16k: FloatArray,
+        onPartialUpdate: (String) -> Unit,
+        onSegmentCommitted: (String) -> Unit,
+        onCompleted: () -> Unit,
+        onFatalError: (String) -> Unit,
+    ): Boolean {
+        if (samples16k.isEmpty()) return false
+        synchronized(sessionLock) {
+            stopLocked()
+            val paths = resolveModelPaths(modelRootDir(context))
+            if (paths == null || !isNativeLibraryAvailable()) {
+                return false
+            }
+
+            val myGen = sessionGen.incrementAndGet()
+            activeFlag.set(true)
+
+            val thread = Thread({
+                runOfflineClipLoop(
+                    genId = myGen,
+                    paths = paths,
+                    samples16k = samples16k,
+                    onPartialUpdate = onPartialUpdate,
+                    onSegmentCommitted = onSegmentCommitted,
+                    onCompleted = onCompleted,
+                    onFatalError = onFatalError,
+                )
+            }, "Sonix-Moonshine-Clip-$myGen").apply { isDaemon = true }
+
+            workerThread = thread
+            thread.start()
+            return true
+        }
+    }
+
+    suspend fun extractMono16kSamplesFromFile(file: File): FloatArray? = withContext(Dispatchers.IO) {
+        if (!file.exists() || file.length() <= 0L) return@withContext null
+        if (FfmpegKitBridge.isAvailable()) {
+            val safeIn = com.example.audio.cache.SmartCacheManager.ensureSafeFfmpegInputFile(context, file)
+            val tmpWav = File(context.cacheDir, "stt_16k_${System.nanoTime()}.wav")
+            try {
+                val cmd = "-y -i \"${safeIn.absolutePath}\" -vn -ar $SAMPLE_RATE_HZ -ac 1 -acodec pcm_s16le \"${tmpWav.absolutePath}\""
+                val ok = FfmpegKitBridge.execute(cmd, toolName = "MoonshineClipResample16k", logNonZeroFailure = false)
+                if (ok && tmpWav.exists() && tmpWav.length() > 44L) {
+                    val buf = AudioDecoder.decodeFile(tmpWav)
+                    if (buf != null && buf.frameCount > 0) {
+                        return@withContext resampleStereoToMono16k(buf)
+                    }
+                }
+            } finally {
+                if (safeIn != file) runCatching { safeIn.delete() }
+                runCatching { tmpWav.delete() }
+            }
+        }
+        val decoded = AudioDecoder.decodeFile(file) ?: return@withContext null
+        if (decoded.frameCount <= 0) null else resampleStereoToMono16k(decoded)
+    }
+
     private fun stopLocked() {
         activeFlag.set(false)
         sessionGen.incrementAndGet()
@@ -406,6 +471,124 @@ class SherpaMoonshineAsrEngine(private val context: Context) {
         workerThread = null
         if (t != null && t != Thread.currentThread() && t.isAlive) {
             runCatching { t.join(1_500L) }
+        }
+    }
+
+    private fun runOfflineClipLoop(
+        genId: Long,
+        paths: ResolvedMoonshineModelPaths,
+        samples16k: FloatArray,
+        onPartialUpdate: (String) -> Unit,
+        onSegmentCommitted: (String) -> Unit,
+        onCompleted: () -> Unit,
+        onFatalError: (String) -> Unit,
+    ) {
+        var vad: Vad? = null
+        var recognizer: OfflineRecognizer? = null
+        try {
+            val sileroConfig = SileroVadModelConfig(
+                model = paths.sileroVadPath,
+                threshold = 0.42f,
+                minSilenceDuration = 0.55f,
+                minSpeechDuration = 0.20f,
+                windowSize = VAD_WINDOW_SAMPLES,
+                maxSpeechDuration = 20.0f,
+            )
+            val vadConfig = VadModelConfig(
+                sileroVadModelConfig = sileroConfig,
+                sampleRate = SAMPLE_RATE_HZ,
+                numThreads = 1,
+                provider = "cpu",
+                debug = false,
+            )
+            vad = Vad(assetManager = null, config = vadConfig)
+
+            val moonshineConfig = OfflineMoonshineModelConfig(
+                preprocessor = "",
+                encoder = paths.encoderPath,
+                uncachedDecoder = paths.uncachedDecoderPath,
+                cachedDecoder = paths.cachedDecoderPath,
+                mergedDecoder = paths.mergedDecoderPath,
+            )
+            val modelConfig = OfflineModelConfig(
+                moonshine = moonshineConfig,
+                tokens = paths.tokensPath,
+                numThreads = 2,
+                debug = false,
+                provider = "cpu",
+            )
+            val recConfig = OfflineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = SAMPLE_RATE_HZ, featureDim = 80),
+                modelConfig = modelConfig,
+                decodingMethod = "greedy_search",
+            )
+            recognizer = OfflineRecognizer(assetManager = null, config = recConfig)
+
+            var offset = 0
+            val total = samples16k.size
+            var anyCommitted = false
+            while (offset < total && activeFlag.get() && sessionGen.get() == genId) {
+                val end = min(offset + VAD_WINDOW_SAMPLES, total)
+                val window = if (end - offset == VAD_WINDOW_SAMPLES) {
+                    samples16k.copyOfRange(offset, end)
+                } else {
+                    FloatArray(VAD_WINDOW_SAMPLES).also { dst ->
+                        System.arraycopy(samples16k, offset, dst, 0, end - offset)
+                    }
+                }
+                vad.acceptWaveform(window)
+                while (!vad.empty()) {
+                    val segment = vad.front()
+                    vad.pop()
+                    val decoded = decodeFloatArray(recognizer, segment.samples)
+                    if (decoded.isNotBlank()) {
+                        anyCommitted = true
+                        onSegmentCommitted(decoded)
+                        onPartialUpdate("")
+                    }
+                }
+                offset += VAD_WINDOW_SAMPLES
+            }
+
+            if (activeFlag.get() && sessionGen.get() == genId) {
+                vad.flush()
+                while (!vad.empty()) {
+                    val segment = vad.front()
+                    vad.pop()
+                    val decoded = decodeFloatArray(recognizer, segment.samples)
+                    if (decoded.isNotBlank()) {
+                        anyCommitted = true
+                        onSegmentCommitted(decoded)
+                    }
+                }
+                // If Silero VAD filtered out soft speech on short clips, run direct full-clip fallback up to 25s
+                if (!anyCommitted && samples16k.size <= SAMPLE_RATE_HZ * 25) {
+                    val full = decodeFloatArray(recognizer, samples16k)
+                    if (full.isNotBlank()) {
+                        onSegmentCommitted(full)
+                    }
+                }
+                onPartialUpdate("")
+                activeFlag.set(false)
+                onCompleted()
+            }
+        } catch (t: Throwable) {
+            AppDiagnosticLog.logRecoverable(
+                toolName = "SherpaMoonshineAsrEngine",
+                titleAr = "تعذر تفريغ المقطع أوفلاين عبر Moonshine",
+                titleEn = "Moonshine Offline Clip Transcription Error",
+                causeAr = t.localizedMessage ?: "خطأ في تفريغ الملف الصوتي محلياً",
+                causeEn = t.message ?: "Offline clip transcription failed",
+                throwable = t,
+            )
+            if (activeFlag.get() && sessionGen.get() == genId) {
+                activeFlag.set(false)
+                onFatalError(t.localizedMessage ?: "تعذر تفريغ المقطع محلياً")
+            }
+        } finally {
+            runCatching { vad?.release() }
+            runCatching { recognizer?.release() }
+            activeFlag.set(false)
         }
     }
 
@@ -667,5 +850,27 @@ class SherpaMoonshineAsrEngine(private val context: Context) {
                 }
             }
         }
+    }
+}
+
+/**
+ * Downmixes any [StereoAudioBuffer] and linearly resamples it to 16 kHz mono PCM floats
+ * expected by Sherpa-ONNX Silero VAD and Moonshine ASR models.
+ */
+fun resampleStereoToMono16k(buffer: StereoAudioBuffer): FloatArray {
+    val n = buffer.frameCount
+    if (n <= 0) return FloatArray(0)
+    val srcSr = buffer.sampleRate.coerceAtLeast(8000)
+    val dstSr = SherpaMoonshineAsrEngine.SAMPLE_RATE_HZ
+    val outCount = if (srcSr == dstSr) n else ((n.toLong() * dstSr) / srcSr).toInt().coerceAtLeast(1)
+    val ratio = srcSr.toDouble() / dstSr.toDouble()
+    return FloatArray(outCount) { i ->
+        val srcPos = if (srcSr == dstSr) i.toDouble() else i * ratio
+        val idx0 = srcPos.toInt().coerceIn(0, n - 1)
+        val idx1 = (idx0 + 1).coerceIn(0, n - 1)
+        val frac = (srcPos - idx0).toFloat()
+        val m0 = 0.5f * (buffer.left[idx0] + buffer.right[idx0])
+        val m1 = 0.5f * (buffer.left[idx1] + buffer.right[idx1])
+        (m0 + (m1 - m0) * frac).coerceIn(-1f, 1f)
     }
 }

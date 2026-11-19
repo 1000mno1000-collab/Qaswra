@@ -117,10 +117,10 @@ class DeveloperPanelUnitTests {
     }
 
     @Test
-    fun audarFlashEngineSupportsArabicAndExpressiveTags() {
+    fun voxCpmAndLocalStudioEngineSpecsAreValid() {
         val req = AiVoiceSynthRequest(
-            engine = AiVoiceEngineKind.AUDAR_TTS_V1_FLASH,
-            text = "مرحباً بكم في اختبار المحرك العربي التجاري.",
+            engine = AiVoiceEngineKind.VOXCPM_2,
+            text = "مرحباً بكم في اختبار المحرك العربي.",
             language = AiVoiceLanguage.AR,
             dialect = AiArabicDialect.MSA,
             category = AiVoiceCategory.MALE,
@@ -129,10 +129,12 @@ class DeveloperPanelUnitTests {
             emotionIntensity = 0.7f,
             pace = AiDeliveryPace.NORMAL,
         )
-        val processed = AiVoicePromptBuilder.buildAudarExpressiveText(req.text, req.emotion, req.emotionIntensity)
-        assertTrue(processed.startsWith("[whispers]"))
-        assertEquals("audar_tts_flash", AiVoiceEngineKind.AUDAR_TTS_V1_FLASH.id)
-        assertEquals("audarai/Audar-TTS-V1-Flash", AiVoiceEngineKind.AUDAR_TTS_V1_FLASH.modelRepoId)
-        assertTrue(AiVoicePromptBuilder.buildVoxCpmInstruction(req).contains("Modern Standard Arabic"))
+        val instruction = AiVoicePromptBuilder.buildVoxCpmInstruction(req)
+        assertTrue(instruction.contains("speaking Arabic"))
+        assertTrue(instruction.contains("whisper"))
+        assertEquals("voxcpm2", AiVoiceEngineKind.VOXCPM_2.id)
+        assertEquals("openbmb/VoxCPM2", AiVoiceEngineKind.VOXCPM_2.modelRepoId)
+        assertEquals("sonix_local_studio", AiVoiceEngineKind.SONIX_LOCAL_STUDIO.id)
+        assertFalse(AiVoiceEngineKind.SONIX_LOCAL_STUDIO.requiresRemoteGpu)
     }
 }

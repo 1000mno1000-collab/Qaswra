@@ -5,6 +5,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
+import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Build
 import android.util.Log
@@ -1061,6 +1062,116 @@ object AudioDecoder {
         } finally {
             if (needsStaging) runCatching { stagedIn.delete() }
             runCatching { outWav.delete() }
+        }
+    }
+
+    /**
+     * Strips video frames from a video file and extracts ONLY its audio track cleanly
+     * into `cacheDir/video_audio_extract`. Uses FFmpegKit first, falling back to Android
+     * MediaExtractor + MediaMuxer remuxing when FFmpegKit is unavailable.
+     */
+    suspend fun extractAudioTrackFromVideoFile(
+        context: Context,
+        videoFile: File,
+        onProgress: (Float) -> Unit = {},
+    ): File? = withContext(Dispatchers.IO) {
+        if (!videoFile.exists() || videoFile.length() <= 0L) return@withContext null
+        onProgress(0.08f)
+        val outDir = File(context.cacheDir, "video_audio_extract").apply { mkdirs() }
+        val safeId = UUID.randomUUID().toString().take(8)
+        val probe = probeAudioHeaderQuick(videoFile)
+        val isLongDuration = (probe?.durationMs ?: 0L) > MAX_HEAP_DECODE_DURATION_MS
+
+        if (FfmpegKitBridge.isAvailable()) {
+            val safeInput = com.example.audio.cache.SmartCacheManager.ensureSafeFfmpegInputFile(context, videoFile)
+            try {
+                onProgress(0.25f)
+                if (!isLongDuration) {
+                    val outWav = File(outDir, "video_audio_$safeId.wav")
+                    val wavCmd = "-y -i \"${safeInput.absolutePath}\" -vn -ar $TARGET_SAMPLE_RATE -ac 2 -acodec pcm_s16le \"${outWav.absolutePath}\""
+                    if (FfmpegKitBridge.execute(wavCmd, toolName = "ExtractVideoAudioWav", logNonZeroFailure = false) &&
+                        outWav.exists() && outWav.length() > 44L
+                    ) {
+                        onProgress(1.0f)
+                        return@withContext outWav
+                    }
+                    runCatching { outWav.delete() }
+                }
+
+                val outM4a = File(outDir, "video_audio_$safeId.m4a")
+                val aacCmd = "-y -i \"${safeInput.absolutePath}\" -vn -c:a aac -b:a 256k -ar $TARGET_SAMPLE_RATE -ac 2 \"${outM4a.absolutePath}\""
+                if (FfmpegKitBridge.execute(aacCmd, toolName = "ExtractVideoAudioAac", logNonZeroFailure = false) &&
+                    outM4a.exists() && outM4a.length() > 256L
+                ) {
+                    onProgress(1.0f)
+                    return@withContext outM4a
+                }
+                runCatching { outM4a.delete() }
+            } finally {
+                if (safeInput != videoFile) runCatching { safeInput.delete() }
+            }
+        }
+
+        // Native MediaExtractor + MediaMuxer fallback for MP4/M4A-compatible audio tracks
+        val extractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        var muxerStarted = false
+        val nativeOut = File(outDir, "video_audio_native_$safeId.m4a")
+        try {
+            extractor.setDataSource(videoFile.absolutePath)
+            var audioTrackIndex = -1
+            var audioFormat: MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val fmt = extractor.getTrackFormat(i)
+                val mime = fmt.getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("audio/")) {
+                    audioTrackIndex = i
+                    audioFormat = fmt
+                    break
+                }
+            }
+            if (audioTrackIndex < 0 || audioFormat == null) return@withContext null
+
+            extractor.selectTrack(audioTrackIndex)
+            muxer = MediaMuxer(nativeOut.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val dstTrack = muxer.addTrack(audioFormat)
+            muxer.start()
+            muxerStarted = true
+
+            val maxInput = if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceIn(32_768, 1024 * 1024)
+            } else {
+                256 * 1024
+            }
+            val byteBuf = ByteBuffer.allocate(maxInput)
+            val bufferInfo = MediaCodec.BufferInfo()
+            while (true) {
+                coroutineContext.ensureActive()
+                val sampleSize = extractor.readSampleData(byteBuf, 0)
+                if (sampleSize < 0) break
+                bufferInfo.offset = 0
+                bufferInfo.size = sampleSize
+                bufferInfo.presentationTimeUs = extractor.sampleTime.coerceAtLeast(0L)
+                bufferInfo.flags = extractor.sampleFlags
+                muxer.writeSampleData(dstTrack, byteBuf, bufferInfo)
+                extractor.advance()
+            }
+            muxer.stop()
+            muxerStarted = false
+            if (nativeOut.exists() && nativeOut.length() > 128L) {
+                onProgress(1.0f)
+                return@withContext nativeOut
+            }
+            runCatching { nativeOut.delete() }
+            null
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            runCatching { nativeOut.delete() }
+            null
+        } finally {
+            if (muxerStarted) runCatching { muxer?.stop() }
+            runCatching { muxer?.release() }
+            runCatching { extractor.release() }
         }
     }
 }

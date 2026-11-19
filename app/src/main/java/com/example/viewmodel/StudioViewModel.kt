@@ -5010,7 +5010,182 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun extractAudioFromVideoUri(videoUri: Uri) {
-        importAudioUri(videoUri)
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            runCatching {
+                app.contentResolver.takePersistableUriPermission(
+                    videoUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+            val resolvedName = AudioFileUploader.resolveDisplayName(app, videoUri)
+                ?: resolveFileName(videoUri)
+                ?: "فيديو مستورد"
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    isProcessing = true,
+                    importProgress = 0f,
+                    importLabel = resolvedName,
+                    importBytesLabel = null,
+                )
+            }
+            var tempVideoFile: File? = null
+            var tempExtractedFile: File? = null
+            try {
+                player.stop()
+                // Phase 1 (0% -> 40%): Copy selected video URI into cacheDir
+                val uploadOutcome = AudioFileUploader.copyAudioUriToCacheDetailed(app, videoUri) { info ->
+                    val bytesText = if (info.totalBytes > 0L) {
+                        "${AudioFileUploader.formatBytes(info.bytesCopied)} / ${AudioFileUploader.formatBytes(info.totalBytes)}"
+                    } else {
+                        AudioFileUploader.formatBytes(info.bytesCopied)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            importProgress = (info.fraction * 0.40f).coerceIn(0f, 0.40f),
+                            importLabel = info.fileName,
+                            importBytesLabel = bytesText,
+                        )
+                    }
+                }
+                val uploaded = when (uploadOutcome) {
+                    is AudioUploadOutcome.Success -> uploadOutcome.uploaded
+                    is AudioUploadOutcome.Failure -> {
+                        postBanner("تعذر نسخ ملف الفيديو: ${uploadOutcome.errorMessage}")
+                        return@launch
+                    }
+                }
+                tempVideoFile = uploaded.file
+
+                // Phase 2 (40% -> 75%): Strip video frames (-vn) and extract clean audio track
+                _uiState.update {
+                    it.copy(
+                        importProgress = 0.42f,
+                        importLabel = "جاري فصل المسار الصوتي من الفيديو: ${uploaded.displayName}",
+                    )
+                }
+                val extractedFile = AudioDecoder.extractAudioTrackFromVideoFile(app, uploaded.file) { frac ->
+                    _uiState.update {
+                        it.copy(importProgress = (0.40f + frac * 0.35f).coerceIn(0.40f, 0.75f))
+                    }
+                }
+                runCatching { uploaded.file.delete() }
+                tempVideoFile = null
+
+                if (extractedFile == null || !extractedFile.exists() || extractedFile.length() <= 0L) {
+                    postBanner("تعذر العثور على مسار صوتي صالح داخل الفيديو المحدد")
+                    return@launch
+                }
+                tempExtractedFile = extractedFile
+
+                // Phase 3 (75% -> 100%): Load extracted audio into Studio (RAM or zero-RAM streaming)
+                val title = uploaded.displayName.substringBeforeLast('.').ifEmpty { "صوت مستخرج من فيديو" }
+                if (withContext(Dispatchers.IO) { AudioDecoder.shouldStreamOnDisk(extractedFile) }) {
+                    val stagedFile = stageLargeFileToCleanAsciiCache(app, extractedFile, prefix = "video_audio")
+                    runCatching { extractedFile.delete() }
+                    tempExtractedFile = null
+                    val meta = AudioDecoder.inspectLargeAudioStreaming(stagedFile, buckets = 800, context = app) { frac ->
+                        _uiState.update {
+                            it.copy(importProgress = (0.75f + frac * 0.21f).coerceIn(0.75f, 0.96f))
+                        }
+                    }
+                    if (meta == null) {
+                        runCatching { stagedFile.delete() }
+                        postBanner("تعذر قراءة الصوت المستخرج من الفيديو")
+                        return@launch
+                    }
+                    undoStack.clear()
+                    redoStack.clear()
+                    lastDspSnapshotTimeMs = 0L
+                    activeBuffer = null
+                    replaceActiveSourceFile(stagedFile)
+                    activeSourceSampleRate = meta.sampleRate
+                    val cleanCfg = DspConfig()
+                    syncPlayerConfig(cleanCfg, holdBypass = false)
+                    player.setClipGainDb(0f)
+                    player.setSourceFile(
+                        file = stagedFile,
+                        durationMs = meta.durationMs,
+                        sampleRate = meta.sampleRate,
+                        resetPosition = true,
+                    )
+                    _uiState.update { cur ->
+                        cur.copy(
+                            hasAudio = true,
+                            durationMs = meta.durationMs,
+                            waveformPeaks = meta.waveformPeaks,
+                            originalPeakDbfs = meta.peakDbfs,
+                            dspConfig = cleanCfg,
+                            activePresetId = null,
+                            selectedPresetLabel = "",
+                            activeCloudDraftId = null,
+                            isHoldBypassing = false,
+                            audioMarkers = emptyList(),
+                            trimStart = 0f,
+                            trimEnd = 1f,
+                            canUndoEdit = false,
+                            canRedoEdit = false,
+                            hasUnsavedChanges = false,
+                            activeProjectName = if (cur.activeProjectId == 0L) title else cur.activeProjectName,
+                            importProgress = 1.0f,
+                        )
+                    }
+                    postBanner("تم استخراج الصوت من الفيديو ($title) وتحميله بالتدفق المباشر الآمن")
+                } else {
+                    val decodeOutcome = AudioDecoder.decodeFileDetailedWithProgress(extractedFile) { decFrac ->
+                        _uiState.update {
+                            it.copy(importProgress = (0.75f + decFrac * 0.21f).coerceIn(0.75f, 0.96f))
+                        }
+                    }
+                    runCatching { extractedFile.delete() }
+                    tempExtractedFile = null
+                    val buf = when (decodeOutcome) {
+                        is AudioDecodeOutcome.Success -> decodeOutcome.buffer
+                        is AudioDecodeOutcome.Failure -> {
+                            postBanner("تعذر فك ترميز الصوت المستخرج: ${decodeOutcome.reason}")
+                            return@launch
+                        }
+                    }
+                    if (buf.frameCount == 0) {
+                        postBanner("تعذر استخراج الصوت: المسار الصوتي فارغ")
+                        return@launch
+                    }
+                    setActiveBuffer(buf, recordUndo = false, resetDspOnNewEntry = true)
+                    if (_uiState.value.activeProjectId == 0L) {
+                        _uiState.update { it.copy(activeProjectName = title) }
+                    }
+                    repository.indexAudioRecording(title, buf, RecordingSourceType.IMPORTED)
+                    _uiState.update { it.copy(importProgress = 1.0f) }
+                    postBanner("تم استخراج الصوت من الفيديو ($title) بنقاء 100% في الاستوديو")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                AppDiagnosticLog.logRecoverable(
+                    toolName = "ExtractVideoAudio",
+                    titleAr = "تعذر استخراج الصوت من الفيديو",
+                    titleEn = "Video Audio Extraction Failed",
+                    causeAr = t.localizedMessage ?: t.javaClass.simpleName,
+                    causeEn = t.localizedMessage ?: t.javaClass.simpleName,
+                    errorCode = t.javaClass.simpleName,
+                    throwable = t,
+                )
+                postBanner("تعذر استخراج الصوت من الفيديو: ${t.localizedMessage ?: t.javaClass.simpleName}")
+            } finally {
+                runCatching { tempVideoFile?.delete() }
+                runCatching { tempExtractedFile?.delete() }
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isProcessing = false,
+                        importProgress = null,
+                        importLabel = null,
+                        importBytesLabel = null,
+                    )
+                }
+            }
+        }
     }
 
     fun previewReelsAudioTemplate(params: ReelsTemplateParams) {
@@ -5060,12 +5235,47 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         setAsDefault: Boolean,
         onNeedsWriteSettings: () -> Unit,
     ) {
-        val src = activeBuffer ?: run {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
             postBanner("يرجى اختيار أو تسجيل مقطع صوتي لصناعة النغمة")
             return
         }
         launchSingleFlightProcessing {
-            val clipped = trimToSelection(src, clamp(startFrac, 0f, 0.98f), clamp(endFrac, 0.02f, 1f))
+            val clipped: StereoAudioBuffer = if (src != null) {
+                trimToSelection(src, clamp(startFrac, 0f, 0.98f), clamp(endFrac, 0.02f, 1f))
+            } else {
+                val durSec = (_uiState.value.durationMs / 1000.0).coerceAtLeast(0.2)
+                val safeStart = clamp(startFrac, 0f, 0.98f)
+                val safeEnd = clamp(endFrac, (safeStart + 0.02f).coerceAtMost(1f), 1f)
+                val sSec = (durSec * safeStart).coerceIn(0.0, durSec - 0.05)
+                val rawEnd = (durSec * safeEnd).coerceIn(sSec + 0.05, durSec)
+                // Ringtone clips should fit safely in memory when applying offline DSP & ringtone MUX
+                val eSec = rawEnd.coerceAtMost(sSec + 120.0)
+                val ssStr = String.format(Locale.US, "%.3f", sSec)
+                val toStr = String.format(Locale.US, "%.3f", eSec)
+                val trimmedFile = processAudioFileWithFfmpeg(
+                    context = getApplication(),
+                    inputFile = srcFile!!,
+                    preInputArgs = "-ss $ssStr -to $toStr",
+                    audioFilter = "",
+                    toolName = "RingtoneTrim",
+                )
+                if (trimmedFile == null) {
+                    postBanner("تعذر قص الجزء المحدد لصناعة النغمة")
+                    return@launchSingleFlightProcessing
+                }
+                val decoded = try {
+                    AudioDecoder.decodeFile(trimmedFile)
+                } finally {
+                    runCatching { trimmedFile.delete() }
+                }
+                if (decoded == null || decoded.frameCount == 0) {
+                    postBanner("تعذر قراءة المقطع المقصوص لصناعة النغمة")
+                    return@launchSingleFlightProcessing
+                }
+                decoded
+            }
             val rendered = withContext(Dispatchers.Default) {
                 renderOfflineDsp(clipped, _uiState.value.dspConfig)
             }
@@ -5680,6 +5890,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         speechTranscriber.setEditedText(text)
     }
 
+    fun canTranscribeClipOffline(): Boolean =
+        speechTranscriber.canTranscribeClipOffline(_uiState.value.speechState.localeTag)
+
     fun startLiveSpeechDictation() {
         player.pause()
         stopMixPreviewPlayer()
@@ -5688,12 +5901,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun startStudioClipSpeechTranscription() {
-        if (activeBuffer == null) {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
             postBanner(t(_uiState.value.language, "no_audio_loaded"))
             return
         }
         stopMixPreviewPlayer()
         val loc = _uiState.value.speechState.localeTag
+        if (speechTranscriber.canTranscribeClipOffline(loc)) {
+            if (_uiState.value.playback.isPlaying) {
+                player.pause()
+            }
+            val startedOffline = when {
+                src != null -> speechTranscriber.transcribeBufferOffline(src)
+                srcFile != null -> speechTranscriber.transcribeAudioFileOffline(srcFile)
+                else -> false
+            }
+            if (startedOffline) return
+        }
         player.seekToFraction(0f)
         player.play()
         speechTranscriber.startListening(localeTag = loc, isClipRouting = true)
@@ -7017,6 +7243,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             "wav" -> "audio/wav"
             "flac" -> "audio/flac"
             "mp3" -> "audio/mpeg"
+            "ogg" -> "audio/ogg"
             else -> "audio/mp4"
         }
         val cleanBase = "${item.displayName.substringBeforeLast('.')}_sonix"
@@ -7049,6 +7276,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 "wav" -> "audio/wav"
                 "flac" -> "audio/flac"
                 "mp3" -> "audio/mpeg"
+                "ogg" -> "audio/ogg"
                 else -> "audio/mp4"
             }
             _sideEffects.tryEmit(StudioSideEffect.LaunchShareIntent(uris.first(), mime, f.name))

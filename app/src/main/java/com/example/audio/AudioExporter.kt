@@ -358,8 +358,7 @@ suspend fun exportRenderedAudioToFile(
                 }
             }
         }
-        ExportAudioFormat.M4A,
-        ExportAudioFormat.OGG -> {
+        ExportAudioFormat.M4A -> {
             val m4aFile = File(exportDir, "${cleanBase}_$safeStamp.m4a")
             if (encodeM4aFile(prepared, m4aFile, bitrateKbps, onProgress)) {
                 ExportedAudioResult(m4aFile, "m4a", "audio/mp4")
@@ -370,9 +369,64 @@ suspend fun exportRenderedAudioToFile(
                 ExportedAudioResult(wavFallback, "wav", "audio/wav")
             }
         }
+        ExportAudioFormat.OGG -> {
+            val tempWav = File(exportDir, "ogg_src_$safeStamp.wav")
+            val oggFile = File(exportDir, "${cleanBase}_$safeStamp.ogg")
+            val oggOk = try {
+                if (FfmpegKitBridge.isAvailable()) {
+                    writeStereoWavFile(tempWav, prepared)
+                    onProgress?.invoke(0.35f)
+                    val cmds = buildOggFfmpegCommands(tempWav.absolutePath, oggFile.absolutePath, bitrateKbps)
+                    var encoded = false
+                    for (cmd in cmds) {
+                        runCatching { oggFile.delete() }
+                        val ok = FfmpegKitBridge.execute(cmd, toolName = "ExportOGG", logNonZeroFailure = false)
+                        if (ok && oggFile.exists() && oggFile.length() > 512L) {
+                            encoded = true
+                            break
+                        }
+                    }
+                    encoded
+                } else {
+                    false
+                }
+            } catch (_: Throwable) {
+                false
+            } finally {
+                runCatching { tempWav.delete() }
+            }
+
+            if (oggOk) {
+                onProgress?.invoke(1f)
+                ExportedAudioResult(oggFile, "ogg", "audio/ogg")
+            } else {
+                runCatching { oggFile.delete() }
+                val m4aFile = File(exportDir, "${cleanBase}_$safeStamp.m4a")
+                if (encodeM4aFile(prepared, m4aFile, bitrateKbps, onProgress)) {
+                    ExportedAudioResult(m4aFile, "m4a", "audio/mp4")
+                } else {
+                    val wavFallback = File(exportDir, "${cleanBase}_$safeStamp.wav")
+                    writeStereoWavFile(wavFallback, prepared)
+                    onProgress?.invoke(1f)
+                    ExportedAudioResult(wavFallback, "wav", "audio/wav")
+                }
+            }
+        }
     }
     SmartCacheManager.pruneManagedBuckets(context)
     result
+}
+
+internal fun buildOggFfmpegCommands(
+    inputWavPath: String,
+    outputOggPath: String,
+    bitrateKbps: Int,
+): List<String> {
+    val safeBitrate = bitrateKbps.coerceIn(64, 320)
+    return listOf(
+        "-y -i \"$inputWavPath\" -vn -ar 48000 -ac 2 -c:a libopus -b:a ${safeBitrate}k \"$outputOggPath\"",
+        "-y -i \"$inputWavPath\" -vn -ar 44100 -ac 2 -c:a libvorbis -b:a ${safeBitrate}k \"$outputOggPath\"",
+    )
 }
 
 private suspend fun applyPlatformLoudnessNormalization(

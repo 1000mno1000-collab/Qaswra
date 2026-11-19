@@ -10,6 +10,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.compose.runtime.Immutable
 import com.example.diagnostics.AppDiagnosticLog
+import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 
 @Immutable
 data class NativeSpeechState(
@@ -143,6 +145,13 @@ class StudioSpeechTranscriber(private val context: Context) {
         }
     }
 
+    fun canTranscribeClipOffline(localeTag: String = currentLocaleTag): Boolean {
+        val isArabic = localeTag.startsWith("ar", ignoreCase = true)
+        if (!isArabic) return false
+        if (currentBackendMode == SttBackendMode.ANDROID_SYSTEM) return false
+        return localMoonshineEngine.isModelReady() && localMoonshineEngine.isNativeLibraryAvailable()
+    }
+
     internal fun shouldUseLocalMoonshine(localeTag: String, isClipRouting: Boolean): Boolean {
         if (isClipRouting) return false
         val isArabic = localeTag.startsWith("ar", ignoreCase = true)
@@ -153,6 +162,114 @@ class StudioSpeechTranscriber(private val context: Context) {
             SttBackendMode.AUTO, SttBackendMode.LOCAL_MOONSHINE_AR -> true
             SttBackendMode.ANDROID_SYSTEM -> false
         }
+    }
+
+    fun transcribeBufferOffline(buffer: StereoAudioBuffer): Boolean {
+        return launchOfflineClipTranscription {
+            resampleStereoToMono16k(buffer)
+        }
+    }
+
+    fun transcribeAudioFileOffline(file: File): Boolean {
+        return launchOfflineClipTranscription {
+            localMoonshineEngine.extractMono16kSamplesFromFile(file)
+        }
+    }
+
+    private fun launchOfflineClipTranscription(
+        samplesLoader: suspend () -> FloatArray?,
+    ): Boolean {
+        if (!canTranscribeClipOffline(currentLocaleTag)) return false
+        val mySessionId: Long
+        synchronized(sessionGuard) {
+            keepListening = false
+            mySessionId = ++currentSessionId
+            consecutiveFastDisconnects = 0
+            localMoonshineEngine.stop()
+            cancelEndOfSpeechWatchdog()
+            mainHandler.removeCallbacksAndMessages(null)
+            destroyAndroidRecognizerOnMain()
+            _state.update {
+                it.copy(
+                    isListening = true,
+                    isRoutingClip = true,
+                    partialText = "",
+                    rmsDb = 4f,
+                    errorMessage = null,
+                    activeEngineLabel = "Moonshine Arabic v2 (أوفلاين مباشر من المقطع)",
+                )
+            }
+        }
+
+        scope.launch(Dispatchers.IO) {
+            val samples = runCatching { samplesLoader() }.getOrNull()
+            if (currentSessionId != mySessionId) return@launch
+            if (samples == null || samples.isEmpty()) {
+                _state.update {
+                    it.copy(
+                        isListening = false,
+                        isRoutingClip = false,
+                        rmsDb = 0f,
+                        errorMessage = "تعذر تجهيز المقطع للتفريغ النصي المحلي.",
+                    )
+                }
+                return@launch
+            }
+            val started = localMoonshineEngine.startOfflineClipTranscription(
+                samples16k = samples,
+                onPartialUpdate = { partial ->
+                    if (currentSessionId == mySessionId) {
+                        _state.update { it.copy(partialText = partial, errorMessage = null) }
+                    }
+                },
+                onSegmentCommitted = { segment ->
+                    if (currentSessionId == mySessionId) {
+                        _state.update { cur ->
+                            val merged = mergeTranscriptText(cur.committedText, segment)
+                            cur.copy(committedText = merged, partialText = "", errorMessage = null)
+                        }
+                    }
+                },
+                onCompleted = {
+                    if (currentSessionId == mySessionId) {
+                        _state.update { cur ->
+                            val merged = mergeTranscriptText(cur.committedText, cur.partialText)
+                            cur.copy(
+                                isListening = false,
+                                isRoutingClip = false,
+                                committedText = merged,
+                                partialText = "",
+                                rmsDb = 0f,
+                            )
+                        }
+                    }
+                },
+                onFatalError = { errMsg ->
+                    if (currentSessionId == mySessionId) {
+                        _state.update { cur ->
+                            cur.copy(
+                                isListening = false,
+                                isRoutingClip = false,
+                                partialText = "",
+                                rmsDb = 0f,
+                                errorMessage = errMsg,
+                            )
+                        }
+                    }
+                },
+            )
+            if (!started && currentSessionId == mySessionId) {
+                _state.update {
+                    it.copy(
+                        isListening = false,
+                        isRoutingClip = false,
+                        rmsDb = 0f,
+                        errorMessage = "نموذج Moonshine العربي المحلي غير جاهز أو غير مدعوم على هذا الجهاز.",
+                    )
+                }
+            }
+        }
+        return true
     }
 
     fun startListening(localeTag: String, isClipRouting: Boolean) {

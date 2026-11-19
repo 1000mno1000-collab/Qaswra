@@ -1614,10 +1614,78 @@ fun buildFfmpegFilterForDspConfig(config: DspConfig): String {
             EffectType.LIMITER -> {
                 needsLimiter = true
             }
-            EffectType.CHORUS,
-            EffectType.FLANGER,
-            EffectType.PHASER,
-            EffectType.DISTORTION -> Unit
+            EffectType.CHORUS -> {
+                val c = norm.chorus
+                if (c.mix > 0.02f) {
+                    val speed = clamp(c.rateHz, 0.1f, 8f)
+                    val depth = clamp(c.depthMs * 0.18f, 0.2f, 4.5f)
+                    val outGain = clamp(0.75f + c.mix * 0.20f, 0.7f, 0.95f)
+                    stages += String.format(
+                        Locale.US,
+                        "chorus=0.70:%.2f:40|55:0.40|0.32:%.2f|%.2f:%.2f|%.2f",
+                        outGain,
+                        speed,
+                        (speed * 1.15f).coerceAtMost(8f),
+                        depth,
+                        (depth * 0.85f).coerceAtLeast(0.2f),
+                    )
+                    needsLimiter = true
+                }
+            }
+            EffectType.FLANGER -> {
+                val f = norm.flanger
+                if (f.mix > 0.02f) {
+                    val depth = clamp(f.depthMs, 0.5f, 10f)
+                    val regen = clamp(f.feedback * 95f, -90f, 90f)
+                    val width = clamp(f.mix * 100f, 10f, 100f)
+                    val speed = clamp(f.rateHz, 0.1f, 10f)
+                    stages += String.format(
+                        Locale.US,
+                        "flanger=delay=1.5:depth=%.2f:regen=%.1f:width=%.0f:speed=%.2f",
+                        depth,
+                        regen,
+                        width,
+                        speed,
+                    )
+                    needsLimiter = true
+                }
+            }
+            EffectType.PHASER -> {
+                val ph = norm.phaser
+                if (ph.mix > 0.02f) {
+                    val decay = clamp(0.15f + ph.feedback * 0.70f, 0.1f, 0.85f)
+                    val speed = clamp(ph.rateHz, 0.1f, 2f)
+                    val outGain = clamp(0.78f + ph.mix * 0.16f, 0.7f, 0.94f)
+                    stages += String.format(
+                        Locale.US,
+                        "aphaser=in_gain=0.80:out_gain=%.2f:delay=3.0:decay=%.2f:speed=%.2f:type=t",
+                        outGain,
+                        decay,
+                        speed,
+                    )
+                    needsLimiter = true
+                }
+            }
+            EffectType.DISTORTION -> {
+                val d = norm.distortion
+                if (d.mix > 0.02f && d.drive > 1.05f) {
+                    val driveDb = clamp((d.drive - 1f) * 1.4f * d.mix, 0.5f, 18f)
+                    val ceil = when (d.mode) {
+                        com.example.model.DistortionMode.HARD_CLIP -> 0.58f
+                        com.example.model.DistortionMode.OVERDRIVE -> 0.68f
+                        com.example.model.DistortionMode.SOFT_CLIP -> 0.76f
+                    }
+                    val toneHz = clamp(d.toneHz, 600f, 18000f).roundToInt()
+                    stages += String.format(
+                        Locale.US,
+                        "volume=%.2fdB,alimiter=limit=%.2f:attack=1:release=15:level=disabled,lowpass=f=%d",
+                        driveDb,
+                        ceil,
+                        toneHz,
+                    )
+                    needsLimiter = true
+                }
+            }
         }
     }
 
@@ -1659,14 +1727,6 @@ suspend fun exportSourceFileDirectlyWithFfmpeg(
     val cleanBase = baseFileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "Sonix_Export" }
     val stamp = UUID.randomUUID().toString().take(6)
 
-    val (ext, mime, codecArgs) = when (format) {
-        com.example.model.ExportAudioFormat.WAV -> Triple("wav", "audio/wav", "-acodec pcm_s16le -ar 44100 -ac 2")
-        com.example.model.ExportAudioFormat.FLAC -> Triple("flac", "audio/flac", "-c:a flac -ar 44100 -ac 2")
-        com.example.model.ExportAudioFormat.MP3 -> Triple("mp3", "audio/mpeg", "-c:a libmp3lame -b:a 320k -ar 44100 -ac 2")
-        com.example.model.ExportAudioFormat.M4A,
-        com.example.model.ExportAudioFormat.OGG -> Triple("m4a", "audio/mp4", "-c:a aac -b:a 320k -ar 44100 -ac 2")
-    }
-    val outFile = File(exportDir, "${cleanBase}_$stamp.$ext")
     val dspFilter = buildFfmpegFilterForDspConfig(dspConfig)
     val lufs = loudnessTarget.targetLufs
     val fullFilter = listOfNotNull(
@@ -1674,14 +1734,43 @@ suspend fun exportSourceFileDirectlyWithFfmpeg(
         if (lufs != null) "loudnorm=I=$lufs:TP=-1.0:LRA=9,alimiter=limit=0.95" else null,
     ).joinToString(",")
     val afArg = if (fullFilter.isNotBlank()) "-af \"$fullFilter\"" else ""
-    val cmd = "-y -i \"${safeIn.absolutePath}\" -vn $afArg $codecArgs \"${outFile.absolutePath}\""
-    val ok = FfmpegKitBridge.execute(cmd, toolName = "LargeFileFfmpegExport", logNonZeroFailure = true)
-    if (safeIn != sourceFile) runCatching { safeIn.delete() }
-    if (ok && outFile.exists() && outFile.length() > 512L) {
-        ExportedAudioResult(outFile, ext, mime)
-    } else {
-        runCatching { outFile.delete() }
-        null
+
+    try {
+        if (format == com.example.model.ExportAudioFormat.OGG) {
+            val oggOut = File(exportDir, "${cleanBase}_$stamp.ogg")
+            val oggCodecs = listOf(
+                "-c:a libopus -b:a 192k -ar 48000 -ac 2",
+                "-c:a libvorbis -b:a 192k -ar 44100 -ac 2",
+            )
+            for (codec in oggCodecs) {
+                runCatching { oggOut.delete() }
+                val oggCmd = "-y -i \"${safeIn.absolutePath}\" -vn $afArg $codec \"${oggOut.absolutePath}\""
+                val ok = FfmpegKitBridge.execute(oggCmd, toolName = "LargeFileFfmpegExportOGG", logNonZeroFailure = false)
+                if (ok && oggOut.exists() && oggOut.length() > 512L) {
+                    return@withContext ExportedAudioResult(oggOut, "ogg", "audio/ogg")
+                }
+            }
+            runCatching { oggOut.delete() }
+        }
+
+        val (ext, mime, codecArgs) = when (format) {
+            com.example.model.ExportAudioFormat.WAV -> Triple("wav", "audio/wav", "-acodec pcm_s16le -ar 44100 -ac 2")
+            com.example.model.ExportAudioFormat.FLAC -> Triple("flac", "audio/flac", "-c:a flac -ar 44100 -ac 2")
+            com.example.model.ExportAudioFormat.MP3 -> Triple("mp3", "audio/mpeg", "-c:a libmp3lame -b:a 320k -ar 44100 -ac 2")
+            com.example.model.ExportAudioFormat.M4A,
+            com.example.model.ExportAudioFormat.OGG -> Triple("m4a", "audio/mp4", "-c:a aac -b:a 320k -ar 44100 -ac 2")
+        }
+        val outFile = File(exportDir, "${cleanBase}_$stamp.$ext")
+        val cmd = "-y -i \"${safeIn.absolutePath}\" -vn $afArg $codecArgs \"${outFile.absolutePath}\""
+        val ok = FfmpegKitBridge.execute(cmd, toolName = "LargeFileFfmpegExport", logNonZeroFailure = true)
+        if (ok && outFile.exists() && outFile.length() > 512L) {
+            ExportedAudioResult(outFile, ext, mime)
+        } else {
+            runCatching { outFile.delete() }
+            null
+        }
+    } finally {
+        if (safeIn != sourceFile) runCatching { safeIn.delete() }
     }
 }
 

@@ -562,12 +562,20 @@ fun SpeechToTextScreen(
                         OutlinedButton(
                             onClick = {
                                 if (uiState.hasAudio) {
-                                    launchWithMicPermission(isClip = true)
+                                    if (viewModel.canTranscribeClipOffline()) {
+                                        viewModel.startStudioClipSpeechTranscription()
+                                    } else {
+                                        launchWithMicPermission(isClip = true)
+                                    }
                                 } else {
                                     onOpenPicker(AudioPickerTarget.IMPORT_MAIN)
                                 }
                             },
-                            enabled = systemRecognizerAvailable,
+                            enabled = if (uiState.hasAudio) {
+                                viewModel.canTranscribeClipOffline() || systemRecognizerAvailable
+                            } else {
+                                true
+                            },
                             interactionSource = clipInteraction,
                             border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),

@@ -70,20 +70,17 @@ class AiVoiceStudioUiTest {
                     onScriptChange = { stateHolder.value = stateHolder.value.copy(scriptText = it) },
                     onSelectEngine = {},
                     onSelectLanguage = {},
-                    onSelectDialect = {},
                     onSelectCharacter = {},
                     onToggleFavorite = {},
                     onSelectEmotion = {},
-                    onSelectPace = {},
-                    onPitchOffsetChange = {},
+                    onSpeechRateChange = {},
                     onIntensityChange = {},
-                    onDescriptionChange = {},
+                    onResetTuning = {},
                     onPickReferenceFile = {},
                     onUseStudioBufferAsReference = {},
                     onClearReference = {},
                     onReferenceTranscriptChange = {},
                     onRightsConfirmedChange = {},
-                    onOpenSaveCharacterDialog = {},
                     onAddDialogueTurn = {},
                     onRemoveDialogueTurn = {},
                     onMoveDialogueTurn = { _, _ -> },
@@ -95,7 +92,7 @@ class AiVoiceStudioUiTest {
                     onDeleteSavedCharacter = {},
                     onSaveBackendUrl = {},
                     onSaveBackendToken = {},
-                    onCheckBackendHealth = { _, _ -> },
+                    onCheckHealth = { _, _ -> },
                     onPreviewClick = { previewClicked = true },
                     onCancelSynthesis = {},
                     onApproveClick = { approveClicked = true },
@@ -113,7 +110,7 @@ class AiVoiceStudioUiTest {
         composeRule.onNodeWithTag("ai_voice_sticky_preview_button").assertIsDisplayed()
         composeRule.onNodeWithTag("ai_voice_sticky_approve_button").assertIsDisplayed()
 
-        // Scroll to the end of the page (Group 6 Help card) and confirm bar stays pinned
+        // Scroll to the end of the page and confirm bar stays pinned
         composeRule.onNodeWithTag("ai_voice_scroll_list").performScrollToIndex(6)
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("more_and_help_card").assertIsDisplayed()
@@ -151,20 +148,17 @@ class AiVoiceStudioUiTest {
                     onScriptChange = { state = state.copy(scriptText = it) },
                     onSelectEngine = {},
                     onSelectLanguage = {},
-                    onSelectDialect = {},
                     onSelectCharacter = {},
                     onToggleFavorite = {},
                     onSelectEmotion = {},
-                    onSelectPace = {},
-                    onPitchOffsetChange = {},
+                    onSpeechRateChange = {},
                     onIntensityChange = {},
-                    onDescriptionChange = {},
+                    onResetTuning = {},
                     onPickReferenceFile = {},
                     onUseStudioBufferAsReference = {},
                     onClearReference = {},
                     onReferenceTranscriptChange = {},
                     onRightsConfirmedChange = {},
-                    onOpenSaveCharacterDialog = {},
                     onAddDialogueTurn = {},
                     onRemoveDialogueTurn = {},
                     onMoveDialogueTurn = { _, _ -> },
@@ -176,7 +170,7 @@ class AiVoiceStudioUiTest {
                     onDeleteSavedCharacter = {},
                     onSaveBackendUrl = {},
                     onSaveBackendToken = {},
-                    onCheckBackendHealth = { _, _ -> },
+                    onCheckHealth = { _, _ -> },
                     onPreviewClick = {},
                     onCancelSynthesis = {},
                     onApproveClick = {},
@@ -196,10 +190,10 @@ class AiVoiceStudioUiTest {
     }
 
     @Test
-    fun collapsibleGroupsShowOnlyEngineSupportedEmotionsAndControls() {
+    fun studioCardsRenderEmotionsAndTuningControlsCleanly() {
         var state by mutableStateOf(
             AiVoiceStudioUiState(
-                selectedEngine = AiVoiceEngineKind.AUDAR_TTS_V1_FLASH,
+                selectedEngine = AiVoiceEngineKind.VOXCPM_2,
                 selectedEmotion = AiVoiceEmotion.NEUTRAL,
             ),
         )
@@ -224,20 +218,17 @@ class AiVoiceStudioUiTest {
                     onScriptChange = {},
                     onSelectEngine = { state = state.copy(selectedEngine = it) },
                     onSelectLanguage = {},
-                    onSelectDialect = {},
                     onSelectCharacter = {},
                     onToggleFavorite = {},
                     onSelectEmotion = { state = state.copy(selectedEmotion = it) },
-                    onSelectPace = {},
-                    onPitchOffsetChange = {},
+                    onSpeechRateChange = {},
                     onIntensityChange = {},
-                    onDescriptionChange = {},
+                    onResetTuning = {},
                     onPickReferenceFile = {},
                     onUseStudioBufferAsReference = {},
                     onClearReference = {},
                     onReferenceTranscriptChange = {},
                     onRightsConfirmedChange = {},
-                    onOpenSaveCharacterDialog = {},
                     onAddDialogueTurn = {},
                     onRemoveDialogueTurn = {},
                     onMoveDialogueTurn = { _, _ -> },
@@ -249,7 +240,7 @@ class AiVoiceStudioUiTest {
                     onDeleteSavedCharacter = {},
                     onSaveBackendUrl = {},
                     onSaveBackendToken = {},
-                    onCheckBackendHealth = { _, _ -> },
+                    onCheckHealth = { _, _ -> },
                     onPreviewClick = {},
                     onCancelSynthesis = {},
                     onApproveClick = {},
@@ -258,39 +249,20 @@ class AiVoiceStudioUiTest {
         }
         composeRule.waitForIdle()
 
-        // Expand Emotion Group on Audar-Flash: Whisper is supported, Anger is NOT supported
         composeRule.onNodeWithTag("ai_voice_scroll_list")
-            .performScrollToNode(hasTestTag("studio_group_emotion_toggle"))
-        composeRule.onNodeWithTag("studio_group_emotion_toggle").performClick()
-        composeRule.waitForIdle()
+            .performScrollToNode(hasTestTag("studio_group_emotion"))
         composeRule.onNodeWithTag("ai_voice_emotion_whisper").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("ai_voice_emotion_anger").assertDoesNotExist()
-        composeRule.onNodeWithTag("ai_voice_emotion_fear").assertDoesNotExist()
+        composeRule.onNodeWithTag("ai_voice_emotion_excited").performScrollTo().assertIsDisplayed()
 
-        // Expand Controls Group on Audar-Flash: Pitch Slider is NOT supported, Intensity IS supported
         composeRule.onNodeWithTag("ai_voice_scroll_list")
-            .performScrollToNode(hasTestTag("studio_group_controls_toggle"))
-        composeRule.onNodeWithTag("studio_group_controls_toggle").performClick()
-        composeRule.waitForIdle()
+            .performScrollToNode(hasTestTag("studio_group_controls"))
+        composeRule.onNodeWithTag("ai_voice_speed_slider").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("ai_voice_intensity_slider").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("ai_voice_pitch_slider").assertDoesNotExist()
-        composeRule.onNodeWithTag("ai_voice_prompt_input").assertDoesNotExist()
-
-        // Switch engine to EDGE_NEURAL_FREE: Pitch Slider appears, Intensity hides, Fear/Whisper hide
-        state = state.copy(selectedEngine = AiVoiceEngineKind.EDGE_NEURAL_FREE)
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag("ai_voice_scroll_list")
-            .performScrollToNode(hasTestTag("studio_group_controls_toggle"))
-        composeRule.onNodeWithTag("ai_voice_pitch_slider").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("ai_voice_intensity_slider").assertDoesNotExist()
-        composeRule.onNodeWithTag("ai_voice_scroll_list")
-            .performScrollToNode(hasTestTag("studio_group_emotion_toggle"))
-        composeRule.onNodeWithTag("ai_voice_emotion_anger").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("ai_voice_emotion_whisper").assertDoesNotExist()
+        composeRule.onNodeWithTag("ai_voice_reset_tuning_button").performScrollTo().assertIsDisplayed()
     }
 
     @Test
-    fun serverUiIsHiddenAndEngineDropdownExcludesUnwantedTurbo() {
+    fun fallbackBannerAppearsWhenConfiguredAndEngineCardsAreBothVisible() {
         val state = AiVoiceStudioUiState(
             errorTitle = "إعداد مطلوب",
             setupRequiredGuide = "يرجى التبديل للمحلي",
@@ -316,20 +288,17 @@ class AiVoiceStudioUiTest {
                     onScriptChange = {},
                     onSelectEngine = {},
                     onSelectLanguage = {},
-                    onSelectDialect = {},
                     onSelectCharacter = {},
                     onToggleFavorite = {},
                     onSelectEmotion = {},
-                    onSelectPace = {},
-                    onPitchOffsetChange = {},
+                    onSpeechRateChange = {},
                     onIntensityChange = {},
-                    onDescriptionChange = {},
+                    onResetTuning = {},
                     onPickReferenceFile = {},
                     onUseStudioBufferAsReference = {},
                     onClearReference = {},
                     onReferenceTranscriptChange = {},
                     onRightsConfirmedChange = {},
-                    onOpenSaveCharacterDialog = {},
                     onAddDialogueTurn = {},
                     onRemoveDialogueTurn = {},
                     onMoveDialogueTurn = { _, _ -> },
@@ -341,7 +310,7 @@ class AiVoiceStudioUiTest {
                     onDeleteSavedCharacter = {},
                     onSaveBackendUrl = {},
                     onSaveBackendToken = {},
-                    onCheckBackendHealth = { _, _ -> },
+                    onCheckHealth = { _, _ -> },
                     onPreviewClick = {},
                     onCancelSynthesis = {},
                     onApproveClick = {},
@@ -350,20 +319,10 @@ class AiVoiceStudioUiTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag("ai_voice_tab_3").assertDoesNotExist()
-        composeRule.onNodeWithTag("ai_voice_open_server_setup_btn").assertDoesNotExist()
         composeRule.onNodeWithTag("ai_voice_use_local_fallback_btn").assertIsDisplayed()
-
         composeRule.onNodeWithTag("ai_voice_scroll_list")
-            .performScrollToNode(hasTestTag("studio_group_voice_toggle"))
-        composeRule.onNodeWithTag("studio_group_voice_toggle").performClick()
-        composeRule.waitForIdle()
-
-        composeRule.onNodeWithTag("ai_voice_engine_dropdown").performScrollTo().performClick()
-        composeRule.waitForIdle()
-
+            .performScrollToNode(hasTestTag("studio_card_engine"))
         composeRule.onNodeWithTag("ai_voice_engine_${AiVoiceEngineKind.VOXCPM_2.id}").assertIsDisplayed()
         composeRule.onNodeWithTag("ai_voice_engine_${AiVoiceEngineKind.SONIX_LOCAL_STUDIO.id}").assertIsDisplayed()
-        composeRule.onNodeWithTag("ai_voice_engine_${AiVoiceEngineKind.AUDAR_TTS_V1_TURBO.id}").assertDoesNotExist()
     }
 }
