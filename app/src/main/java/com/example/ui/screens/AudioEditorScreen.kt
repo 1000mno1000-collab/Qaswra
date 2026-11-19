@@ -641,6 +641,24 @@ fun AudioEditorScreen(
                                     )
                                 }
 
+                                // Subtle Silero VAD speech indicator strip along the bottom edge when analyzed
+                                if (uiState.vadSpeechSegments.isNotEmpty() && durationMs > 0L) {
+                                    val durF = durationMs.toFloat()
+                                    val barH = 3.dp.toPx()
+                                    val barY = size.height - barH
+                                    for (seg in uiState.vadSpeechSegments) {
+                                        val x0 = fracToX((seg.startMs / durF).coerceIn(0f, 1f)).coerceIn(0f, size.width)
+                                        val x1 = fracToX((seg.endMs / durF).coerceIn(0f, 1f)).coerceIn(0f, size.width)
+                                        if (x1 > x0 + 1f) {
+                                            drawRect(
+                                                color = StudioColors.Emerald.copy(alpha = 0.75f),
+                                                topLeft = Offset(x0, barY),
+                                                size = Size(x1 - x0, barH),
+                                            )
+                                        }
+                                    }
+                                }
+
                                 // Viewport-culled & column-pooled waveform bars so peaks stay sharp at 1.0x and ultra-detailed at 15.0x
                                 val count = peaks.size
                                 val startIdx = (visStart * count).toInt().coerceIn(0, max(0, count - 1))
@@ -1008,6 +1026,51 @@ fun AudioEditorScreen(
                         Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text(t(lang, "normalize_audio"), maxLines = 1)
+                    }
+                }
+
+                // Silero VAD Speech Detection & Auto Silence Removal Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val vadDetectInteraction = remember { MutableInteractionSource() }
+                    OutlinedButton(
+                        onClick = { viewModel.detectSpeechBoundsWithSileroVad() },
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
+                        interactionSource = vadDetectInteraction,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(vadDetectInteraction, StudioColors.Emerald, cornerRadius = 12.dp)
+                            .testTag("editor_vad_detect_button"),
+                    ) {
+                        Icon(Icons.Rounded.GraphicEq, contentDescription = null, tint = StudioColors.Emerald, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (lang == AppLanguage.EN) "Detect Speech (VAD)" else "تحديد الكلام (VAD)",
+                            maxLines = 1,
+                        )
+                    }
+                    val vadSilenceInteraction = remember { MutableInteractionSource() }
+                    OutlinedButton(
+                        onClick = { viewModel.removeUnwantedSilenceWithSileroVad() },
+                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
+                        interactionSource = vadSilenceInteraction,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .lit(vadSilenceInteraction, StudioColors.Amber, cornerRadius = 12.dp)
+                            .testTag("editor_vad_silence_remove_button"),
+                    ) {
+                        Icon(Icons.Rounded.ContentCut, contentDescription = null, tint = StudioColors.Amber, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (lang == AppLanguage.EN) "Remove Silence (VAD)" else "إزالة الصمت (VAD)",
+                            maxLines = 1,
+                        )
                     }
                 }
             }

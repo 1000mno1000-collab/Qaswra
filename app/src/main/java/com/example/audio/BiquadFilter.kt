@@ -236,4 +236,23 @@ class StereoBiquadFilter {
             right[i] = yr.toFloat()
         }
     }
+
+    fun magnitudeDbAt(sampleRate: Int, freqHz: Double): Double {
+        if (sampleRate <= 0 || freqHz <= 0.0 || freqHz >= sampleRate * 0.5) return 0.0
+        val w = (2.0 * PI * freqHz) / sampleRate
+        val cosW = cos(w)
+        val sinW = sin(w)
+        val cos2W = cos(2.0 * w)
+        val sin2W = sin(2.0 * w)
+
+        val numRe = b0 + b1 * cosW + b2 * cos2W
+        val numIm = -(b1 * sinW + b2 * sin2W)
+        val denRe = 1.0 + a1 * cosW + a2 * cos2W
+        val denIm = -(a1 * sinW + a2 * sin2W)
+
+        val numMagSq = numRe * numRe + numIm * numIm
+        val denMagSq = max(denRe * denRe + denIm * denIm, 1e-12)
+        val mag = sqrt(max(numMagSq / denMagSq, 1e-12))
+        return clamp(20.0 * kotlin.math.log10(mag), -24.0, 24.0)
+    }
 }

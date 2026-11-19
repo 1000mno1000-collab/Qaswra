@@ -419,8 +419,8 @@ fun UnifiedMergeOverlayStudioScreen(
                     ) {
                         uiState.projects.filter { it.hasAudio }.forEach { proj ->
                             FilterChip(
-                                selected = false,
-                                onClick = { viewModel.appendSavedProjectToCurrent(proj) },
+                                selected = uiState.mixBgName == proj.name,
+                                onClick = { viewModel.loadSavedProjectAsSecondaryTrack(proj) },
                                 label = { Text("${proj.name} (${formatDurationMs(proj.durationMs)})") },
                                 modifier = Modifier.defaultMinSize(minHeight = 44.dp),
                             )

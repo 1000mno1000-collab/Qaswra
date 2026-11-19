@@ -1132,8 +1132,10 @@ object SonixUnifiedAIEngine {
         }
         val presenceGain = if (metrics.highEnergyRatio < 0.14f) 3.2f else 2.0f
         filters += "equalizer=f=2600:width_type=h:width=1200:g=${fmt(presenceGain)}"
+        filters += "dynaudnorm=f=150:g=15:p=0.90:m=8"
         filters += "acompressor=threshold=-18dB:ratio=3.2:attack=8:release=85:makeup=2.5"
-        filters += "alimiter=limit=0.95"
+        filters += "loudnorm=I=-16:TP=-1.5:LRA=11"
+        filters += "alimiter=limit=0.945:attack=5:release=50"
         return filters.joinToString(",")
     }
 

@@ -79,13 +79,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.audio.AudioSignalAnalyzer
+import com.example.audio.EqualizerProcessor
 import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.DistortionMode
+import com.example.model.ECHO_SPACE_PRESETS
+import com.example.model.EQ_10_FREQUENCIES_HZ
+import com.example.model.EQ_10_LABELS
+import com.example.model.EQ_PRESET_PROFILES
 import com.example.model.EchoDetailGroup
 import com.example.model.EchoPadAxisMode
 import com.example.model.EffectType
 import com.example.studio.ui.lit
+import kotlin.math.ln
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.SpectrumVisualizer
 import com.example.ui.components.StudioFocusTopBar
@@ -262,6 +268,48 @@ fun EchoReverbScreen(
                         color = if (!uiState.isSimpleEchoMode) StudioColors.BgTop else StudioColors.TextSecondary,
                     )
                 }
+            }
+        }
+
+        // 5 Iconic Acoustic Spaces (Mosque & Dome, Banquet Hall, Broadcast Studio, Cave, Cinema)
+        Text(
+            text = t(lang, "echo_spaces_title"),
+            style = MaterialTheme.typography.titleSmall,
+            color = StudioColors.Cyan,
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ECHO_SPACE_PRESETS.forEach { space ->
+                val spaceTitle = t(lang, space.titleKey)
+                val isSpaceActive = enabled && uiState.selectedPresetLabel == spaceTitle
+                val spaceInteraction = remember { MutableInteractionSource() }
+                FilterChip(
+                    selected = isSpaceActive,
+                    onClick = { viewModel.applyEchoSpacePreset(space) },
+                    interactionSource = spaceInteraction,
+                    label = { Text(spaceTitle, maxLines = 1) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = StudioColors.Violet.copy(alpha = 0.24f),
+                        selectedLabelColor = StudioColors.VioletBright,
+                        containerColor = StudioColors.CardSurface,
+                        labelColor = StudioColors.TextSecondary,
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = isSpaceActive,
+                        borderColor = StudioColors.Border,
+                        selectedBorderColor = StudioColors.VioletBright,
+                    ),
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 48.dp)
+                        .lit(spaceInteraction, MaterialTheme.colorScheme.primary, selected = isSpaceActive, cornerRadius = 10.dp)
+                        .testTag("echo_space_${space.id}"),
+                )
             }
         }
 
@@ -1188,15 +1236,7 @@ fun EffectDetailScreen(
                 when (effect) {
                     EffectType.EQUALIZER -> {
                         val eq = cfg.equalizer
-                        val bands = listOf(
-                            eq.band60HzDb,
-                            eq.band230HzDb,
-                            eq.band910HzDb,
-                            eq.band3600HzDb,
-                            eq.band14000HzDb,
-                        )
-                        // 5-band frequency response curve Canvas
-                        val eqPath = remember { Path() }
+                        val bands10 = eq.resolved10Bands()
                         val eqDensity = LocalDensity.current
                         val eqStroke = remember(eqDensity) {
                             Stroke(
@@ -1205,10 +1245,79 @@ fun EffectDetailScreen(
                                 join = StrokeJoin.Round,
                             )
                         }
+                        val eqPath = remember { Path() }
+                        val curveFreqs = remember {
+                            val minLn = ln(25.0)
+                            val maxLn = ln(18000.0)
+                            FloatArray(48) { idx ->
+                                kotlin.math.exp(minLn + (maxLn - minLn) * (idx / 47.0)).toFloat()
+                            }
+                        }
+                        val curveDb = remember(bands10.contentHashCode()) {
+                            EqualizerProcessor.computeMagnitudeCurveDb(
+                                sampleRate = 44100,
+                                p = eq,
+                                freqPointsHz = curveFreqs,
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = t(lang, "eq_presets_title"),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = StudioColors.Cyan,
+                            )
+                            OutlinedButton(
+                                onClick = { viewModel.resetEqualizerOnly() },
+                                border = BorderStroke(1.dp, StudioColors.Border),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 40.dp)
+                                    .testTag("eq_reset_button"),
+                            ) {
+                                Text(t(lang, "eq_reset"), style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            EQ_PRESET_PROFILES.forEach { profile ->
+                                val isSelected = bands10.indices.all { i ->
+                                    kotlin.math.abs(bands10[i] - profile.bands10Db[i]) < 0.35f
+                                }
+                                val chipInt = remember { MutableInteractionSource() }
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { viewModel.applyEqPresetProfile(profile) },
+                                    interactionSource = chipInt,
+                                    label = { Text(t(lang, profile.titleKey), maxLines = 1) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.2f),
+                                        selectedLabelColor = StudioColors.Cyan,
+                                        containerColor = StudioColors.BgMid,
+                                        labelColor = StudioColors.TextSecondary,
+                                    ),
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .lit(chipInt, MaterialTheme.colorScheme.primary, selected = isSelected, cornerRadius = 10.dp)
+                                        .testTag("eq_preset_${profile.id}"),
+                                )
+                            }
+                        }
+
+                        // Real 10-band cascaded biquad frequency response curve Canvas
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(110.dp)
+                                .height(126.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(StudioColors.BgTop)
                                 .border(1.dp, StudioColors.Border, RoundedCornerShape(14.dp))
@@ -1216,53 +1325,80 @@ fun EffectDetailScreen(
                         ) {
                             Canvas(modifier = Modifier.fillMaxSize()) {
                                 val midY = size.height / 2f
-                                drawLine(
-                                    color = StudioColors.BorderBright.copy(alpha = 0.5f),
-                                    start = Offset(0f, midY),
-                                    end = Offset(size.width, midY),
-                                    strokeWidth = 1.dp.toPx(),
-                                )
-                                eqPath.reset()
-                                val pts = bands.mapIndexed { idx, db ->
-                                    val x = if (bands.size <= 1) 0f else size.width * (idx.toFloat() / (bands.size - 1))
-                                    val y = midY - (db / 12f) * (size.height * 0.42f)
-                                    Offset(x, y)
+                                val scaleY = size.height * 0.40f / 12f
+                                // +6 dB, 0 dB, -6 dB guides
+                                listOf(-6f, 0f, 6f).forEach { refDb ->
+                                    val gy = midY - refDb * scaleY
+                                    drawLine(
+                                        color = if (refDb == 0f) {
+                                            StudioColors.BorderBright.copy(alpha = 0.55f)
+                                        } else {
+                                            StudioColors.Border.copy(alpha = 0.38f)
+                                        },
+                                        start = Offset(0f, gy),
+                                        end = Offset(size.width, gy),
+                                        strokeWidth = 1.dp.toPx(),
+                                    )
                                 }
-                                pts.forEachIndexed { idx, p ->
-                                    if (idx == 0) eqPath.moveTo(p.x, p.y) else eqPath.lineTo(p.x, p.y)
+
+                                eqPath.reset()
+                                val minLn = ln(25.0)
+                                val maxLn = ln(18000.0)
+                                curveFreqs.forEachIndexed { idx, freq ->
+                                    val normX = ((ln(freq.toDouble()) - minLn) / (maxLn - minLn)).toFloat().coerceIn(0f, 1f)
+                                    val x = normX * size.width
+                                    val y = (midY - curveDb[idx] * scaleY).coerceIn(4f, size.height - 4f)
+                                    if (idx == 0) eqPath.moveTo(x, y) else eqPath.lineTo(x, y)
                                 }
                                 drawPath(
                                     path = eqPath,
                                     color = StudioColors.Cyan,
                                     style = eqStroke,
                                 )
-                                pts.forEach { p ->
-                                    drawCircle(color = StudioColors.Violet, radius = 5.dp.toPx(), center = p)
-                                    drawCircle(color = StudioColors.TextPrimary, radius = 2.dp.toPx(), center = p)
+                                bands10.forEachIndexed { idx, db ->
+                                    val normX = ((ln(EQ_10_FREQUENCIES_HZ[idx].toDouble()) - minLn) / (maxLn - minLn)).toFloat().coerceIn(0f, 1f)
+                                    val cx = normX * size.width
+                                    val cy = (midY - db * scaleY).coerceIn(4f, size.height - 4f)
+                                    drawCircle(color = StudioColors.Violet, radius = 4.5.dp.toPx(), center = Offset(cx, cy))
+                                    drawCircle(color = StudioColors.TextPrimary, radius = 1.8.dp.toPx(), center = Offset(cx, cy))
                                 }
                             }
                         }
 
-                        StudioParamSlider("60 Hz", eq.band60HzDb, -12f, 12f, "${"%.1f".format(eq.band60HzDb)} dB", StudioColors.Cyan, testTag = "eq_60") { v ->
-                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band60HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
-                            viewModel.ensureLivePreviewPlaying()
+                        val bandColors = remember {
+                            listOf(
+                                StudioColors.Cyan,
+                                StudioColors.Cyan,
+                                StudioColors.Cyan,
+                                StudioColors.Violet,
+                                StudioColors.Violet,
+                                StudioColors.Violet,
+                                StudioColors.Emerald,
+                                StudioColors.Emerald,
+                                StudioColors.Amber,
+                                StudioColors.Amber,
+                            )
                         }
-                        StudioParamSlider("230 Hz", eq.band230HzDb, -12f, 12f, "${"%.1f".format(eq.band230HzDb)} dB", StudioColors.Cyan, testTag = "eq_230") { v ->
-                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band230HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
-                            viewModel.ensureLivePreviewPlaying()
+                        EQ_10_FREQUENCIES_HZ.forEachIndexed { bandIdx, freqHz ->
+                            val bandVal = bands10[bandIdx]
+                            val formatted = "${if (bandVal > 0f) "+" else ""}${"%.1f".format(bandVal)} dB"
+                            StudioParamSlider(
+                                label = EQ_10_LABELS[bandIdx],
+                                value = bandVal,
+                                min = -12f,
+                                max = 12f,
+                                formattedValue = formatted,
+                                accentColor = bandColors[bandIdx],
+                                testTag = "eq_$freqHz",
+                            ) { v ->
+                                viewModel.updateDspConfig {
+                                    it.copy(equalizer = it.equalizer.with10Band(bandIdx, v))
+                                        .withSlotEnabled(EffectType.EQUALIZER, true)
+                                }
+                                viewModel.ensureLivePreviewPlaying()
+                            }
                         }
-                        StudioParamSlider("910 Hz", eq.band910HzDb, -12f, 12f, "${"%.1f".format(eq.band910HzDb)} dB", StudioColors.Violet, testTag = "eq_910") { v ->
-                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band910HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
-                            viewModel.ensureLivePreviewPlaying()
-                        }
-                        StudioParamSlider("3.6 kHz", eq.band3600HzDb, -12f, 12f, "${"%.1f".format(eq.band3600HzDb)} dB", StudioColors.Emerald, testTag = "eq_3600") { v ->
-                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band3600HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
-                            viewModel.ensureLivePreviewPlaying()
-                        }
-                        StudioParamSlider("14 kHz", eq.band14000HzDb, -12f, 12f, "${"%.1f".format(eq.band14000HzDb)} dB", StudioColors.Amber, testTag = "eq_14000") { v ->
-                            viewModel.updateDspConfig { it.copy(equalizer = it.equalizer.copy(band14000HzDb = v)).withSlotEnabled(EffectType.EQUALIZER, true) }
-                            viewModel.ensureLivePreviewPlaying()
-                        }
+
                         if (uiState.fricativeWarningEq) {
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
@@ -1372,7 +1508,7 @@ fun EffectDetailScreen(
                             label = if (lang == AppLanguage.EN) "Tempo Ratio" else "سرعة التشغيل",
                             value = ts.tempoRatio,
                             min = 0.5f,
-                            max = 2f,
+                            max = 2.5f,
                             formattedValue = "${"%.2f".format(ts.tempoRatio)}x",
                             accentColor = StudioColors.Amber,
                             testTag = "tempo_ratio_slider",

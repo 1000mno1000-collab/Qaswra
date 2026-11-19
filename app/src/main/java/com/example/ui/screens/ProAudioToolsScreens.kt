@@ -49,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -68,12 +69,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.audio.MergeStudioMode
+import com.example.audio.SilenceInsertMode
+import com.example.audio.TARGET_SAMPLE_RATE
 import com.example.audio.formatDurationMs
 import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.model.AudioPickerTarget
 import com.example.model.EffectType
 import com.example.model.ExportAudioFormat
+import com.example.model.VocalSplitMode
 import com.example.studio.ui.lit
 import com.example.ui.components.PreviewAndApplyActionRow
 import com.example.ui.components.SaveDraftDialog
@@ -351,6 +355,84 @@ fun AudioSplitScreen(
                 }
             }
         }
+
+        var vocalSplitMode by remember { mutableStateOf(VocalSplitMode.VOCALS_ONLY) }
+        var vocalBlendRatio by remember { mutableFloatStateOf(0.55f) }
+
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.45f)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = t(lang, "vocal_splitter_title"),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = StudioColors.Violet,
+                )
+                Text(
+                    text = t(lang, "vocal_splitter_desc"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = StudioColors.TextSecondary,
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    VocalSplitMode.entries.forEach { mode ->
+                        val selected = vocalSplitMode == mode
+                        val modeInteraction = remember { MutableInteractionSource() }
+                        FilterChip(
+                            selected = selected,
+                            onClick = { vocalSplitMode = mode },
+                            interactionSource = modeInteraction,
+                            label = { Text(t(lang, mode.titleKey)) },
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 48.dp)
+                                .lit(modeInteraction, MaterialTheme.colorScheme.primary, selected = selected, cornerRadius = 10.dp)
+                                .testTag("split_vocal_mode_${mode.name}"),
+                        )
+                    }
+                }
+
+                if (vocalSplitMode == VocalSplitMode.CUSTOM_BLEND) {
+                    StudioParamSlider(
+                        label = t(lang, "vocal_splitter_blend_label"),
+                        value = vocalBlendRatio,
+                        min = 0f,
+                        max = 1f,
+                        formattedValue = "${(vocalBlendRatio * 100f).roundToInt()}%",
+                        accentColor = StudioColors.Violet,
+                        testTag = "split_vocal_blend_slider",
+                        onValueChange = { vocalBlendRatio = it },
+                    )
+                }
+
+                PreviewAndApplyActionRow(
+                    isPreviewPlaying = uiState.isToolPreviewPlaying,
+                    previewEnabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
+                    applyEnabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
+                    language = lang,
+                    previewTag = "split_vocal_preview_button",
+                    applyTag = "split_vocal_apply_button",
+                    applyColor = StudioColors.Violet,
+                    onPreviewClick = { viewModel.previewVocalSplitter(vocalSplitMode, vocalBlendRatio) },
+                    onApplyClick = {
+                        preferVmUndo = true
+                        viewModel.applyVocalSplitter(vocalSplitMode, vocalBlendRatio)
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -364,19 +446,24 @@ fun PitchAndSpeedScreen(
     val lang = uiState.language
     val vmSemitones = uiState.dspConfig.pitchShift.semitones
     val vmTempo = uiState.dspConfig.timeStretch.tempoRatio
+    val vmPreserveFormants = uiState.dspConfig.pitchShift.preserveFormants
 
     var localSemitones by remember { mutableFloatStateOf(vmSemitones) }
     var localTempo by remember { mutableFloatStateOf(vmTempo) }
+    var localPreserveFormants by remember { mutableStateOf(vmPreserveFormants) }
     var userEditedSliders by remember { mutableStateOf(false) }
     var saveDraftDialogOpen by remember { mutableStateOf(false) }
 
     // Keep local slider values synced with Undo / Redo / Reset-to-zero / Apply resets
-    LaunchedEffect(vmSemitones, vmTempo) {
+    LaunchedEffect(vmSemitones, vmTempo, vmPreserveFormants) {
         if (abs(localSemitones - vmSemitones) > 0.01f) {
             localSemitones = vmSemitones
         }
         if (abs(localTempo - vmTempo) > 0.005f) {
             localTempo = vmTempo
+        }
+        if (localPreserveFormants != vmPreserveFormants) {
+            localPreserveFormants = vmPreserveFormants
         }
     }
 
@@ -386,10 +473,10 @@ fun PitchAndSpeedScreen(
     }
 
     // 80ms debounce for zero-stutter native PlaybackParams live preview
-    LaunchedEffect(localSemitones, localTempo, userEditedSliders) {
+    LaunchedEffect(localSemitones, localTempo, localPreserveFormants, userEditedSliders) {
         if (!userEditedSliders) return@LaunchedEffect
         delay(80L)
-        viewModel.updatePitchSpeedParamsLive(localSemitones, localTempo)
+        viewModel.updatePitchSpeedParamsLive(localSemitones, localTempo, localPreserveFormants)
         viewModel.ensureLivePreviewPlaying()
     }
 
@@ -404,14 +491,17 @@ fun PitchAndSpeedScreen(
         if (restored != null) {
             val st = restored.floatParams["semitones"] ?: 0f
             val tr = restored.floatParams["tempoRatio"] ?: 1f
+            val pf = (restored.floatParams["preserveFormants"] ?: 1f) >= 0.5f
             localSemitones = st
             localTempo = tr
-            viewModel.updatePitchSpeedParamsLive(st, tr)
+            localPreserveFormants = pf
+            viewModel.updatePitchSpeedParamsLive(st, tr, pf)
         }
     }
 
     val latestSemi by rememberUpdatedState(localSemitones)
     val latestTempo by rememberUpdatedState(localTempo)
+    val latestFormants by rememberUpdatedState(localPreserveFormants)
     DisposableEffect(Unit) {
         onDispose {
             viewModel.stopToolPreview()
@@ -425,7 +515,11 @@ fun PitchAndSpeedScreen(
                     titleEn = "Pitch & Speed",
                     summaryAr = "${"%+.1f".format(latestSemi)} st • ${"%.2f".format(latestTempo)}x",
                     summaryEn = "${"%+.1f".format(latestSemi)} st • ${"%.2f".format(latestTempo)}x",
-                    floatParams = mapOf("semitones" to latestSemi, "tempoRatio" to latestTempo),
+                    floatParams = mapOf(
+                        "semitones" to latestSemi,
+                        "tempoRatio" to latestTempo,
+                        "preserveFormants" to if (latestFormants) 1f else 0f,
+                    ),
                 )
             }
         }
@@ -482,6 +576,7 @@ fun PitchAndSpeedScreen(
                 userEditedSliders = false
                 localSemitones = 0f
                 localTempo = 1.0f
+                localPreserveFormants = true
                 viewModel.resetAllEffects()
             },
             onOpenSaveDraft = { saveDraftDialogOpen = true },
@@ -538,7 +633,7 @@ fun PitchAndSpeedScreen(
                     label = t(lang, "effect_time_stretch"),
                     value = localTempo,
                     min = 0.5f,
-                    max = 2.0f,
+                    max = 2.5f,
                     formattedValue = "${"%.2f".format(localTempo)}x",
                     accentColor = StudioColors.Violet,
                     testTag = "speed_tool_tempo",
@@ -547,6 +642,33 @@ fun PitchAndSpeedScreen(
                         localTempo = it
                     },
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = t(lang, "pitch_preserve_formants"),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = StudioColors.TextPrimary,
+                        )
+                        Text(
+                            text = t(lang, "pitch_preserve_formants_desc"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioColors.TextMuted,
+                        )
+                    }
+                    Switch(
+                        checked = localPreserveFormants,
+                        onCheckedChange = { checked ->
+                            userEditedSliders = true
+                            localPreserveFormants = checked
+                        },
+                        modifier = Modifier.testTag("pitch_preserve_formants_switch"),
+                    )
+                }
 
                 if (uiState.isProcessing || uiState.purifyProgress != null) {
                     val prog = uiState.purifyProgress ?: 0f
@@ -586,7 +708,7 @@ fun PitchAndSpeedScreen(
                 Button(
                     onClick = {
                         userEditedSliders = false
-                        viewModel.applyPitchAndSpeed(localSemitones, localTempo)
+                        viewModel.applyPitchAndSpeed(localSemitones, localTempo, localPreserveFormants)
                     },
                     enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing &&
                         (abs(localSemitones) >= 0.05f || abs(localTempo - 1f) >= 0.02f),
@@ -871,6 +993,41 @@ fun SurroundStereoScreen(
                     },
                 )
 
+                val phaseReport = remember(midAdjustPct, sideBoostPct, widthPct, uiState.durationMs, uiState.hasAudio) {
+                    viewModel.estimateSurroundPhaseReport(midAdjustPct, sideBoostPct, widthPct)
+                }
+                val phaseColor = if (phaseReport.isMonoCompatible) StudioColors.Emerald else StudioColors.Amber
+                Surface(
+                    color = phaseColor.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, phaseColor.copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth().testTag("stereo_phase_meter"),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = t(lang, if (phaseReport.isMonoCompatible) "stereo_mono_ok" else "stereo_mono_warn"),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = phaseColor,
+                            )
+                            Text(
+                                text = t(lang, "stereo_phase_hint"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioColors.TextMuted,
+                            )
+                        }
+                        Text(
+                            text = "r=${"%+.2f".format(phaseReport.correlation)}",
+                            style = TelemetryTextStyle,
+                            color = phaseColor,
+                        )
+                    }
+                }
+
                 val applyStereoInteraction = remember { MutableInteractionSource() }
                 Button(
                     onClick = {
@@ -912,40 +1069,72 @@ fun GenerateSilenceScreen(
 ) {
     val lang = uiState.language
     var durationSec by remember { mutableFloatStateOf(3.0f) }
-    var appendMode by remember { mutableStateOf(uiState.hasAudio) }
+    var insertMode by remember(uiState.hasAudio) {
+        mutableStateOf(if (uiState.hasAudio) SilenceInsertMode.APPEND_END else SilenceInsertMode.NEW_TRACK)
+    }
+    var sampleRate by remember { mutableIntStateOf(TARGET_SAMPLE_RATE) }
+    var channels by remember { mutableIntStateOf(2) }
     var preferVmUndo by remember { mutableStateOf(false) }
-    val silenceHistory = rememberEditHistory(durationSec to appendMode)
+    val silenceHistory = rememberEditHistory(durationSec to insertMode)
 
     LaunchedEffect(uiState.restoredToolSession?.id) {
         val restored = viewModel.consumeRestoredToolSession("generate_silence")
         if (restored != null) {
-            durationSec = restored.floatParams["durationSec"] ?: durationSec
-            appendMode = (restored.floatParams["appendMode"] ?: 0f) > 0.5f
+            durationSec = (restored.floatParams["durationSec"] ?: durationSec).coerceIn(0.5f, 600f)
+            val modeOrd = restored.floatParams["modeOrdinal"]?.roundToInt()
+            if (modeOrd != null && modeOrd in SilenceInsertMode.entries.indices) {
+                insertMode = SilenceInsertMode.entries[modeOrd]
+            } else {
+                val oldApp = (restored.floatParams["appendMode"] ?: 0f) > 0.5f
+                insertMode = if (oldApp && uiState.hasAudio) SilenceInsertMode.APPEND_END else SilenceInsertMode.NEW_TRACK
+            }
+            sampleRate = (restored.floatParams["sampleRate"]?.roundToInt() ?: sampleRate).let {
+                if (it in listOf(16000, 44100, 48000)) it else TARGET_SAMPLE_RATE
+            }
+            channels = (restored.floatParams["channels"]?.roundToInt() ?: channels).coerceIn(1, 2)
         }
     }
 
     val latestDur by rememberUpdatedState(durationSec)
-    val latestAppend by rememberUpdatedState(appendMode)
+    val latestMode by rememberUpdatedState(insertMode)
+    val latestSr by rememberUpdatedState(sampleRate)
+    val latestCh by rememberUpdatedState(channels)
     DisposableEffect(Unit) {
         onDispose {
+            val formattedDur = if (latestDur >= 60f) {
+                "${latestDur.toInt() / 60}m ${latestDur.toInt() % 60}s"
+            } else {
+                "${"%.1f".format(latestDur)}s"
+            }
             viewModel.saveToolSessionToCache(
                 toolId = "generate_silence",
                 titleAr = "توليد صمت",
                 titleEn = "Generate Silence",
-                summaryAr = "${"%.1f".format(latestDur)}s",
-                summaryEn = "${"%.1f".format(latestDur)}s",
+                summaryAr = formattedDur,
+                summaryEn = formattedDur,
                 floatParams = mapOf(
                     "durationSec" to latestDur,
-                    "appendMode" to if (latestAppend) 1f else 0f,
+                    "modeOrdinal" to latestMode.ordinal.toFloat(),
+                    "sampleRate" to latestSr.toFloat(),
+                    "channels" to latestCh.toFloat(),
                 ),
             )
+        }
+    }
+
+    val formattedDuration = remember(durationSec) {
+        if (durationSec >= 60f) {
+            val total = durationSec.roundToInt()
+            "${total / 60}m %02ds".format(total % 60)
+        } else {
+            "${"%.1f".format(durationSec)} s"
         }
     }
 
     StudioScrollColumn {
         StudioFocusTopBar(
             title = t(lang, "tool_generate_silence"),
-            subtitle = if (lang == AppLanguage.EN) "Create exact silent tracks or insert pauses" else "إنشاء مسار صمت نقي أو إضافته كوقفة زمنية للمشروع",
+            subtitle = if (lang == AppLanguage.EN) "Create clean silence (0.5s – 10m) or insert at start/end" else "إنشاء مسار صمت نقي (حتى 10 دقائق) أو إدراجه في البداية أو النهاية",
             language = lang,
             onBack = onBack,
             trailing = {
@@ -959,9 +1148,9 @@ fun GenerateSilenceScreen(
                         if ((preferVmUndo && uiState.canUndoEdit) || !silenceHistory.canUndo) {
                             viewModel.undoLastEdit()
                         } else {
-                            silenceHistory.undo()?.let { (d, app) ->
+                            silenceHistory.undo()?.let { (d, m) ->
                                 durationSec = d
-                                appendMode = app
+                                insertMode = m
                             }
                         }
                     },
@@ -969,9 +1158,9 @@ fun GenerateSilenceScreen(
                         if ((preferVmUndo && uiState.canRedoEdit) || !silenceHistory.canRedo) {
                             viewModel.redoLastEdit()
                         } else {
-                            silenceHistory.redo()?.let { (d, app) ->
+                            silenceHistory.redo()?.let { (d, m) ->
                                 durationSec = d
-                                appendMode = app
+                                insertMode = m
                             }
                         }
                     },
@@ -992,39 +1181,113 @@ fun GenerateSilenceScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 StudioParamSlider(
-                    label = if (lang == AppLanguage.EN) "Silence Duration" else "مدة الصمت (بالثواني)",
+                    label = if (lang == AppLanguage.EN) "Silence Duration (0.5s – 10m)" else "مدة الصمت (0.5 ثانية – 10 دقائق)",
                     value = durationSec,
                     min = 0.5f,
-                    max = 60f,
-                    formattedValue = "${"%.1f".format(durationSec)} s",
+                    max = 600f,
+                    formattedValue = formattedDuration,
                     accentColor = StudioColors.Cyan,
                     testTag = "silence_duration_slider",
                     onValueChange = {
                         preferVmUndo = false
                         durationSec = it
-                        silenceHistory.commit(it to appendMode, debounceMs = 350L)
+                        silenceHistory.commit(it to insertMode, debounceMs = 350L)
                     },
                 )
 
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val quickDurations = listOf(
+                        1f to "1s",
+                        3f to "3s",
+                        5f to "5s",
+                        15f to "15s",
+                        30f to "30s",
+                        60f to "1m",
+                        180f to "3m",
+                        300f to "5m",
+                        600f to "10m",
+                    )
+                    quickDurations.forEach { (sec, label) ->
+                        FilterChip(
+                            selected = abs(durationSec - sec) < 0.4f,
+                            onClick = {
+                                preferVmUndo = false
+                                durationSec = sec
+                                silenceHistory.commit(sec to insertMode)
+                            },
+                            label = { Text(label) },
+                            modifier = Modifier.testTag("silence_preset_${label}"),
+                        )
+                    }
+                }
+
                 if (uiState.hasAudio) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text(
-                            text = if (lang == AppLanguage.EN) "Append to end of current track" else "إلحاق بنهاية المقطع الحالي",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = StudioColors.TextSecondary,
-                            modifier = Modifier.weight(1f),
+                        val modes = listOf(
+                            SilenceInsertMode.APPEND_END to t(lang, "silence_mode_end"),
+                            SilenceInsertMode.INSERT_START to t(lang, "silence_mode_start"),
+                            SilenceInsertMode.NEW_TRACK to t(lang, "silence_mode_new"),
                         )
-                        Switch(
-                            checked = appendMode,
-                            onCheckedChange = {
-                                preferVmUndo = false
-                                appendMode = it
-                                silenceHistory.commit(durationSec to it)
-                            },
+                        modes.forEach { (modeOption, label) ->
+                            FilterChip(
+                                selected = insertMode == modeOption,
+                                onClick = {
+                                    preferVmUndo = false
+                                    insertMode = modeOption
+                                    silenceHistory.commit(durationSec to modeOption)
+                                },
+                                label = { Text(label) },
+                                modifier = Modifier.testTag("silence_mode_${modeOption.name.lowercase()}"),
+                            )
+                        }
+                    }
+                }
+
+                if (!uiState.hasAudio || insertMode == SilenceInsertMode.NEW_TRACK) {
+                    Text(
+                        text = "${t(lang, "silence_sample_rate")} • ${t(lang, "silence_channels")}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = StudioColors.TextMuted,
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(
+                            16000 to "16 kHz",
+                            44100 to "44.1 kHz",
+                            48000 to "48 kHz",
+                        ).forEach { (srOption, label) ->
+                            FilterChip(
+                                selected = sampleRate == srOption,
+                                onClick = { sampleRate = srOption },
+                                label = { Text(label) },
+                                modifier = Modifier.testTag("silence_sr_$srOption"),
+                            )
+                        }
+                        FilterChip(
+                            selected = channels == 1,
+                            onClick = { channels = 1 },
+                            label = { Text("Mono (1ch)") },
+                            modifier = Modifier.testTag("silence_ch_1"),
+                        )
+                        FilterChip(
+                            selected = channels == 2,
+                            onClick = { channels = 2 },
+                            label = { Text("Stereo (2ch)") },
+                            modifier = Modifier.testTag("silence_ch_2"),
                         )
                     }
                 }
@@ -1033,7 +1296,12 @@ fun GenerateSilenceScreen(
                 Button(
                     onClick = {
                         preferVmUndo = true
-                        viewModel.insertGeneratedSilence(durationSec, appendMode)
+                        viewModel.insertGeneratedSilence(
+                            durationSeconds = durationSec,
+                            mode = insertMode,
+                            sampleRate = sampleRate,
+                            channels = channels,
+                        )
                     },
                     enabled = !uiState.isBusy && !uiState.isProcessing,
                     interactionSource = silenceInteraction,

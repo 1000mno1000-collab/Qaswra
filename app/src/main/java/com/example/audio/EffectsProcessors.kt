@@ -20,24 +20,68 @@ import kotlin.math.sin
 import kotlin.math.tanh
 
 class EqualizerProcessor {
-    private val bands = Array(5) { StereoBiquadFilter() }
+    private val bands = Array(10) { StereoBiquadFilter() }
+    private val activeBands = BooleanArray(10)
 
     fun configure(sampleRate: Int, p: EqualizerParams) {
-        bands[0].configureLowShelf(sampleRate, 60.0, 0.9, p.band60HzDb.toDouble())
-        bands[1].configurePeaking(sampleRate, 230.0, 1.0, p.band230HzDb.toDouble())
-        bands[2].configurePeaking(sampleRate, 910.0, 1.0, p.band910HzDb.toDouble())
-        bands[3].configurePeaking(sampleRate, 3600.0, 1.0, p.band3600HzDb.toDouble())
-        bands[4].configureHighShelf(sampleRate, 14000.0, 0.9, p.band14000HzDb.toDouble())
+        val gains = p.resolved10Bands()
+        for (i in 0 until 10) {
+            val g = gains[i].toDouble()
+            activeBands[i] = abs(g) >= 0.02
+            when (i) {
+                0 -> bands[i].configureLowShelf(sampleRate, 31.0, 0.85, g)
+                9 -> bands[i].configureHighShelf(sampleRate, 16000.0, 0.85, g)
+                else -> bands[i].configurePeaking(
+                    sampleRate = sampleRate,
+                    freqHz = com.example.model.EQ_10_FREQUENCIES_HZ[i].toDouble(),
+                    q = 1.41,
+                    gainDb = g,
+                )
+            }
+        }
     }
 
     fun processStereo(left: FloatArray, right: FloatArray, count: Int) {
-        for (band in bands) {
-            band.processStereo(left, right, count)
+        for (i in 0 until 10) {
+            if (activeBands[i]) {
+                bands[i].processStereo(left, right, count)
+            }
         }
     }
 
     fun reset() {
         for (band in bands) band.reset()
+    }
+
+    companion object {
+        fun computeMagnitudeCurveDb(
+            sampleRate: Int,
+            p: EqualizerParams,
+            freqPointsHz: FloatArray,
+        ): FloatArray {
+            val sr = sampleRate.coerceAtLeast(8000)
+            val gains = p.resolved10Bands()
+            val filters = Array(10) { i ->
+                StereoBiquadFilter().apply {
+                    val g = gains[i].toDouble()
+                    when (i) {
+                        0 -> configureLowShelf(sr, 31.0, 0.85, g)
+                        9 -> configureHighShelf(sr, 16000.0, 0.85, g)
+                        else -> configurePeaking(sr, com.example.model.EQ_10_FREQUENCIES_HZ[i].toDouble(), 1.41, g)
+                    }
+                }
+            }
+            return FloatArray(freqPointsHz.size) { idx ->
+                val f = freqPointsHz[idx].toDouble()
+                var sumDb = 0.0
+                for (i in 0 until 10) {
+                    if (abs(gains[i]) >= 0.02f) {
+                        sumDb += filters[i].magnitudeDbAt(sr, f)
+                    }
+                }
+                sumDb.toFloat().coerceIn(-18f, 18f)
+            }
+        }
     }
 }
 

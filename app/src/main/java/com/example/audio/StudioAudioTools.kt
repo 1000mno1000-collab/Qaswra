@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
+import com.aistudio.voicepro.sonixk.RealWaveformExtractor
 import com.example.diagnostics.AppDiagnosticLog
 import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.BassBoostParams
@@ -82,54 +83,209 @@ fun reverseAudio(buffer: StereoAudioBuffer): StereoAudioBuffer {
         outL[i] = buffer.left[n - 1 - i]
         outR[i] = buffer.right[n - 1 - i]
     }
-    return StereoAudioBuffer(outL, outR, buffer.sampleRate)
+    val sr = buffer.sampleRate.coerceAtLeast(8000)
+    val fadeFrames = minOf(n / 8, (0.003f * sr).roundToInt().coerceAtLeast(16))
+    if (fadeFrames >= 4) {
+        if (max(abs(outL[0]), abs(outR[0])) > 0.015f) {
+            for (i in 0 until fadeFrames) {
+                val g = i.toFloat() / fadeFrames
+                outL[i] *= g
+                outR[i] *= g
+            }
+        }
+        if (max(abs(outL[n - 1]), abs(outR[n - 1])) > 0.015f) {
+            for (i in 0 until fadeFrames) {
+                val g = i.toFloat() / fadeFrames
+                outL[n - 1 - i] *= g
+                outR[n - 1 - i] *= g
+            }
+        }
+    }
+    return StereoAudioBuffer(outL, outR, sr)
 }
+
+enum class SilenceInsertMode {
+    NEW_TRACK,
+    INSERT_START,
+    APPEND_END,
+}
+
+data class SilenceGenerationResult(
+    val buffer: StereoAudioBuffer? = null,
+    val diskFile: File? = null,
+    val sampleRate: Int = TARGET_SAMPLE_RATE,
+    val channels: Int = 2,
+    val durationMs: Long = 0L,
+    val usedFfmpeg: Boolean = false,
+)
 
 fun generateSilence(
     durationSeconds: Float,
     sampleRate: Int = TARGET_SAMPLE_RATE,
 ): StereoAudioBuffer {
-    val frames = max(sampleRate / 10, (clamp(durationSeconds, 0.5f, 120f) * sampleRate).roundToInt())
+    val sr = sampleRate.coerceIn(8000, 96000)
+    val safeDur = clamp(durationSeconds, 0.1f, 600f)
+    val frames = max(sr / 10, (safeDur * sr).roundToInt()).coerceAtMost(sr * 180)
     return StereoAudioBuffer(
         left = FloatArray(frames),
         right = FloatArray(frames),
-        sampleRate = sampleRate,
+        sampleRate = sr,
     )
 }
 
 /**
- * Inserts or generates silence on Dispatchers.IO via 64KB chunked disk streaming in context.cacheDir,
- * avoiding massive heap allocations or blocking the main thread.
+ * Generates pure silence via FFmpeg `anullsrc` (or chunked 8KB disk PCM fallback) up to 10 minutes (600s),
+ * supporting New Track, Insert at Start, or Append at End across both RAM buffers and disk-backed files.
  */
 suspend fun insertSilenceStreaming(
     context: Context,
     currentBuffer: StereoAudioBuffer?,
+    currentDiskFile: File? = null,
     durationSeconds: Float,
-    appendToCurrent: Boolean,
-): StereoAudioBuffer = withContext(Dispatchers.IO) {
-    val sr = currentBuffer?.sampleRate?.coerceAtLeast(8000) ?: TARGET_SAMPLE_RATE
+    mode: SilenceInsertMode = SilenceInsertMode.NEW_TRACK,
+    sampleRate: Int = TARGET_SAMPLE_RATE,
+    channels: Int = 2,
+): SilenceGenerationResult = withContext(Dispatchers.IO) {
+    val safeDur = clamp(durationSeconds, 0.1f, 600f)
+    val requestedSr = sampleRate.coerceIn(8000, 96000)
+    val ch = channels.coerceIn(1, 2)
+    val hasExistingBuffer = currentBuffer != null && currentBuffer.frameCount > 0
+    val hasExistingDisk = !hasExistingBuffer && currentDiskFile != null && currentDiskFile.exists() && currentDiskFile.length() > 0L
+    val effectiveMode = if (!hasExistingBuffer && !hasExistingDisk) SilenceInsertMode.NEW_TRACK else mode
+    val effectiveSr = when {
+        effectiveMode == SilenceInsertMode.NEW_TRACK -> requestedSr
+        hasExistingBuffer -> currentBuffer!!.sampleRate.coerceIn(8000, 96000)
+        else -> TARGET_SAMPLE_RATE
+    }
+    val effectiveCh = if (effectiveMode == SilenceInsertMode.NEW_TRACK) ch else 2
+    val chLayout = if (effectiveCh == 1) "mono" else "stereo"
+
     val workDir = File(context.cacheDir, "silence_stream").apply { mkdirs() }
+    val outDir = File(context.cacheDir, "studio_outputs").apply { mkdirs() }
     val id = UUID.randomUUID().toString().take(8)
     val silenceWav = File(workDir, "sil_$id.wav")
     val curWav = File(workDir, "cur_$id.wav")
-    val outWav = File(workDir, "sil_out_$id.wav")
+    val mergedWav = File(workDir, "sil_out_$id.wav")
+    var usedFfmpeg = false
 
     try {
-        writeSilenceWavStreaming(silenceWav, durationSeconds, sr)
-        if (!appendToCurrent || currentBuffer == null || currentBuffer.frameCount <= 0) {
-            return@withContext AudioDecoder.decodeFile(silenceWav) ?: generateSilence(durationSeconds, sr)
+        if (FfmpegKitBridge.isAvailable()) {
+            val durStr = String.format(Locale.US, "%.3f", safeDur)
+            val cmd = "-y -f lavfi -i \"anullsrc=r=$effectiveSr:cl=$chLayout\" -t $durStr -c:a pcm_s16le \"${silenceWav.absolutePath}\""
+            val ok = FfmpegKitBridge.execute(cmd, toolName = "SilenceGeneratorAnullsrc", logNonZeroFailure = false)
+            if (ok && silenceWav.exists() && silenceWav.length() > 44L) {
+                usedFfmpeg = true
+            }
         }
-        writeStereoWavFile(curWav, currentBuffer)
-        val mergedOk = mergeWavFilesStreaming(curWav, silenceWav, outWav, crossfadeMs = 5, sampleRate = sr)
-        if (mergedOk && outWav.exists() && outWav.length() > 44L) {
-            AudioDecoder.decodeFile(outWav) ?: mergeClips(currentBuffer, generateSilence(durationSeconds, sr), crossfadeMs = 5)
+        if (!usedFfmpeg) {
+            writeSilenceWavStreaming(silenceWav, safeDur, effectiveSr, numChannels = effectiveCh)
+        }
+
+        if (effectiveMode == SilenceInsertMode.NEW_TRACK) {
+            val durMs = (safeDur * 1000f).roundToLong().coerceAtLeast(100L)
+            if (safeDur > 180f) {
+                val persistFile = File(outDir, "silence_${id}.wav")
+                silenceWav.copyTo(persistFile, overwrite = true)
+                return@withContext SilenceGenerationResult(
+                    buffer = null,
+                    diskFile = persistFile,
+                    sampleRate = effectiveSr,
+                    channels = effectiveCh,
+                    durationMs = durMs,
+                    usedFfmpeg = usedFfmpeg,
+                )
+            }
+            val decoded = readStereoWavFile(silenceWav, preserveSampleRate = true)
+                ?: generateSilence(safeDur, effectiveSr)
+            return@withContext SilenceGenerationResult(
+                buffer = decoded,
+                diskFile = null,
+                sampleRate = decoded.sampleRate,
+                channels = effectiveCh,
+                durationMs = decoded.durationMs.coerceAtLeast(durMs),
+                usedFfmpeg = usedFfmpeg,
+            )
+        }
+
+        if (hasExistingDisk) {
+            val diskSrc = currentDiskFile!!
+            val persistFile = File(outDir, "silence_merged_${id}.m4a")
+            val firstInput = if (effectiveMode == SilenceInsertMode.INSERT_START) silenceWav else diskSrc
+            val secondInput = if (effectiveMode == SilenceInsertMode.INSERT_START) diskSrc else silenceWav
+            val ok = if (FfmpegKitBridge.isAvailable()) {
+                val cmd = "-y -i \"${firstInput.absolutePath}\" -i \"${secondInput.absolutePath}\" " +
+                    "-filter_complex \"[0:a]aformat=sample_rates=$TARGET_SAMPLE_RATE:channel_layouts=stereo[a0];" +
+                    "[1:a]aformat=sample_rates=$TARGET_SAMPLE_RATE:channel_layouts=stereo[a1];" +
+                    "[a0][a1]concat=n=2:v=0:a=1[out]\" -map \"[out]\" -c:a aac -b:a 192k \"${persistFile.absolutePath}\""
+                FfmpegKitBridge.execute(cmd, toolName = "SilenceDiskConcat", logNonZeroFailure = true)
+            } else {
+                false
+            }
+            if (ok && persistFile.exists() && persistFile.length() > 0L) {
+                val meta = AudioDecoder.inspectLargeAudioStreaming(persistFile, buckets = 64, context = context) {}
+                return@withContext SilenceGenerationResult(
+                    buffer = null,
+                    diskFile = persistFile,
+                    sampleRate = meta?.sampleRate ?: TARGET_SAMPLE_RATE,
+                    channels = 2,
+                    durationMs = meta?.durationMs ?: 0L,
+                    usedFfmpeg = true,
+                )
+            } else {
+                runCatching { persistFile.delete() }
+            }
+        }
+
+        val srcBuf = currentBuffer!!
+        val existingSec = srcBuf.frameCount.toFloat() / effectiveSr.toFloat()
+        if (existingSec + safeDur > 180f) {
+            writeStereoWavFile(curWav, StereoAudioBuffer(srcBuf.left, srcBuf.right, effectiveSr))
+            val firstWav = if (effectiveMode == SilenceInsertMode.INSERT_START) silenceWav else curWav
+            val secondWav = if (effectiveMode == SilenceInsertMode.INSERT_START) curWav else silenceWav
+            val mergedOk = mergeWavFilesStreaming(firstWav, secondWav, mergedWav, crossfadeMs = 2, sampleRate = effectiveSr)
+            if (mergedOk && mergedWav.exists() && mergedWav.length() > 44L) {
+                val persistFile = File(outDir, "silence_merged_${id}.wav")
+                mergedWav.copyTo(persistFile, overwrite = true)
+                return@withContext SilenceGenerationResult(
+                    buffer = null,
+                    diskFile = persistFile,
+                    sampleRate = effectiveSr,
+                    channels = 2,
+                    durationMs = ((existingSec + safeDur) * 1000f).roundToLong(),
+                    usedFfmpeg = usedFfmpeg,
+                )
+            }
+        }
+
+        writeStereoWavFile(curWav, StereoAudioBuffer(srcBuf.left, srcBuf.right, effectiveSr))
+        val firstWav = if (effectiveMode == SilenceInsertMode.INSERT_START) silenceWav else curWav
+        val secondWav = if (effectiveMode == SilenceInsertMode.INSERT_START) curWav else silenceWav
+        val mergedOk = mergeWavFilesStreaming(firstWav, secondWav, mergedWav, crossfadeMs = 2, sampleRate = effectiveSr)
+        val mergedBuf = if (mergedOk && mergedWav.exists() && mergedWav.length() > 44L) {
+            readStereoWavFile(mergedWav, preserveSampleRate = true)
         } else {
-            mergeClips(currentBuffer, generateSilence(durationSeconds, sr), crossfadeMs = 5)
+            null
         }
+        val finalBuf = mergedBuf ?: run {
+            val sil = generateSilence(safeDur, effectiveSr)
+            if (effectiveMode == SilenceInsertMode.INSERT_START) {
+                mergeClips(sil, srcBuf, crossfadeMs = 2)
+            } else {
+                mergeClips(srcBuf, sil, crossfadeMs = 2)
+            }
+        }
+        SilenceGenerationResult(
+            buffer = finalBuf,
+            diskFile = null,
+            sampleRate = finalBuf.sampleRate,
+            channels = 2,
+            durationMs = finalBuf.durationMs,
+            usedFfmpeg = usedFfmpeg,
+        )
     } finally {
         runCatching { silenceWav.delete() }
         runCatching { curWav.delete() }
-        runCatching { outWav.delete() }
+        runCatching { mergedWav.delete() }
     }
 }
 
@@ -184,6 +340,133 @@ fun convertToSurroundStereo(
     return normalizeAudio(StereoAudioBuffer(outL, outR, buffer.sampleRate), -1.0f)
 }
 
+data class StereoCompatibilityReport(
+    val correlation: Float,
+    val monoLossDb: Float,
+    val isMonoCompatible: Boolean,
+)
+
+fun analyzeStereoCompatibility(
+    buffer: StereoAudioBuffer,
+    maxSampledFrames: Int = 8192,
+): StereoCompatibilityReport {
+    val n = buffer.frameCount
+    if (n <= 0) return StereoCompatibilityReport(1f, 0f, true)
+    val step = max(1, n / max(1, maxSampledFrames))
+    var sumLr = 0.0
+    var sumL2 = 0.0
+    var sumR2 = 0.0
+    var sumMono2 = 0.0
+    var count = 0
+    var i = 0
+    while (i < n) {
+        val l = buffer.left[i].toDouble()
+        val r = buffer.right[i].toDouble()
+        val m = 0.5 * (l + r)
+        sumLr += l * r
+        sumL2 += l * l
+        sumR2 += r * r
+        sumMono2 += m * m
+        count++
+        i += step
+    }
+    val denom = sqrt(sumL2 * sumR2)
+    val corr = if (denom > 1e-9) (sumLr / denom).toFloat().coerceIn(-1f, 1f) else 1f
+    val stereoMeanPow = 0.5 * (sumL2 + sumR2)
+    val monoLossDb = if (stereoMeanPow > 1e-10 && sumMono2 > 1e-12) {
+        (10.0 * kotlin.math.log10(sumMono2 / stereoMeanPow)).toFloat().coerceIn(-24f, 6f)
+    } else {
+        0f
+    }
+    val isMonoOk = corr >= 0.10f && monoLossDb >= -4.5f
+    return StereoCompatibilityReport(
+        correlation = corr,
+        monoLossDb = monoLossDb,
+        isMonoCompatible = isMonoOk,
+    )
+}
+
+fun estimateStereoCompatibilityForOffsets(
+    buffer: StereoAudioBuffer?,
+    midAdjustPct: Float,
+    sideBoostPct: Float,
+    widthPct: Float,
+): StereoCompatibilityReport {
+    val midLevel = (1f + midAdjustPct / 100f).coerceIn(0.35f, 1.65f)
+    val sideLevel = (1f + sideBoostPct / 100f).coerceIn(0.5f, 2.3f)
+    val stereoWidth = (widthPct / 100f).coerceIn(0f, 1f)
+    if (buffer == null || buffer.frameCount < 32) {
+        val estR = ((midLevel * midLevel - (sideLevel * stereoWidth * 0.55f).let { it * it }) /
+            max(0.01f, midLevel * midLevel + (sideLevel * stereoWidth * 0.55f).let { it * it })).coerceIn(-1f, 1f)
+        return StereoCompatibilityReport(estR, if (estR < 0.1f) -5f else -1f, estR >= 0.10f)
+    }
+    val n = buffer.frameCount
+    val sr = buffer.sampleRate.coerceAtLeast(8000)
+    val haasSamples = if (stereoWidth <= 0.005f) 0 else max(1, (0.011f * sr * stereoWidth).roundToInt())
+    val step = max(1, n / 4096)
+    var sumLr = 0.0
+    var sumL2 = 0.0
+    var sumR2 = 0.0
+    var sumMono2 = 0.0
+    var idx = 0
+    while (idx < n) {
+        val rawL = buffer.left[idx]
+        val rawR = buffer.right[idx]
+        val delayedR = if (haasSamples == 0) rawR else buffer.right[max(0, idx - haasSamples)]
+        val mid = 0.5f * (rawL + rawR) * midLevel
+        val naturalSide = 0.5f * (rawL - rawR)
+        val haasSide = if (haasSamples == 0) 0f else 0.5f * (rawL - delayedR) * stereoWidth
+        val side = (naturalSide + haasSide * 0.65f) * sideLevel
+        val outL = clamp(mid + side, -1f, 1f).toDouble()
+        val outR = clamp(mid - side, -1f, 1f).toDouble()
+        val m = 0.5 * (outL + outR)
+        sumLr += outL * outR
+        sumL2 += outL * outL
+        sumR2 += outR * outR
+        sumMono2 += m * m
+        idx += step
+    }
+    val denom = sqrt(sumL2 * sumR2)
+    val corr = if (denom > 1e-9) (sumLr / denom).toFloat().coerceIn(-1f, 1f) else 1f
+    val stereoMeanPow = 0.5 * (sumL2 + sumR2)
+    val monoLossDb = if (stereoMeanPow > 1e-10 && sumMono2 > 1e-12) {
+        (10.0 * kotlin.math.log10(sumMono2 / stereoMeanPow)).toFloat().coerceIn(-24f, 6f)
+    } else {
+        0f
+    }
+    return StereoCompatibilityReport(
+        correlation = corr,
+        monoLossDb = monoLossDb,
+        isMonoCompatible = corr >= 0.10f && monoLossDb >= -4.5f,
+    )
+}
+
+fun buildSurroundStereoFfmpegFilter(
+    midAdjustPct: Float,
+    sideBoostPct: Float,
+    widthPct: Float,
+): Pair<String, String> {
+    val midLevel = (1f + midAdjustPct / 100f).coerceIn(0.35f, 1.65f)
+    val sideLevel = (1f + sideBoostPct / 100f).coerceIn(0.5f, 2.3f)
+    val stereoWidth = (widthPct / 100f).coerceIn(0f, 1f)
+    val mFmt = String.format(Locale.US, "%.2f", midLevel)
+    val sFmt = String.format(Locale.US, "%.2f", sideLevel)
+    val msTools = "stereotools=mlev=$mFmt:slev=$sFmt"
+    val primary = if (stereoWidth > 0.02f) {
+        val delayMs = String.format(Locale.US, "%.1f", 4f + stereoWidth * 18f)
+        "aformat=channel_layouts=stereo,stereowiden=delay=$delayMs:feedback=0.22:crossfeed=0.35:drymix=0.82,$msTools,alimiter=limit=0.95"
+    } else {
+        "aformat=channel_layouts=stereo,$msTools,alimiter=limit=0.95"
+    }
+    val fallback = if (stereoWidth > 0.02f) {
+        val extra = String.format(Locale.US, "%.2f", 1f + stereoWidth * 0.95f)
+        "aformat=channel_layouts=stereo,$msTools,extrastereo=m=$extra,alimiter=limit=0.95"
+    } else {
+        "aformat=channel_layouts=stereo,$msTools,alimiter=limit=0.95"
+    }
+    return primary to fallback
+}
+
 fun splitAudioByTime(
     buffer: StereoAudioBuffer,
     splitFraction: Float,
@@ -191,16 +474,30 @@ fun splitAudioByTime(
     val n = buffer.frameCount
     if (n < 4) return buffer to buffer
     val splitIdx = clamp(floor(splitFraction * n).toInt(), 1, n - 1)
-    val first = StereoAudioBuffer(
-        left = buffer.left.copyOfRange(0, splitIdx),
-        right = buffer.right.copyOfRange(0, splitIdx),
-        sampleRate = buffer.sampleRate,
-    )
-    val second = StereoAudioBuffer(
-        left = buffer.left.copyOfRange(splitIdx, n),
-        right = buffer.right.copyOfRange(splitIdx, n),
-        sampleRate = buffer.sampleRate,
-    )
+    val l1 = buffer.left.copyOfRange(0, splitIdx)
+    val r1 = buffer.right.copyOfRange(0, splitIdx)
+    val l2 = buffer.left.copyOfRange(splitIdx, n)
+    val r2 = buffer.right.copyOfRange(splitIdx, n)
+    val sr = buffer.sampleRate.coerceAtLeast(8000)
+    val fadeFrames1 = min(l1.size / 4, (0.004f * sr).roundToInt())
+    if (fadeFrames1 >= 2) {
+        val tailStart = l1.size - fadeFrames1
+        for (i in 0 until fadeFrames1) {
+            val g = cos((i.toDouble() / (fadeFrames1 - 1)) * PI * 0.5).toFloat()
+            l1[tailStart + i] *= g
+            r1[tailStart + i] *= g
+        }
+    }
+    val fadeFrames2 = min(l2.size / 4, (0.004f * sr).roundToInt())
+    if (fadeFrames2 >= 2) {
+        for (i in 0 until fadeFrames2) {
+            val g = sin((i.toDouble() / (fadeFrames2 - 1)) * PI * 0.5).toFloat()
+            l2[i] *= g
+            r2[i] *= g
+        }
+    }
+    val first = StereoAudioBuffer(left = l1, right = r1, sampleRate = buffer.sampleRate)
+    val second = StereoAudioBuffer(left = l2, right = r2, sampleRate = buffer.sampleRate)
     return first to second
 }
 
@@ -241,21 +538,23 @@ fun buildAtempoChain(targetTempo: Double): String {
 fun buildPitchAndSpeedFfmpegChains(
     semitones: Float,
     tempoRatio: Float,
+    preserveFormants: Boolean = true,
 ): Pair<String, String> {
     val safeSemi = clamp(semitones, -12f, 12f)
-    val safeTempo = clamp(tempoRatio, 0.5f, 2.0f)
+    val safeTempo = clamp(tempoRatio, 0.5f, 2.5f)
     val pitchFactor = 2.0.pow(safeSemi / 12.0).coerceIn(0.5, 2.0)
     val pFmt = String.format(Locale.US, "%.5f", pitchFactor)
     val sFmt = String.format(Locale.US, "%.4f", safeTempo)
+    val formantArg = if (preserveFormants) "preserved" else "shifted"
 
-    val rubberbandFilter = "rubberband=pitch=$pFmt:tempo=$sFmt:formant=preserved"
+    val rubberbandFilter = "rubberband=pitch=$pFmt:tempo=$sFmt:formant=$formantArg"
 
     val netTempo = (safeTempo / pitchFactor).coerceIn(0.125, 8.0)
     val atempoChain = buildAtempoChain(netTempo)
     val fallbackFilter = if (abs(safeSemi) >= 0.05f) {
-        "aresample=44100,asetrate=44100*$pFmt,aresample=resampler=soxr:precision=28:osr=44100,$atempoChain,highpass=f=40,lowpass=f=18000,alimiter=limit=0.95"
+        "aresample=44100,asetrate=44100*$pFmt,aresample=resampler=soxr:precision=28:osr=44100,$atempoChain,highpass=f=45,lowpass=f=18000,alimiter=limit=0.95"
     } else {
-        "$atempoChain,highpass=f=40,lowpass=f=18000,alimiter=limit=0.95"
+        "$atempoChain,highpass=f=45,lowpass=f=18000,alimiter=limit=0.95"
     }
     return rubberbandFilter to fallbackFilter
 }
@@ -264,11 +563,12 @@ suspend fun applyPitchAndSpeedOffline(
     buffer: StereoAudioBuffer,
     semitones: Float,
     tempoRatio: Float,
+    preserveFormants: Boolean = true,
     context: Context? = null,
     onProgress: (Float) -> Unit = {},
 ): StereoAudioBuffer = withContext(Dispatchers.Default) {
     val safeSemi = clamp(semitones, -12f, 12f)
-    val safeTempo = clamp(tempoRatio, 0.5f, 2.0f)
+    val safeTempo = clamp(tempoRatio, 0.5f, 2.5f)
     if (abs(safeSemi) < 0.05f && abs(safeTempo - 1.0f) < 0.015f) {
         onProgress(1f)
         return@withContext buffer
@@ -276,7 +576,7 @@ suspend fun applyPitchAndSpeedOffline(
 
     onProgress(0.15f)
     if (context != null && FfmpegKitBridge.isAvailable()) {
-        val (primaryFilter, fallbackFilter) = buildPitchAndSpeedFfmpegChains(safeSemi, safeTempo)
+        val (primaryFilter, fallbackFilter) = buildPitchAndSpeedFfmpegChains(safeSemi, safeTempo, preserveFormants)
         val normSrc = normalizeToStudioStereo44100(buffer)
         val workDir = File(context.cacheDir, "stream_ops").apply { mkdirs() }
         val id = UUID.randomUUID().toString().take(8)
@@ -289,7 +589,9 @@ suspend fun applyPitchAndSpeedOffline(
             var ok = withContext(Dispatchers.IO) {
                 FfmpegKitBridge.execute(cmd1, toolName = "PitchAndSpeedRubberband", logNonZeroFailure = false)
             }
+            var usedFallback = false
             if (!ok || !outWav.exists() || outWav.length() <= 44L) {
+                usedFallback = true
                 onProgress(0.55f)
                 val cmd2 = "-y -i \"${inWav.absolutePath}\" -af \"$fallbackFilter\" -ar 44100 -ac 2 \"${outWav.absolutePath}\""
                 ok = withContext(Dispatchers.IO) {
@@ -299,8 +601,19 @@ suspend fun applyPitchAndSpeedOffline(
             onProgress(0.85f)
             if (ok && outWav.exists() && outWav.length() > 44L) {
                 AudioDecoder.decodeFile(outWav)?.let { decoded ->
+                    val finalDecoded = if (usedFallback && preserveFormants && abs(safeSemi) >= 0.35f) {
+                        val pitchFactor = 2.0.pow(safeSemi / 12.0).coerceIn(0.5, 2.0)
+                        val compFormant = (1.0 / pitchFactor).coerceIn(0.58, 1.72)
+                        StereoAudioBuffer(
+                            left = shiftFormantsStft(decoded.left, compFormant),
+                            right = shiftFormantsStft(decoded.right, compFormant),
+                            sampleRate = decoded.sampleRate,
+                        )
+                    } else {
+                        decoded
+                    }
                     onProgress(1f)
-                    return@withContext decoded
+                    return@withContext finalDecoded
                 }
             }
         } finally {
@@ -310,7 +623,7 @@ suspend fun applyPitchAndSpeedOffline(
     }
 
     onProgress(0.55f)
-    val kotlinResult = pitchAndSpeedKotlinHq(buffer, safeSemi, safeTempo)
+    val kotlinResult = pitchAndSpeedKotlinHq(buffer, safeSemi, safeTempo, preserveFormants)
     onProgress(1f)
     kotlinResult
 }
@@ -320,10 +633,11 @@ suspend fun applyPitchAndSpeedFileWithFfmpeg(
     inputFile: File,
     semitones: Float,
     tempoRatio: Float,
+    preserveFormants: Boolean = true,
     onProgress: (Float) -> Unit = {},
 ): File? = withContext(Dispatchers.IO) {
     if (!inputFile.exists() || !FfmpegKitBridge.isAvailable()) return@withContext null
-    val (primaryFilter, fallbackFilter) = buildPitchAndSpeedFfmpegChains(semitones, tempoRatio)
+    val (primaryFilter, fallbackFilter) = buildPitchAndSpeedFfmpegChains(semitones, tempoRatio, preserveFormants)
     onProgress(0.25f)
     val primaryOut = processAudioFileWithFfmpeg(
         context = context,
@@ -468,14 +782,14 @@ suspend fun executeUnifiedMergeOverlay(
     val gain2 = (1f + params.secondaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
 
     var p1 = if (abs(gain1 - 1f) > 0.01f) StereoAudioBuffer(
-        FloatArray(normPrimary.frameCount) { clamp(normPrimary.left[it] * gain1, -1f, 1f) },
-        FloatArray(normPrimary.frameCount) { clamp(normPrimary.right[it] * gain1, -1f, 1f) },
+        FloatArray(normPrimary.frameCount) { (normPrimary.left[it] * gain1).coerceIn(-1.8f, 1.8f) },
+        FloatArray(normPrimary.frameCount) { (normPrimary.right[it] * gain1).coerceIn(-1.8f, 1.8f) },
         sr,
     ) else normPrimary
 
     var p2 = if (abs(gain2 - 1f) > 0.01f) StereoAudioBuffer(
-        FloatArray(alignedSec.frameCount) { clamp(alignedSec.left[it] * gain2, -1f, 1f) },
-        FloatArray(alignedSec.frameCount) { clamp(alignedSec.right[it] * gain2, -1f, 1f) },
+        FloatArray(alignedSec.frameCount) { (alignedSec.left[it] * gain2).coerceIn(-1.8f, 1.8f) },
+        FloatArray(alignedSec.frameCount) { (alignedSec.right[it] * gain2).coerceIn(-1.8f, 1.8f) },
         sr,
     ) else alignedSec
 
@@ -558,7 +872,7 @@ suspend fun executeUnifiedMergeOverlay(
                     voice = p1,
                     music = shapedSec,
                     offsetFrames = offsetFrames,
-                    musicBaseVolume = (0.45f * gain2).coerceIn(0.1f, 1.3f),
+                    musicBaseVolume = (0.45f * gain2).coerceIn(0.05f, 1.35f),
                     duckDepth = duckStrength,
                     voiceOffsetFrames = p1OffsetFrames,
                 )
@@ -568,19 +882,19 @@ suspend fun executeUnifiedMergeOverlay(
         }
     }
 
-    if (params.autoLevelingEnabled) {
+    val leveled = if (params.autoLevelingEnabled) {
         val id = UUID.randomUUID().toString().take(8)
         val dir = File(context.cacheDir, "stream_ops").apply { mkdirs() }
         val inF = File(dir, "ln_in_$id.wav")
         val outF = File(dir, "ln_out_$id.wav")
         try {
             writeStereoWavFile(inF, combined)
-            val cmd = "-y -i \"${inF.absolutePath}\" -af \"loudnorm=I=-14:TP=-1.0:LRA=11\" -ar $sr -ac 2 \"${outF.absolutePath}\""
+            val cmd = "-y -i \"${inF.absolutePath}\" -af \"loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.95:attack=5:release=50\" -ar $sr -ac 2 \"${outF.absolutePath}\""
             val ok = FfmpegKitBridge.execute(cmd, toolName = "AutoLeveling", logNonZeroFailure = false)
             if (ok && outF.exists() && outF.length() > 44L) {
-                AudioDecoder.decodeFile(outF) ?: normalizeAudio(combined, -1.0f)
+                AudioDecoder.decodeFile(outF) ?: normalizeAudio(combined, -1.5f)
             } else {
-                normalizeAudio(combined, -1.0f)
+                normalizeAudio(combined, -1.5f)
             }
         } finally {
             runCatching { inF.delete() }
@@ -588,6 +902,23 @@ suspend fun executeUnifiedMergeOverlay(
         }
     } else {
         combined
+    }
+
+    // Final true-peak soft ceiling (-0.4 dBFS) to guarantee zero harsh digital clipping
+    val maxPeak = leveled.left.fold(0f) { acc, v -> max(acc, abs(v)) }
+        .let { p -> leveled.right.fold(p) { acc, v -> max(acc, abs(v)) } }
+    if (maxPeak > 0.96f) {
+        val outL = FloatArray(leveled.frameCount) { idx ->
+            val v = leveled.left[idx]
+            if (abs(v) <= 0.85f) v else (0.95f * tanh(v.toDouble())).toFloat()
+        }
+        val outR = FloatArray(leveled.frameCount) { idx ->
+            val v = leveled.right[idx]
+            if (abs(v) <= 0.85f) v else (0.95f * tanh(v.toDouble())).toFloat()
+        }
+        StereoAudioBuffer(outL, outR, sr)
+    } else {
+        leveled
     }
 }
 
@@ -1021,6 +1352,12 @@ suspend fun mixAudioFilesWithFfmpeg(
     transitionGapSec: Float = 0f,
     autoLeveling: Boolean = false,
     duckingStrengthPct: Float = 65f,
+    echoTransitionEnabled: Boolean = false,
+    echoTransitionPct: Float = 0f,
+    gapWhooshEnabled: Boolean = false,
+    whooshIntensityPct: Float = 0f,
+    levelingStrengthPct: Float = 70f,
+    primaryDurationSec: Float = 0f,
 ): File? = withContext(Dispatchers.IO) {
     if (!primaryFile.exists() || !secondaryFile.exists() || !FfmpegKitBridge.isAvailable()) {
         return@withContext null
@@ -1029,40 +1366,91 @@ suspend fun mixAudioFilesWithFfmpeg(
     val safe2 = com.example.audio.cache.SmartCacheManager.ensureSafeFfmpegInputFile(context, secondaryFile)
     val stagedDir = File(context.cacheDir, "staged_inputs").apply { mkdirs() }
     val target = outFile ?: File(stagedDir, "ff_mix_${UUID.randomUUID()}.m4a")
-    val g1 = String.format(Locale.US, "%.2f", primaryGain.coerceIn(0.1f, 2.5f))
+    val g1 = String.format(Locale.US, "%.2f", primaryGain.coerceIn(0.05f, 2.5f))
     val g2 = String.format(Locale.US, "%.2f", secondaryGain.coerceIn(0.05f, 2.5f))
     val p1DelayMs = (primaryStartOffsetSec.coerceIn(0f, 60f) * 1000f).roundToInt()
     val p1DelayFilter = if (p1DelayMs > 0) ",adelay=${p1DelayMs}|${p1DelayMs}" else ""
     val p2DelayMs = (offsetSec.coerceIn(0f, 60f) * 1000f).roundToInt()
     val p2DelayFilter = if (p2DelayMs > 0) ",adelay=${p2DelayMs}|${p2DelayMs}" else ""
 
+    val probedP1DurSec = if (primaryDurationSec > 0.1f) {
+        primaryDurationSec
+    } else {
+        (RealWaveformExtractor.extractTrueDurationMs(safe1) / 1000f).coerceAtLeast(0f)
+    }
+    val probedP2DurSec = if (secondaryDurationSec > 0.1f) {
+        secondaryDurationSec
+    } else {
+        (RealWaveformExtractor.extractTrueDurationMs(safe2) / 1000f).coerceAtLeast(0f)
+    }
+
     val fadeInFilter = if (overlayFadeInSec > 0.05f) {
-        ",afade=t=in:st=0:d=${String.format(Locale.US, "%.2f", overlayFadeInSec)}"
+        val safeInDur = if (probedP2DurSec > 0.1f) min(overlayFadeInSec, probedP2DurSec * 0.9f) else overlayFadeInSec
+        ",afade=t=in:st=0:d=${String.format(Locale.US, "%.2f", safeInDur.coerceAtLeast(0.05f))}"
     } else {
         ""
     }
-    val fadeOutFilter = if (overlayFadeOutSec > 0.05f && secondaryDurationSec > 0.1f) {
-        val stOut = (secondaryDurationSec - overlayFadeOutSec).coerceAtLeast(0f)
-        ",afade=t=out:st=${String.format(Locale.US, "%.2f", stOut)}:d=${String.format(Locale.US, "%.2f", overlayFadeOutSec)}"
+    val fadeOutFilter = if (overlayFadeOutSec > 0.05f && probedP2DurSec > 0.1f) {
+        val safeOutDur = min(overlayFadeOutSec, probedP2DurSec * 0.9f).coerceAtLeast(0.05f)
+        val stOut = (probedP2DurSec - safeOutDur).coerceAtLeast(0f)
+        ",afade=t=out:st=${String.format(Locale.US, "%.2f", stOut)}:d=${String.format(Locale.US, "%.2f", safeOutDur)}"
     } else {
         ""
     }
 
-    val coreOutLabel = if (autoLeveling) "mixraw" else "out"
+    val echoTailFilter = if (echoTransitionEnabled && mode != MergeStudioMode.OVERLAY) {
+        val echoAmt = clamp(echoTransitionPct / 100f, 0f, 1f).let { if (it < 0.01f) 0.55f else it }
+        val d1 = String.format(Locale.US, "%.2f", (0.28f * echoAmt).coerceIn(0.05f, 0.55f))
+        val d2 = String.format(Locale.US, "%.2f", (0.16f * echoAmt).coerceIn(0.03f, 0.35f))
+        ",aecho=0.82:0.85:240|480:${d1}|${d2}"
+    } else {
+        ""
+    }
+
+    var whooshWav: File? = null
+    val needsGapWhooshFile = (mode == MergeStudioMode.SEQUENTIAL && gapWhooshEnabled && transitionGapSec > 0.05f && whooshIntensityPct > 2f)
+    if (needsGapWhooshFile) {
+        val tmpWhoosh = File(stagedDir, "ff_whoosh_${UUID.randomUUID()}.wav")
+        val buf = synthesizeTransitionGapWhoosh(
+            durationSec = transitionGapSec.coerceIn(0.05f, 10f),
+            whooshIntensity = clamp(whooshIntensityPct / 100f, 0f, 1f),
+            sampleRate = TARGET_SAMPLE_RATE,
+        )
+        writeStereoWavFile(tmpWhoosh, buf)
+        if (tmpWhoosh.exists() && tmpWhoosh.length() > 44L) {
+            whooshWav = tmpWhoosh
+        }
+    }
+
+    val needsLimiter = !autoLeveling
+    val coreOutLabel = if (autoLeveling) "mixraw" else "prelim"
     val coreGraph = when (mode) {
         MergeStudioMode.SEQUENTIAL -> {
-            val gapPad = if (transitionGapSec > 0.05f) {
-                ",apad=pad_dur=${String.format(Locale.US, "%.2f", transitionGapSec.coerceIn(0f, 10f))}"
+            if (whooshWav != null) {
+                "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1$p1DelayFilter$echoTailFilter[a0];" +
+                    "[2:a]aresample=44100,aformat=channel_layouts=stereo[w0];" +
+                    "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g2[a1];" +
+                    "[a0][w0][a1]concat=n=3:v=0:a=1[$coreOutLabel]"
             } else {
-                ""
+                val gapPad = if (transitionGapSec > 0.05f) {
+                    ",apad=pad_dur=${String.format(Locale.US, "%.2f", transitionGapSec.coerceIn(0f, 10f))}"
+                } else {
+                    ""
+                }
+                "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1$p1DelayFilter$echoTailFilter$gapPad[a0];" +
+                    "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g2[a1];" +
+                    "[a0][a1]concat=n=2:v=0:a=1[$coreOutLabel]"
             }
-            "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1$p1DelayFilter$gapPad[a0];" +
-                "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g2[a1];" +
-                "[a0][a1]concat=n=2:v=0:a=1[$coreOutLabel]"
         }
         MergeStudioMode.CROSSFADE -> {
-            val xf = String.format(Locale.US, "%.2f", crossfadeSec.coerceIn(0.1f, 15f))
-            "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1$p1DelayFilter[a0];" +
+            val maxAllowedXf = if (probedP1DurSec > 0.1f && probedP2DurSec > 0.1f) {
+                min(probedP1DurSec, probedP2DurSec) * 0.85f
+            } else {
+                15f
+            }
+            val safeXf = min(crossfadeSec.coerceIn(0.1f, 15f), maxAllowedXf).coerceAtLeast(0.05f)
+            val xf = String.format(Locale.US, "%.2f", safeXf)
+            "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1$p1DelayFilter$echoTailFilter[a0];" +
                 "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g2[a1];" +
                 "[a0][a1]acrossfade=d=$xf:c1=tri:c2=tri[$coreOutLabel]"
         }
@@ -1072,7 +1460,7 @@ suspend fun mixAudioFilesWithFfmpeg(
                 val ratio = String.format(Locale.US, "%.1f", (2.0f + 8.0f * duckDepth).coerceIn(2f, 12f))
                 "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1$p1DelayFilter,asplit=2[v][sc];" +
                     "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g2$fadeInFilter$fadeOutFilter$p2DelayFilter[m];" +
-                    "[m][sc]sidechaincompress=threshold=0.02:ratio=$ratio:attack=180:release=900[ducked];" +
+                    "[m][sc]sidechaincompress=threshold=0.02:ratio=$ratio:attack=150:release=850:knee=4[ducked];" +
                     "[v][ducked]amix=inputs=2:duration=longest:normalize=0[$coreOutLabel]"
             } else {
                 "[0:a]aresample=44100,aformat=channel_layouts=stereo,volume=$g1$p1DelayFilter[a0];" +
@@ -1083,17 +1471,26 @@ suspend fun mixAudioFilesWithFfmpeg(
     }
 
     val filterComplex = if (autoLeveling) {
-        "$coreGraph;[mixraw]loudnorm=I=-14:TP=-1.0:LRA=11[out]"
+        val levelFilter = if (levelingStrengthPct < 45f) {
+            "dynaudnorm=f=150:g=15:m=4.0,alimiter=limit=0.95:attack=5:release=50"
+        } else {
+            "loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.95:attack=5:release=50"
+        }
+        "$coreGraph;[mixraw]$levelFilter[out]"
+    } else if (needsLimiter) {
+        "$coreGraph;[prelim]alimiter=limit=0.95:attack=5:release=50[out]"
     } else {
         coreGraph
     }
 
     val isWav = target.extension.equals("wav", ignoreCase = true)
     val codecArgs = if (isWav) "-acodec pcm_s16le -ar 44100 -ac 2" else "-ar 44100 -ac 2 -c:a aac -b:a 192k"
-    val cmd = "-y -i \"${safe1.absolutePath}\" -i \"${safe2.absolutePath}\" -filter_complex \"$filterComplex\" -map \"[out]\" -vn $codecArgs \"${target.absolutePath}\""
+    val extraInput = if (whooshWav != null) " -i \"${whooshWav.absolutePath}\"" else ""
+    val cmd = "-y -i \"${safe1.absolutePath}\" -i \"${safe2.absolutePath}\"$extraInput -filter_complex \"$filterComplex\" -map \"[out]\" -vn $codecArgs \"${target.absolutePath}\""
     val ok = FfmpegKitBridge.execute(cmd, toolName = "LargeFileFfmpegMix", logNonZeroFailure = true)
     if (safe1 != primaryFile) runCatching { safe1.delete() }
     if (safe2 != secondaryFile) runCatching { safe2.delete() }
+    runCatching { whooshWav?.delete() }
     if (ok && target.exists() && target.length() > 512L) {
         target
     } else {
@@ -1102,12 +1499,159 @@ suspend fun mixAudioFilesWithFfmpeg(
     }
 }
 
+fun buildFfmpegFilterForDspConfig(config: DspConfig): String {
+    val norm = config.normalized()
+    if (!norm.hasAnyActiveProcessing()) return ""
+    val stages = mutableListOf<String>()
+    var needsLimiter = false
+
+    for (slot in norm.chain) {
+        if (!slot.enabled) continue
+        when (slot.type) {
+            EffectType.NOISE_REDUCTION -> {
+                val nr = norm.noiseReduction
+                val hp = nr.highPassHz.coerceIn(20f, 300f).roundToInt()
+                stages += "highpass=f=$hp"
+                val nf = (-nr.reductionDb.coerceIn(6f, 40f)).roundToInt()
+                stages += "afftdn=nf=$nf"
+            }
+            EffectType.EQUALIZER -> {
+                val bands10 = norm.equalizer.resolved10Bands()
+                val freqs = com.example.model.EQ_10_FREQUENCIES_HZ
+                for (i in bands10.indices) {
+                    val gain = bands10[i]
+                    if (abs(gain) >= 0.25f) {
+                        val gStr = String.format(Locale.US, "%.2f", clamp(gain, -12f, 12f))
+                        val wStr = if (i == 0 || i == 9) "0.85" else "1.41"
+                        stages += "equalizer=f=${freqs[i]}:t=q:w=$wStr:g=$gStr"
+                        needsLimiter = true
+                    }
+                }
+            }
+            EffectType.BASS_BOOST -> {
+                val b = norm.bassBoost
+                if (abs(b.gainDb) >= 0.25f) {
+                    val gStr = String.format(Locale.US, "%.2f", clamp(b.gainDb, -12f, 12f))
+                    val fHz = b.frequencyHz.coerceIn(40f, 250f).roundToInt()
+                    stages += "bass=g=$gStr:f=$fHz"
+                    needsLimiter = true
+                }
+            }
+            EffectType.TREBLE -> {
+                val tr = norm.treble
+                if (abs(tr.gainDb) >= 0.25f) {
+                    val gStr = String.format(Locale.US, "%.2f", clamp(tr.gainDb, -12f, 12f))
+                    val fHz = tr.frequencyHz.coerceIn(2000f, 14000f).roundToInt()
+                    stages += "treble=g=$gStr:f=$fHz"
+                    needsLimiter = true
+                }
+            }
+            EffectType.PITCH_SHIFT -> {
+                val semi = norm.pitchShift.semitones
+                if (abs(semi) >= 0.1f) {
+                    val factor = 2.0.pow(clamp(semi, -12f, 12f) / 12.0).coerceIn(0.5, 2.0)
+                    val invTempo = (1.0 / factor).coerceIn(0.5, 2.0)
+                    stages += String.format(Locale.US, "asetrate=44100*%.5f,aresample=44100,atempo=%.5f", factor, invTempo)
+                    needsLimiter = true
+                }
+            }
+            EffectType.TIME_STRETCH -> {
+                val tr = norm.timeStretch.tempoRatio.coerceIn(0.5f, 2.5f)
+                if (abs(tr - 1f) >= 0.02f) {
+                    stages += buildAtempoChain(tr.toDouble())
+                }
+            }
+            EffectType.COMPRESSOR -> {
+                val c = norm.compressor
+                if (c.ratio > 1.05f) {
+                    val thresh = String.format(Locale.US, "%.1fdB", clamp(c.thresholdDb, -48f, -1f))
+                    val ratio = String.format(Locale.US, "%.2f", clamp(c.ratio, 1.1f, 20f))
+                    val attack = String.format(Locale.US, "%.1f", clamp(c.attackMs, 1f, 200f))
+                    val release = String.format(Locale.US, "%.1f", clamp(c.releaseMs, 20f, 1000f))
+                    val makeup = String.format(Locale.US, "%.2f", clamp(c.makeupGainDb, -6f, 15f))
+                    stages += "acompressor=threshold=$thresh:ratio=$ratio:attack=$attack:release=$release:makeup=$makeup"
+                    needsLimiter = true
+                }
+            }
+            EffectType.ECHO_REVERB -> {
+                val e = norm.echoReverb
+                if (e.wetDryMix > 0.02f) {
+                    val pre = clamp(e.preDelayMs, 0f, 180f).roundToInt().coerceAtLeast(8)
+                    val d1 = clamp(e.delayTimeMs, 25f, 950f).roundToInt()
+                    val d2 = (d1 * 1.48f).roundToInt().coerceIn(pre + 15, 1400)
+                    val d3 = (d2 * 1.38f).roundToInt().coerceIn(d2 + 20, 1950)
+                    val earlyDec = clamp(0.18f + e.earlyReflections * 0.36f * e.wetDryMix, 0.06f, 0.58f)
+                    val tailDec1 = clamp((0.14f + e.reverbDecay * 0.34f + e.feedback * 0.14f) * e.wetDryMix, 0.05f, 0.52f)
+                    val tailDec2 = clamp(tailDec1 * (0.55f + e.lateReflections * 0.25f), 0.03f, 0.42f)
+                    val tailDec3 = clamp(tailDec2 * 0.62f, 0.02f, 0.32f)
+                    val inGain = String.format(Locale.US, "%.2f", clamp(1f - e.wetDryMix * 0.28f, 0.55f, 0.92f))
+                    val outGain = String.format(Locale.US, "%.2f", clamp(0.84f + e.wetDryMix * 0.08f, 0.78f, 0.92f))
+                    stages += String.format(
+                        Locale.US,
+                        "aecho=%s:%s:%d|%d|%d|%d:%.2f|%.2f|%.2f|%.2f",
+                        inGain,
+                        outGain,
+                        pre,
+                        d1,
+                        d2,
+                        d3,
+                        earlyDec,
+                        tailDec1,
+                        tailDec2,
+                        tailDec3,
+                    )
+                    if (e.damping >= 0.45f) {
+                        val lpfHz = (13000 - (e.damping * 6500).roundToInt()).coerceIn(3800, 13000)
+                        stages += "lowpass=f=$lpfHz"
+                    }
+                    if (e.stereoWidth >= 0.55f) {
+                        val m = String.format(Locale.US, "%.2f", 1.0f + (e.stereoWidth - 0.45f) * 0.9f)
+                        stages += "extrastereo=m=$m"
+                    }
+                    needsLimiter = true
+                }
+            }
+            EffectType.LIMITER -> {
+                needsLimiter = true
+            }
+            EffectType.CHORUS,
+            EffectType.FLANGER,
+            EffectType.PHASER,
+            EffectType.DISTORTION -> Unit
+        }
+    }
+
+    if (norm.spatialPanHz > 0.01f) {
+        stages += String.format(Locale.US, "apulsator=hz=%.3f", clamp(norm.spatialPanHz, 0.02f, 4f))
+        needsLimiter = true
+    }
+    if (norm.hasLiveSurround()) {
+        val (_, fallbackSurround) = buildSurroundStereoFfmpegFilter(
+            midAdjustPct = norm.surroundMidPct,
+            sideBoostPct = norm.surroundSidePct,
+            widthPct = norm.surroundWidthPct,
+        )
+        stages += fallbackSurround.removeSuffix(",alimiter=limit=0.95")
+        needsLimiter = true
+    }
+    if (abs(norm.masterGainDb) >= 0.15f) {
+        stages += String.format(Locale.US, "volume=%.2fdB", clamp(norm.masterGainDb, -18f, 12f))
+        needsLimiter = true
+    }
+    if (needsLimiter) {
+        val ceilingLin = 10.0.pow(clamp(norm.limiter.ceilingDb, -6f, -0.3f) / 20.0).coerceIn(0.45, 0.96)
+        stages += String.format(Locale.US, "alimiter=limit=%.3f:attack=5:release=60", ceilingLin)
+    }
+    return stages.joinToString(",")
+}
+
 suspend fun exportSourceFileDirectlyWithFfmpeg(
     context: Context,
     sourceFile: File,
     format: com.example.model.ExportAudioFormat,
     baseFileName: String,
     loudnessTarget: com.example.model.PlatformLoudnessTarget,
+    dspConfig: DspConfig = DspConfig(),
 ): ExportedAudioResult? = withContext(Dispatchers.IO) {
     if (!sourceFile.exists() || !FfmpegKitBridge.isAvailable()) return@withContext null
     val safeIn = com.example.audio.cache.SmartCacheManager.ensureSafeFfmpegInputFile(context, sourceFile)
@@ -1123,8 +1667,13 @@ suspend fun exportSourceFileDirectlyWithFfmpeg(
         com.example.model.ExportAudioFormat.OGG -> Triple("m4a", "audio/mp4", "-c:a aac -b:a 320k -ar 44100 -ac 2")
     }
     val outFile = File(exportDir, "${cleanBase}_$stamp.$ext")
+    val dspFilter = buildFfmpegFilterForDspConfig(dspConfig)
     val lufs = loudnessTarget.targetLufs
-    val afArg = if (lufs != null) "-af \"loudnorm=I=$lufs:TP=-1.0:LRA=9\"" else ""
+    val fullFilter = listOfNotNull(
+        dspFilter.takeIf { it.isNotBlank() },
+        if (lufs != null) "loudnorm=I=$lufs:TP=-1.0:LRA=9,alimiter=limit=0.95" else null,
+    ).joinToString(",")
+    val afArg = if (fullFilter.isNotBlank()) "-af \"$fullFilter\"" else ""
     val cmd = "-y -i \"${safeIn.absolutePath}\" -vn $afArg $codecArgs \"${outFile.absolutePath}\""
     val ok = FfmpegKitBridge.execute(cmd, toolName = "LargeFileFfmpegExport", logNonZeroFailure = true)
     if (safeIn != sourceFile) runCatching { safeIn.delete() }

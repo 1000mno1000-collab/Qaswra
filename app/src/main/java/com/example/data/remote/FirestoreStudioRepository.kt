@@ -108,13 +108,26 @@ object DspConfigFirestoreMapper {
                 "damping" to norm.echoReverb.damping.toDouble(),
                 "diffusion" to norm.echoReverb.diffusion.toDouble(),
             ),
-            "equalizer" to mapOf(
-                "band60HzDb" to norm.equalizer.band60HzDb.toDouble(),
-                "band230HzDb" to norm.equalizer.band230HzDb.toDouble(),
-                "band910HzDb" to norm.equalizer.band910HzDb.toDouble(),
-                "band3600HzDb" to norm.equalizer.band3600HzDb.toDouble(),
-                "band14000HzDb" to norm.equalizer.band14000HzDb.toDouble(),
-            ),
+            "equalizer" to run {
+                val b10 = norm.equalizer.resolved10Bands()
+                mapOf(
+                    "band60HzDb" to norm.equalizer.band60HzDb.toDouble(),
+                    "band230HzDb" to norm.equalizer.band230HzDb.toDouble(),
+                    "band910HzDb" to norm.equalizer.band910HzDb.toDouble(),
+                    "band3600HzDb" to norm.equalizer.band3600HzDb.toDouble(),
+                    "band14000HzDb" to norm.equalizer.band14000HzDb.toDouble(),
+                    "band31HzDb" to b10[0].toDouble(),
+                    "band62HzDb" to b10[1].toDouble(),
+                    "band125HzDb" to b10[2].toDouble(),
+                    "band250HzDb" to b10[3].toDouble(),
+                    "band500HzDb" to b10[4].toDouble(),
+                    "band1000HzDb" to b10[5].toDouble(),
+                    "band2000HzDb" to b10[6].toDouble(),
+                    "band4000HzDb" to b10[7].toDouble(),
+                    "band8000HzDb" to b10[8].toDouble(),
+                    "band16000HzDb" to b10[9].toDouble(),
+                )
+            },
             "bassBoost" to mapOf(
                 "gainDb" to norm.bassBoost.gainDb.toDouble(),
                 "frequencyHz" to norm.bassBoost.frequencyHz.toDouble(),
@@ -126,6 +139,7 @@ object DspConfigFirestoreMapper {
             "pitchShift" to mapOf(
                 "semitones" to norm.pitchShift.semitones.toDouble(),
                 "wetMix" to norm.pitchShift.wetMix.toDouble(),
+                "preserveFormants" to norm.pitchShift.preserveFormants,
             ),
             "timeStretch" to mapOf(
                 "tempoRatio" to norm.timeStretch.tempoRatio.toDouble(),
@@ -252,6 +266,16 @@ object DspConfigFirestoreMapper {
                 band910HzDb = eqM.f("band910HzDb", 0f),
                 band3600HzDb = eqM.f("band3600HzDb", 0f),
                 band14000HzDb = eqM.f("band14000HzDb", 0f),
+                band31HzDb = (eqM?.get("band31HzDb") as? Number)?.toFloat(),
+                band62HzDb = (eqM?.get("band62HzDb") as? Number)?.toFloat(),
+                band125HzDb = (eqM?.get("band125HzDb") as? Number)?.toFloat(),
+                band250HzDb = (eqM?.get("band250HzDb") as? Number)?.toFloat(),
+                band500HzDb = (eqM?.get("band500HzDb") as? Number)?.toFloat(),
+                band1000HzDb = (eqM?.get("band1000HzDb") as? Number)?.toFloat(),
+                band2000HzDb = (eqM?.get("band2000HzDb") as? Number)?.toFloat(),
+                band4000HzDb = (eqM?.get("band4000HzDb") as? Number)?.toFloat(),
+                band8000HzDb = (eqM?.get("band8000HzDb") as? Number)?.toFloat(),
+                band16000HzDb = (eqM?.get("band16000HzDb") as? Number)?.toFloat(),
             ),
             bassBoost = BassBoostParams(
                 gainDb = bassM.f("gainDb", 0f),
@@ -264,6 +288,7 @@ object DspConfigFirestoreMapper {
             pitchShift = PitchShiftParams(
                 semitones = pitchM.f("semitones", 0f),
                 wetMix = pitchM.f("wetMix", 1f),
+                preserveFormants = pitchM.b("preserveFormants", true),
             ),
             timeStretch = TimeStretchParams(
                 tempoRatio = timeM.f("tempoRatio", 1f),

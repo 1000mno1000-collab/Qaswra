@@ -337,13 +337,13 @@ fun BatchQueueScreen(
                     },
                 )
 
-                // Speed Ratio Slider (0.50x..2.00x)
+                // Speed Ratio Slider (0.50x..2.50x)
                 val speedLabel = String.format(Locale.US, "%.2fx", settings.speedRatio)
                 StudioParamSlider(
                     label = if (isEn) "Speed / Tempo Ratio" else "السرعة (Tempo)",
                     value = settings.speedRatio,
                     min = 0.5f,
-                    max = 2.0f,
+                    max = 2.5f,
                     formattedValue = speedLabel,
                     accentColor = StudioColors.Amber,
                     testTag = "batch_speed_slider",

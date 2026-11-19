@@ -109,7 +109,7 @@ private fun resampleChannel(input: FloatArray, targetLen: Int): FloatArray {
     return out
 }
 
-private fun shiftFormantsStft(
+internal fun shiftFormantsStft(
     input: FloatArray,
     formantShift: Double,
 ): FloatArray {

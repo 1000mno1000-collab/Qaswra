@@ -76,7 +76,13 @@ class DspPipeline(
         this.config = norm
 
         val eq = norm.equalizer
-        val eqKey = "${eq.band60HzDb}|${eq.band230HzDb}|${eq.band910HzDb}|${eq.band3600HzDb}|${eq.band14000HzDb}"
+        val bands10 = eq.resolved10Bands()
+        val eqKey = buildString(64) {
+            for (i in bands10.indices) {
+                if (i > 0) append('|')
+                append((bands10[i] * 100f).toInt())
+            }
+        }
         if (eqKey != lastEqKey) {
             lastEqKey = eqKey
             equalizer.configure(sampleRate, eq)
@@ -199,21 +205,26 @@ class DspPipeline(
         }
 
         if (cfg.hasLiveSurround()) {
-            val midScale = clamp(1f + cfg.surroundMidPct / 100f, 0.25f, 2.0f)
-            val sideScale = clamp(1f + cfg.surroundSidePct / 100f, 0.2f, 2.5f)
+            val midScale = clamp(1f + cfg.surroundMidPct / 100f, 0.35f, 1.65f)
+            val sideScale = clamp(1f + cfg.surroundSidePct / 100f, 0.5f, 2.3f)
             val widthNorm = clamp(cfg.surroundWidthPct / 100f, 0f, 1f)
-            val widthScale = 1f + widthNorm * 1.15f
-            val delaySamples = min(surSize - 4, max(1, floor(sampleRate * (0.0005f + widthNorm * 0.011f)).toInt()))
+            val haasSamples = if (widthNorm <= 0.005f) {
+                0
+            } else {
+                min(surSize - 4, max(1, (0.011f * sampleRate * widthNorm).roundToInt()))
+            }
             for (i in 0 until count) {
-                val mid = 0.5f * (left[i] + right[i]) * midScale
-                val side = 0.5f * (left[i] - right[i]) * sideScale * widthScale
-                surSideRing[surIdx] = side
-                val delayedSide = surSideRing[(surIdx - delaySamples + surSize) and surMask]
+                val rawL = left[i]
+                val rawR = right[i]
+                surSideRing[surIdx] = rawR
+                val delayedR = if (haasSamples == 0) rawR else surSideRing[(surIdx - haasSamples + surSize) and surMask]
                 surIdx = (surIdx + 1) and surMask
-                val widL = mid + side + delayedSide * (0.28f * widthNorm)
-                val widR = mid - side - delayedSide * (0.28f * widthNorm)
-                left[i] = clamp(widL, -1.2f, 1.2f)
-                right[i] = clamp(widR, -1.2f, 1.2f)
+                val mid = 0.5f * (rawL + rawR) * midScale
+                val naturalSide = 0.5f * (rawL - rawR)
+                val haasSide = if (haasSamples == 0) 0f else 0.5f * (rawL - delayedR) * widthNorm
+                val side = (naturalSide + haasSide * 0.65f) * sideScale
+                left[i] = clamp(mid + side, -1.2f, 1.2f)
+                right[i] = clamp(mid - side, -1.2f, 1.2f)
             }
         }
 
@@ -336,10 +347,11 @@ internal fun pitchAndSpeedKotlinHq(
     source: StereoAudioBuffer,
     semitones: Float,
     tempoRatio: Float,
+    preserveFormants: Boolean = true,
 ): StereoAudioBuffer {
     if (source.frameCount < 16) return source
     val clampedSemi = clamp(semitones, -12f, 12f)
-    val clampedTempo = clamp(tempoRatio, 0.5f, 2.0f)
+    val clampedTempo = clamp(tempoRatio, 0.5f, 2.5f)
     val pitchFactor = 2.0.pow(clampedSemi / 12.0).coerceIn(0.5, 2.0)
 
     // First adjust duration cleanly by netTempo = tempoRatio / pitchFactor,
@@ -351,18 +363,27 @@ internal fun pitchAndSpeedKotlinHq(
         val sr = stretched.sampleRate.coerceAtLeast(8000)
         val targetVirtualRate = (sr / pitchFactor).roundToInt().coerceIn(4000, 192000)
         val resampled = resampleStereo(stretched, targetVirtualRate)
-        StereoAudioBuffer(
-            left = resampled.left,
-            right = resampled.right,
-            sampleRate = sr,
-        )
+        if (preserveFormants && abs(clampedSemi) >= 0.35f) {
+            val compFormant = (1.0 / pitchFactor).coerceIn(0.58, 1.72)
+            StereoAudioBuffer(
+                left = shiftFormantsStft(resampled.left, compFormant),
+                right = shiftFormantsStft(resampled.right, compFormant),
+                sampleRate = sr,
+            )
+        } else {
+            StereoAudioBuffer(
+                left = resampled.left,
+                right = resampled.right,
+                sampleRate = sr,
+            )
+        }
     } else {
         stretched
     }
 
-    // Gentle HPF (40Hz) + soft limiter (0.95) matching our FFmpeg chain
+    // Gentle HPF (45Hz) + soft limiter (0.95) matching our FFmpeg chain
     val hp = StereoBiquadFilter().apply {
-        configureHighPass(pitched.sampleRate, 40.0, 0.707)
+        configureHighPass(pitched.sampleRate, 45.0, 0.707)
     }
     val outL = pitched.left.copyOf()
     val outR = pitched.right.copyOf()
@@ -390,7 +411,7 @@ fun renderOfflineDsp(
 
     val timeStretchSlot = normCfg.chain.firstOrNull { it.type == EffectType.TIME_STRETCH }
     val stretched = if (timeStretchSlot?.enabled == true && abs(normCfg.timeStretch.tempoRatio - 1f) > 0.02f) {
-        timeStretchWsolaStereo(source, normCfg.timeStretch.tempoRatio)
+        timeStretchChainedStereo(source, normCfg.timeStretch.tempoRatio.toDouble().coerceIn(0.5, 2.5))
     } else {
         source
     }

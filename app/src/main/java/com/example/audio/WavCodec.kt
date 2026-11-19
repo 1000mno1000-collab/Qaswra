@@ -100,11 +100,15 @@ suspend fun writeSilenceWavStreaming(
     outFile: File,
     durationSeconds: Float,
     sampleRate: Int = TARGET_SAMPLE_RATE,
+    numChannels: Int = 2,
 ): Long = withContext(Dispatchers.IO) {
     outFile.parentFile?.mkdirs()
-    val totalFrames = max(sampleRate / 10L, (clamp(durationSeconds, 0.5f, 120f) * sampleRate).toLong())
-    val totalDataBytes = (totalFrames * 4L).coerceAtMost(Int.MAX_VALUE - 44L).toInt()
-    val header = buildWavHeaderBytes(totalDataBytes, sampleRate)
+    val ch = numChannels.coerceIn(1, 2)
+    val sr = sampleRate.coerceIn(8000, 96000)
+    val bytesPerFrame = ch * 2L
+    val totalFrames = max(1L, (clamp(durationSeconds, 0.1f, 600f) * sr).roundToInt().toLong())
+    val totalDataBytes = (totalFrames * bytesPerFrame).coerceAtMost(Int.MAX_VALUE - 44L).toInt()
+    val header = buildWavHeaderBytes(totalDataBytes, sr, numChannels = ch)
     val zeroChunk = ByteArray(WAV_STREAM_CHUNK_BYTES)
 
     BufferedOutputStream(FileOutputStream(outFile), WAV_STREAM_CHUNK_BYTES).use { out ->
@@ -359,7 +363,10 @@ fun decodeWavBytes(bytes: ByteArray): StereoAudioBuffer? {
     return if (sampleRate != TARGET_SAMPLE_RATE) resampleStereo(raw, TARGET_SAMPLE_RATE) else raw
 }
 
-fun readStereoWavFile(file: File): StereoAudioBuffer? {
+fun readStereoWavFile(
+    file: File,
+    preserveSampleRate: Boolean = false,
+): StereoAudioBuffer? {
     if (!file.exists() || file.length() < 44L) return null
     return runCatching {
         FileInputStream(file).use { fis ->
@@ -498,7 +505,7 @@ fun readStereoWavFile(file: File): StereoAudioBuffer? {
             }
 
             val raw = StereoAudioBuffer(left, right, sampleRate)
-            if (sampleRate != TARGET_SAMPLE_RATE) resampleStereo(raw, TARGET_SAMPLE_RATE) else raw
+            if (!preserveSampleRate && sampleRate != TARGET_SAMPLE_RATE) resampleStereo(raw, TARGET_SAMPLE_RATE) else raw
         }
     }.getOrNull()
 }

@@ -162,7 +162,7 @@ class StudioAudioPlayer(
     }
 
     fun setMonitoringSpeed(speed: Float) {
-        monitoringSpeed = speed.coerceIn(0.5f, 2.0f)
+        monitoringSpeed = speed.coerceIn(0.5f, 2.5f)
         if (pitchSpeedPreviewActive && isPlaying.get()) {
             applyLivePlaybackParams(streamMediaPlayer)
         }
@@ -173,7 +173,7 @@ class StudioAudioPlayer(
         val wasActive = pitchSpeedPreviewActive
         pitchSpeedPreviewActive = active
         previewPitchSemitones = clamp(semitones, -12f, 12f)
-        previewTempoRatio = clamp(tempoRatio, 0.5f, 2.0f)
+        previewTempoRatio = clamp(tempoRatio, 0.5f, 2.5f)
         if (active && isPlaying.get()) {
             val mp = streamMediaPlayer
             if (mp != null) {
@@ -220,9 +220,9 @@ class StudioAudioPlayer(
         if (mp == null) return
         val applyEffects = pitchSpeedPreviewActive && !config.bypassAll
         val targetSpeed = if (applyEffects) {
-            (previewTempoRatio * monitoringSpeed).coerceIn(0.5f, 2.0f)
+            (previewTempoRatio * monitoringSpeed).coerceIn(0.5f, 2.5f)
         } else {
-            monitoringSpeed.coerceIn(0.5f, 2.0f)
+            monitoringSpeed.coerceIn(0.5f, 2.5f)
         }
         val targetPitch = if (applyEffects) {
             2.0.pow(previewPitchSemitones / 12.0).toFloat().coerceIn(0.5f, 2.0f)
@@ -234,6 +234,13 @@ class StudioAudioPlayer(
             p.setSpeed(targetSpeed)
             p.setPitch(targetPitch)
             mp.playbackParams = p
+        }.onFailure {
+            runCatching {
+                val p = mp.playbackParams
+                p.setSpeed(targetSpeed.coerceIn(0.5f, 2.0f))
+                p.setPitch(targetPitch)
+                mp.playbackParams = p
+            }
         }
     }
 
@@ -437,7 +444,7 @@ class StudioAudioPlayer(
                     val cfg = config
                     val tsSlot = cfg.chain.firstOrNull { it.type == EffectType.TIME_STRETCH }
                     val dspTempo = if (!isMergeLive && !cfg.bypassAll && tsSlot?.enabled == true) {
-                        clamp(cfg.timeStretch.tempoRatio, 0.5f, 2.0f).toDouble()
+                        clamp(cfg.timeStretch.tempoRatio, 0.5f, 2.5f).toDouble()
                     } else {
                         1.0
                     }

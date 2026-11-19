@@ -60,6 +60,29 @@ data class EchoReverbParams(
     val diffusion: Float = 0f,
 )
 
+val EQ_10_FREQUENCIES_HZ: IntArray = intArrayOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
+
+val EQ_10_LABELS: List<String> = listOf(
+    "31 Hz", "62 Hz", "125 Hz", "250 Hz", "500 Hz",
+    "1 kHz", "2 kHz", "4 kHz", "8 kHz", "16 kHz",
+)
+
+@Immutable
+data class EqPresetProfile(
+    val id: String,
+    val titleKey: String,
+    val bands10Db: FloatArray,
+)
+
+val EQ_PRESET_PROFILES: List<EqPresetProfile> = listOf(
+    EqPresetProfile("flat", "eq_preset_flat", floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)),
+    EqPresetProfile("vocal_clarity", "eq_preset_vocal", floatArrayOf(-2.5f, -1.5f, -1.0f, -0.5f, 0.5f, 1.5f, 3.0f, 4.0f, 3.2f, 1.5f)),
+    EqPresetProfile("podcast_pro", "eq_preset_podcast", floatArrayOf(-3.0f, -1.5f, 1.5f, 0.5f, -0.5f, 1.0f, 2.8f, 3.8f, 2.5f, 1.5f)),
+    EqPresetProfile("warm_radio", "eq_preset_warm", floatArrayOf(1.5f, 2.5f, 3.0f, 1.8f, 0.5f, 0.0f, 1.2f, 2.0f, 0.5f, -1.0f)),
+    EqPresetProfile("bright_air", "eq_preset_bright", floatArrayOf(-1.0f, 0.0f, 0.5f, 0.5f, 0.5f, 1.0f, 2.5f, 3.5f, 4.5f, 5.0f)),
+    EqPresetProfile("deep_bass", "eq_preset_bass", floatArrayOf(5.5f, 4.5f, 2.5f, 0.5f, -0.5f, 0.0f, 1.0f, 2.0f, 1.5f, 0.5f)),
+)
+
 @Immutable
 @Serializable
 data class EqualizerParams(
@@ -68,7 +91,80 @@ data class EqualizerParams(
     val band910HzDb: Float = 0f,
     val band3600HzDb: Float = 0f,
     val band14000HzDb: Float = 0f,
-)
+    val band31HzDb: Float? = null,
+    val band62HzDb: Float? = null,
+    val band125HzDb: Float? = null,
+    val band250HzDb: Float? = null,
+    val band500HzDb: Float? = null,
+    val band1000HzDb: Float? = null,
+    val band2000HzDb: Float? = null,
+    val band4000HzDb: Float? = null,
+    val band8000HzDb: Float? = null,
+    val band16000HzDb: Float? = null,
+) {
+    private fun legacyInterpolated10Bands(): FloatArray {
+        val legacyFreqs = doubleArrayOf(60.0, 230.0, 910.0, 3600.0, 14000.0)
+        val legacyGains = floatArrayOf(band60HzDb, band230HzDb, band910HzDb, band3600HzDb, band14000HzDb)
+        return FloatArray(10) { idx ->
+            val f = EQ_10_FREQUENCIES_HZ[idx].toDouble()
+            when {
+                f <= legacyFreqs.first() -> legacyGains.first() * 0.85f
+                f >= legacyFreqs.last() -> legacyGains.last() * 0.9f
+                else -> {
+                    var seg = 0
+                    while (seg < legacyFreqs.size - 2 && f > legacyFreqs[seg + 1]) seg++
+                    val logLow = kotlin.math.ln(legacyFreqs[seg])
+                    val logHigh = kotlin.math.ln(legacyFreqs[seg + 1])
+                    val t = ((kotlin.math.ln(f) - logLow) / (logHigh - logLow)).toFloat().coerceIn(0f, 1f)
+                    legacyGains[seg] + (legacyGains[seg + 1] - legacyGains[seg]) * t
+                }
+            }.coerceIn(-12f, 12f)
+        }
+    }
+
+    fun resolved10Bands(): FloatArray {
+        val raw = arrayOf(
+            band31HzDb, band62HzDb, band125HzDb, band250HzDb, band500HzDb,
+            band1000HzDb, band2000HzDb, band4000HzDb, band8000HzDb, band16000HzDb,
+        )
+        if (raw.all { it == null }) {
+            return legacyInterpolated10Bands()
+        }
+        val legacy = legacyInterpolated10Bands()
+        return FloatArray(10) { idx -> (raw[idx] ?: legacy[idx]).coerceIn(-12f, 12f) }
+    }
+
+    fun with10Band(index: Int, gainDb: Float): EqualizerParams {
+        val b = resolved10Bands()
+        if (index in b.indices) {
+            b[index] = gainDb.coerceIn(-12f, 12f)
+        }
+        return from10Bands(b)
+    }
+
+    companion object {
+        fun from10Bands(bands: FloatArray): EqualizerParams {
+            val b = FloatArray(10) { idx -> bands.getOrElse(idx) { 0f }.coerceIn(-12f, 12f) }
+            return EqualizerParams(
+                band60HzDb = b[1],
+                band230HzDb = b[3],
+                band910HzDb = b[5],
+                band3600HzDb = b[7],
+                band14000HzDb = b[9],
+                band31HzDb = b[0],
+                band62HzDb = b[1],
+                band125HzDb = b[2],
+                band250HzDb = b[3],
+                band500HzDb = b[4],
+                band1000HzDb = b[5],
+                band2000HzDb = b[6],
+                band4000HzDb = b[7],
+                band8000HzDb = b[8],
+                band16000HzDb = b[9],
+            )
+        }
+    }
+}
 
 @Immutable
 @Serializable
@@ -89,6 +185,7 @@ data class TrebleParams(
 data class PitchShiftParams(
     val semitones: Float = 0f,
     val wetMix: Float = 1f,
+    val preserveFormants: Boolean = true,
 )
 
 @Immutable

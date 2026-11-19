@@ -178,10 +178,10 @@ class EchoReverbProcessor(private val sampleRate: Int = 44100) {
         )
         val size = clamp(p.reverbSize, 0f, 1f)
         val decay = clamp(p.reverbDecay, 0f, 1f)
-        val combFeedback = clamp(0.68f + decay * 0.2f + size * 0.08f, 0.5f, 0.96f)
-        val fdnFeedback = clamp(0.45f + decay * 0.34f + size * 0.11f, 0.35f, 0.9f)
-        val damp = clamp(p.damping * 0.62f, 0.04f, 0.72f)
-        val diffusion = clamp(0.35f + p.diffusion * 0.45f, 0.2f, 0.85f)
+        val combFeedback = clamp(0.42f + decay * 0.44f + size * 0.09f, 0.38f, 0.955f)
+        val fdnFeedback = clamp(0.28f + decay * 0.50f + size * 0.11f, 0.25f, 0.91f)
+        val damp = clamp(p.damping * 0.65f, 0.04f, 0.76f)
+        val diffusion = clamp(0.32f + p.diffusion * 0.48f, 0.2f, 0.85f)
         val earlyGain = clamp(p.earlyReflections, 0f, 1f)
         val lateGain = clamp(p.lateReflections, 0f, 1f)
         val lfoInc = (2.0 * PI * 0.55) / sampleRate
@@ -320,8 +320,8 @@ class EchoReverbProcessor(private val sampleRate: Int = 44100) {
             val wideWetL = mid + side
             val wideWetR = mid - side
 
-            val dryKeep = 1f - smoothWetMix * 0.40f
-            val wetGain = smoothWetMix * 0.85f
+            val dryKeep = clamp(1f - smoothWetMix * 0.65f, 0.22f, 1f)
+            val wetGain = smoothWetMix * 0.88f
 
             left[i] = (0.94 * tanh(((dryL * dryKeep + wideWetL * wetGain) * 0.92).toDouble())).toFloat()
             right[i] = (0.94 * tanh(((dryR * dryKeep + wideWetR * wetGain) * 0.92).toDouble())).toFloat()

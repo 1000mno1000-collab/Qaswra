@@ -182,7 +182,7 @@ object RealWaveformExtractor {
 
         try {
             coroutineContext.ensureActive()
-            val needsSafeCopy = !file.name.all { it.code in 32..126 && it != '"' && it != '\'' }
+            val needsSafeCopy = !file.absolutePath.all { it.code in 32..126 && it != '"' && it != '\'' }
             val inputFile = if (needsSafeCopy) {
                 val ext = file.extension.takeIf { it.isNotBlank() && it.all(Char::isLetterOrDigit) } ?: "audio"
                 val copy = File(workDir, "in_$id.$ext")

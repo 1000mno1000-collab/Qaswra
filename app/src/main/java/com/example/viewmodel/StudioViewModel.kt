@@ -29,7 +29,9 @@ import com.example.audio.MergeStudioParams
 import com.example.audio.NativeSpeechState
 import com.example.audio.OnlineGuard
 import com.example.audio.ReelsTemplateParams
+import com.example.audio.SileroVadProcessor
 import com.example.audio.SttBackendMode
+import com.example.audio.VadSpeechSegment
 import com.example.audio.ai.LocalModelStatus
 import com.example.audio.ai.LocalNeuralVoiceEngine
 import com.example.audio.ai.OnlineSoundHistoryItem
@@ -84,12 +86,17 @@ import com.example.audio.clamp
 import com.example.audio.computeMergeTimelineLayout
 import com.example.audio.computeWaveformPeaksAsync
 import com.example.audio.convertToSurroundStereoFromOffsets
+import com.example.audio.estimateStereoCompatibilityForOffsets
+import com.example.audio.analyzeStereoCompatibility
+import com.example.audio.buildSurroundStereoFfmpegFilter
+import com.example.audio.StereoCompatibilityReport
 import com.example.audio.cutSelection
 import com.example.audio.cutSelectionWithFade
 import com.example.audio.executeUnifiedMergeOverlay
 import com.example.audio.exportRenderedAudioToFile
 import com.example.audio.exportSourceFileDirectlyWithFfmpeg
 import com.example.audio.formatDurationMs
+import com.example.audio.SilenceInsertMode
 import com.example.audio.generateSilence
 import com.example.audio.insertSilenceStreaming
 import com.example.audio.mergeClips
@@ -100,12 +107,14 @@ import com.example.audio.mixWithSidechainAutoDucking
 import com.example.audio.normalizeAudio
 import com.example.audio.purifyBufferOffline
 import com.example.audio.removeSilenceAuto
+import com.example.audio.renderGlobalProPreset
 import com.example.audio.renderOfflineDsp
 import com.example.audio.reverseAudio
 import com.example.audio.reverseAudioWithFfmpeg
 import com.example.audio.saveAndSetRingtone
 import com.example.audio.splitAudioByTime
 import com.example.audio.splitStereoChannels
+import com.example.audio.splitVocalAndInstrumentalFile
 import com.example.audio.splitVocalAndInstrumental
 import com.example.audio.transformVoiceOffline as runTransformVoiceOffline
 import com.example.audio.trimToSelection
@@ -154,6 +163,7 @@ import com.example.model.DeviceAudioItem
 import com.example.model.DspConfig
 import com.example.model.EchoPadAxisMode
 import com.example.model.EchoReverbParams
+import com.example.model.EchoSpacePreset
 import com.example.model.EffectType
 import com.example.model.ExportAudioFormat
 import com.example.model.GlobalProPreset
@@ -331,6 +341,8 @@ data class StudioUiState(
     val voiceAiStatusNote: String? = null,
     val smartMasterAnalyzingAi: Boolean = false,
     val transcriptionProgressLabel: String? = null,
+    val vadSpeechSegments: List<VadSpeechSegment> = emptyList(),
+    val vadUsedSilero: Boolean = false,
 ) {
     val allPresets: List<StudioPreset> get() = customPresets + BUILT_IN_PRESETS
 }
@@ -1049,6 +1061,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 canRedoEdit = redoStack.isNotEmpty(),
                 hasUnsavedChanges = true,
                 lastAppliedToolLabel = appliedToolLabel ?: cur.lastAppliedToolLabel,
+                vadSpeechSegments = emptyList(),
+                vadUsedSilero = false,
             )
         }
     }
@@ -1108,6 +1122,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 canUndoEdit = undoStack.isNotEmpty(),
                 canRedoEdit = redoStack.isNotEmpty(),
                 hasUnsavedChanges = recordUndo,
+                vadSpeechSegments = emptyList(),
+                vadUsedSilero = false,
             )
         }
         viewModelScope.launch(Dispatchers.Default) {
@@ -1143,18 +1159,35 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun computeEqWarning(buf: StereoAudioBuffer?, cfg: DspConfig): Boolean {
-        val eq = cfg.equalizer
-        if (eq.band3600HzDb >= -1.5f && eq.band14000HzDb >= -2.5f) return false
+        val b10 = cfg.equalizer.resolved10Bands()
+        val presenceCutDb = minOf(b10[7], cfg.equalizer.band3600HzDb)
+        val airCutDb = minOf(b10[8], b10[9], cfg.equalizer.band14000HzDb)
+        if (presenceCutDb >= -1.5f && airCutDb >= -2.5f) return false
         return AudioSignalAnalyzer.willFricativeClarityDrop(
             buffer = buf,
             highPassHz = 20f,
-            lowPassHz = if (eq.band14000HzDb < -7f) 5200f else 16000f,
+            lowPassHz = if (airCutDb < -7f) 5200f else 16000f,
             spectralStrength = 0f,
             reductionDb = 0f,
             deEssAmount = 0f,
             clarityBoostDb = 0f,
-            eq3600Db = eq.band3600HzDb,
+            eq3600Db = presenceCutDb,
         )
+    }
+
+    fun applyEqPresetProfile(preset: com.example.model.EqPresetProfile) {
+        updateDspConfig {
+            it.copy(equalizer = com.example.model.EqualizerParams.from10Bands(preset.bands10Db))
+                .withSlotEnabled(EffectType.EQUALIZER, preset.id != "flat")
+        }
+        ensureLivePreviewPlaying()
+    }
+
+    fun resetEqualizerOnly() {
+        updateDspConfig {
+            it.copy(equalizer = com.example.model.EqualizerParams())
+                .withSlotEnabled(EffectType.EQUALIZER, false)
+        }
     }
 
     private fun syncPlayerConfig(cfg: DspConfig, holdBypass: Boolean = _uiState.value.isHoldBypassing) {
@@ -1179,15 +1212,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
-    fun updatePitchSpeedParamsLive(semitones: Float, tempoRatio: Float) {
+    fun updatePitchSpeedParamsLive(
+        semitones: Float,
+        tempoRatio: Float,
+        preserveFormants: Boolean = _uiState.value.dspConfig.pitchShift.preserveFormants,
+    ) {
         val currentCfg = _uiState.value.dspConfig
+        val clampedTempo = clamp(tempoRatio, 0.5f, 2.5f)
         val next = currentCfg.copy(
             bypassAll = false,
-            pitchShift = currentCfg.pitchShift.copy(semitones = clamp(semitones, -12f, 12f), wetMix = 1f),
-            timeStretch = currentCfg.timeStretch.copy(tempoRatio = clamp(tempoRatio, 0.5f, 2.0f)),
+            pitchShift = currentCfg.pitchShift.copy(
+                semitones = clamp(semitones, -12f, 12f),
+                wetMix = 1f,
+                preserveFormants = preserveFormants,
+            ),
+            timeStretch = currentCfg.timeStretch.copy(tempoRatio = clampedTempo),
         )
             .withSlotEnabled(EffectType.PITCH_SHIFT, kotlin.math.abs(semitones) >= 0.05f)
-            .withSlotEnabled(EffectType.TIME_STRETCH, kotlin.math.abs(tempoRatio - 1f) >= 0.02f)
+            .withSlotEnabled(EffectType.TIME_STRETCH, kotlin.math.abs(clampedTempo - 1f) >= 0.02f)
             .normalized()
         pushUndoSnapshot(debounced = true)
         _uiState.update {
@@ -1442,6 +1484,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             prev.copy(bypassAll = false, echoReverb = updater(prev.echoReverb))
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
         }
+    }
+
+    fun applyEchoSpacePreset(space: EchoSpacePreset) {
+        val label = t(_uiState.value.language, space.titleKey)
+        updateDspConfig(debouncedUndo = false) { prev ->
+            prev.copy(
+                bypassAll = false,
+                echoReverb = space.echoReverb,
+                limiter = prev.limiter.copy(ceilingDb = minOf(prev.limiter.ceilingDb, -0.6f)),
+            )
+                .withSlotEnabled(EffectType.ECHO_REVERB, true)
+                .withSlotEnabled(EffectType.LIMITER, true)
+        }
+        _uiState.update { it.copy(selectedPresetLabel = label) }
+        if (hasLoadedAudio()) {
+            ensureLivePreviewPlaying()
+        }
+        postBanner(
+            if (_uiState.value.language == AppLanguage.EN) {
+                "Acoustic Space: $label"
+            } else {
+                "تم تفعيل البيئة الصوتية: $label"
+            },
+        )
     }
 
     private fun mapNormalized(tVal: Float, minV: Float, maxV: Float): Float =
@@ -1884,8 +1950,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val curStart = _uiState.value.trimStart
         val curEnd = _uiState.value.trimEnd
         val movingStart = abs(s - curStart) >= abs(e - curEnd)
-        val cs: Float
-        val ce: Float
+        var cs: Float
+        var ce: Float
         if (movingStart) {
             cs = clamp(s, 0f, (curEnd - minGapFrac).coerceAtLeast(0f))
             ce = clamp(e, (cs + minGapFrac).coerceAtMost(1f), 1f)
@@ -1893,9 +1959,91 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             ce = clamp(e, (curStart + minGapFrac).coerceAtMost(1f), 1f)
             cs = clamp(s, 0f, (ce - minGapFrac).coerceAtLeast(0f))
         }
+        if (ce <= cs) {
+            cs = 0f
+            ce = 1f
+        }
         _uiState.update { it.copy(trimStart = cs, trimEnd = ce) }
         val st = _uiState.value
         player.setLoop(st.loopSelection || st.autoLoopOnPlayback, cs, ce)
+    }
+
+    fun detectSpeechBoundsWithSileroVad() {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
+            postBanner(t(_uiState.value.language, "no_audio_loaded"))
+            return
+        }
+        launchSingleFlightProcessing {
+            val result = SileroVadProcessor.detectSpeechAndSilence(
+                context = getApplication(),
+                buffer = src,
+                diskFile = srcFile,
+                vadThreshold = 0.40f,
+                minSilenceMs = 380,
+                minSpeechMs = 150,
+            ) { p ->
+                _uiState.update { it.copy(purifyProgress = p.coerceIn(0.05f, 0.98f)) }
+            }
+            if (result.speechSegments.isEmpty() || result.totalDurationMs <= 0L) {
+                _uiState.update { it.copy(vadSpeechSegments = emptyList(), purifyProgress = null) }
+                postBanner("لم يتم اكتشاف مقاطع كلام واضحة")
+                return@launchSingleFlightProcessing
+            }
+            val durF = result.totalDurationMs.toFloat().coerceAtLeast(1f)
+            val firstStartFrac = (result.speechSegments.first().startMs / durF).coerceIn(0f, 0.98f)
+            val lastEndFrac = (result.speechSegments.last().endMs / durF).coerceIn(firstStartFrac + 0.01f, 1f)
+            _uiState.update {
+                it.copy(
+                    vadSpeechSegments = result.speechSegments,
+                    vadUsedSilero = result.usedSileroOnnx,
+                    purifyProgress = 1f,
+                )
+            }
+            updateTrimRange(firstStartFrac, lastEndFrac)
+            val engineTag = if (result.usedSileroOnnx) "Silero VAD" else "VAD"
+            postBanner("تم تحديد ${result.speechSegments.size} مقطع كلام عبر $engineTag (${result.silenceSegments.size} فترة صمت)")
+        }
+    }
+
+    fun removeUnwantedSilenceWithSileroVad() {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
+            postBanner(t(_uiState.value.language, "no_audio_loaded"))
+            return
+        }
+        stopToolPreview()
+        launchSingleFlightProcessing {
+            if (src != null) {
+                val cleaned = removeSilenceAuto(
+                    context = getApplication(),
+                    buffer = src,
+                    thresholdDb = -38f,
+                    minSilenceSec = 0.42f,
+                )
+                setActiveBuffer(cleaned, recordUndo = true)
+            } else if (srcFile != null) {
+                val sileroOut = SileroVadProcessor.removeSilenceFileWithSileroVad(
+                    context = getApplication(),
+                    inputFile = srcFile,
+                    thresholdDb = -38f,
+                    minSilenceSec = 0.42f,
+                )
+                val outFile = sileroOut ?: processAudioFileWithFfmpeg(
+                    context = getApplication(),
+                    inputFile = srcFile,
+                    audioFilter = "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-38dB:stop_periods=-1:stop_duration=0.42:stop_threshold=-38dB",
+                    toolName = "EditorVadSilenceRemoveLarge",
+                ) ?: run {
+                    postBanner("تعذر إزالة فترات الصمت")
+                    return@launchSingleFlightProcessing
+                }
+                applyProcessedDiskSourceFile(outFile, appliedToolLabel = "SileroVadSilenceRemove")
+            }
+            postBanner("تمت إزالة فترات الصمت مع الحفاظ على مخارج الحروف والكلمات")
+        }
     }
 
     fun resetSelection() {
@@ -2813,6 +2961,28 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun loadSavedProjectAsSecondaryTrack(project: StudioProject) {
+        launchSingleFlightProcessing {
+            val extra = repository.loadProjectAudioBuffer(project.id)
+            if (extra == null || extra.frameCount <= 0) {
+                postBanner("هذا المشروع لا يحتوي على ملف صوتي للدمج")
+                return@launchSingleFlightProcessing
+            }
+            replaceMixBgSourceFile(null)
+            mixBgBuffer = extra
+            val bgPeaks = computeWaveformPeaksAsync(extra, 96)
+            _uiState.update {
+                it.copy(
+                    mixBgName = project.name,
+                    mixBgDurationMs = extra.durationMs,
+                    mixBgPeaks = bgPeaks,
+                )
+            }
+            scheduleSmartDuckingPreviewRender()
+            postBanner("تم تعيين \"${project.name}\" كمسار ثانٍ في الدمج بنجاح")
+        }
+    }
+
     fun undoLastEdit() {
         val prev = undoStack.removeLastOrNull() ?: return
         lastDspSnapshotTimeMs = 0L
@@ -3075,6 +3245,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         syncPlayerConfig(next, holdBypass = false)
         scheduleTempPreviewRender()
+        if (hasLoadedAudio()) {
+            ensureLivePreviewPlaying()
+        }
         postBanner("تم تطبيق قالب \"${preset.name}\" للمعاينة الفورية")
     }
 
@@ -3235,6 +3408,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     format = format,
                     baseFileName = fileName,
                     loudnessTarget = loudnessTarget,
+                    dspConfig = _uiState.value.dspConfig,
                 ) ?: run {
                     postBanner("تعذر تصدير الملف الكبير عبر FFmpeg")
                     return@launchSingleFlightProcessing
@@ -3775,11 +3949,40 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         loadMixBackgroundUri(Uri.parse(item.uriString), onComplete)
     }
 
-    // Global Pro Presets & 18-Tool Operations (100% Non-Destructive Live Preview)
+    // Global Pro Presets & 18-Tool Operations (100% Non-Destructive Live Preview + Optional Bake)
     fun applyGlobalProPreset(preset: GlobalProPreset, bakeOffline: Boolean = false) {
+        val title = t(_uiState.value.language, preset.titleKey)
+        if (bakeOffline) {
+            val src = activeBuffer
+            val srcFile = activeSourceFile
+            if (src != null) {
+                launchSingleFlightProcessing {
+                    val rendered = renderGlobalProPreset(src, preset)
+                    setActiveBuffer(rendered, recordUndo = true)
+                    _uiState.update { it.copy(selectedPresetLabel = title, lastAppliedToolLabel = title) }
+                    postBanner("تم دمج وتطبيق القالب العالمي \"$title\" على الصوت")
+                }
+                return
+            } else if (srcFile != null && srcFile.exists()) {
+                launchSingleFlightProcessing {
+                    val outFile = processAudioFileWithFfmpeg(
+                        context = getApplication(),
+                        inputFile = srcFile,
+                        audioFilter = preset.ffmpegFilter,
+                        toolName = "GlobalProPreset_${preset.id.name}",
+                    ) ?: run {
+                        postBanner("تعذر تطبيق القالب على الملف الكبير")
+                        return@launchSingleFlightProcessing
+                    }
+                    applyProcessedDiskSourceFile(outFile, appliedToolLabel = title)
+                    _uiState.update { it.copy(selectedPresetLabel = title) }
+                    postBanner("تم تطبيق القالب العالمي \"$title\" عبر FFmpeg")
+                }
+                return
+            }
+        }
         pushUndoSnapshot(debounced = false)
         val nextCfg = preset.dspConfig.copy(bypassAll = false).normalized()
-        val title = t(_uiState.value.language, preset.titleKey)
         _uiState.update {
             it.copy(
                 dspConfig = nextCfg,
@@ -3793,6 +3996,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         syncPlayerConfig(nextCfg, holdBypass = false)
         scheduleTempPreviewRender()
+        if (hasLoadedAudio()) {
+            ensureLivePreviewPlaying()
+        }
         postBanner("تم تفعيل القالب العالمي \"$title\" للمعاينة الحية بدون المساس بالأصل")
     }
 
@@ -3811,7 +4017,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 val outFile = processAudioFileWithFfmpeg(
                     context = getApplication(),
                     inputFile = srcFile,
-                    audioFilter = "areverse",
+                    audioFilter = "areverse,afade=t=in:st=0:d=0.003",
                     toolName = "ReverseLarge",
                 ) ?: run {
                     postBanner("تعذر عكس الملف الصوتي الكبير")
@@ -3825,27 +4031,103 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun previewReverseAudio() {
-        val src = activeBuffer ?: run {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
             postBanner(t(_uiState.value.language, "no_audio_loaded"))
             return
         }
-        toggleToolBufferPreview("ReversePreview") {
-            reverseAudioWithFfmpeg(getApplication(), src)
+        if (src != null) {
+            toggleToolBufferPreview("ReversePreview") {
+                reverseAudioWithFfmpeg(getApplication(), src)
+            }
+            return
+        }
+        if (_uiState.value.isToolPreviewPlaying && AudioPlayerManager.isPlaying("tool_preview")) {
+            stopToolPreview()
+            return
+        }
+        launchSingleFlightProcessing {
+            stopToolPreview()
+            player.pause()
+            stopMixPreviewPlayer()
+            val previewFile = processAudioFileWithFfmpeg(
+                context = getApplication(),
+                inputFile = srcFile!!,
+                audioFilter = "areverse,afade=t=in:st=0:d=0.003",
+                toolName = "ReversePreviewLarge",
+            )
+            if (previewFile == null || !previewFile.exists()) {
+                postBanner("تعذر توليد معاينة العكس للملف الكبير")
+                return@launchSingleFlightProcessing
+            }
+            toolPreviewTempFile = previewFile
+            val started = AudioPlayerManager.playFile(
+                file = previewFile,
+                tag = "tool_preview",
+                onCompletion = { stopToolPreview() },
+                onError = { stopToolPreview() },
+            )
+            if (started) {
+                _uiState.update { it.copy(isToolPreviewPlaying = true) }
+            } else {
+                stopToolPreview()
+                postBanner("تعذر تشغيل المعاينة")
+            }
         }
     }
 
-    fun insertGeneratedSilence(durationSeconds: Float, appendToCurrent: Boolean) {
+    fun insertGeneratedSilence(
+        durationSeconds: Float,
+        mode: SilenceInsertMode = SilenceInsertMode.APPEND_END,
+        sampleRate: Int = 44100,
+        channels: Int = 2,
+    ) {
         val cur = activeBuffer
-        val isAppend = appendToCurrent && cur != null
+        val curDisk = activeSourceFile
+        val hasExisting = (cur != null && cur.frameCount > 0) || (curDisk != null && curDisk.exists() && curDisk.length() > 0L)
+        val effectiveMode = if (hasExisting) mode else SilenceInsertMode.NEW_TRACK
+        val isModifiedTrack = effectiveMode != SilenceInsertMode.NEW_TRACK
         launchSingleFlightProcessing {
             val result = insertSilenceStreaming(
                 context = getApplication(),
                 currentBuffer = cur,
+                currentDiskFile = curDisk,
                 durationSeconds = durationSeconds,
-                appendToCurrent = isAppend,
+                mode = effectiveMode,
+                sampleRate = sampleRate,
+                channels = channels,
             )
-            setActiveBuffer(result, recordUndo = isAppend, resetDspOnNewEntry = !isAppend)
-            postBanner("تم إنشاء مسار صمت (${"%.1f".format(durationSeconds)} ثانية) وإدراجه بالاستوديو")
+            val durSecFmt = if (durationSeconds >= 60f) {
+                val mins = durationSeconds.toInt() / 60
+                val secs = durationSeconds.toInt() % 60
+                "${mins}m ${secs}s"
+            } else {
+                "${"%.1f".format(durationSeconds)}s"
+            }
+            val chLabel = if (result.channels == 1) "Mono" else "Stereo"
+            val srLabel = if (result.sampleRate % 1000 == 0) "${result.sampleRate / 1000}kHz" else "${"%.1f".format(result.sampleRate / 1000f)}kHz"
+            val label = "توليد صمت ($durSecFmt)"
+            if (result.buffer != null) {
+                setActiveBuffer(
+                    buf = result.buffer,
+                    recordUndo = isModifiedTrack,
+                    resetDspOnNewEntry = !isModifiedTrack,
+                )
+                _uiState.update { it.copy(lastAppliedToolLabel = label) }
+            } else if (result.diskFile != null) {
+                applyProcessedDiskSourceFile(
+                    newFile = result.diskFile,
+                    recordUndo = isModifiedTrack,
+                    appliedToolLabel = label,
+                )
+            }
+            val modeText = when (effectiveMode) {
+                SilenceInsertMode.NEW_TRACK -> "مسار صمت جديد"
+                SilenceInsertMode.INSERT_START -> "إدراج الصمت في البداية"
+                SilenceInsertMode.APPEND_END -> "إلحاق الصمت بالنهاية"
+            }
+            postBanner("تم $modeText ($durSecFmt • $srLabel • $chLabel)")
         }
     }
 
@@ -3862,6 +4144,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             ensureLivePreviewPlaying()
         }
     }
+
+    fun estimateSurroundPhaseReport(
+        midAdjustPct: Float,
+        sideBoostPct: Float,
+        widthPct: Float,
+    ): StereoCompatibilityReport = estimateStereoCompatibilityForOffsets(
+        buffer = activeBuffer,
+        midAdjustPct = midAdjustPct,
+        sideBoostPct = sideBoostPct,
+        widthPct = widthPct,
+    )
 
     fun applySurroundStereoFromOffsets(midAdjustPct: Float, sideBoostPct: Float, widthPct: Float) {
         val src = activeBuffer
@@ -3886,29 +4179,48 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             )
             syncPlayerConfig(bakedCfg)
             _uiState.update { it.copy(dspConfig = bakedCfg, lastAppliedToolLabel = "SurroundStereo") }
+            var report: StereoCompatibilityReport? = null
             if (src != null) {
                 val widened = withContext(Dispatchers.Default) {
                     convertToSurroundStereoFromOffsets(src, midAdjustPct, sideBoostPct, widthPct)
                 }
+                report = analyzeStereoCompatibility(widened)
                 setActiveBuffer(widened, recordUndo = true)
             } else if (srcFile != null) {
-                val widenVal = String.format(Locale.US, "%.2f", (1f + (sideBoostPct + widthPct) / 140f).coerceIn(0.6f, 2.5f))
+                val (primaryFilter, fallbackFilter) = buildSurroundStereoFfmpegFilter(
+                    midAdjustPct = midAdjustPct,
+                    sideBoostPct = sideBoostPct,
+                    widthPct = widthPct,
+                )
                 val outFile = processAudioFileWithFfmpeg(
                     context = getApplication(),
                     inputFile = srcFile,
-                    audioFilter = "stereotools=mlev=1:slev=$widenVal",
-                    toolName = "SurroundStereoLarge",
+                    audioFilter = primaryFilter,
+                    toolName = "SurroundStereoWide",
+                ) ?: processAudioFileWithFfmpeg(
+                    context = getApplication(),
+                    inputFile = srcFile,
+                    audioFilter = fallbackFilter,
+                    toolName = "SurroundStereoFallback",
                 ) ?: run {
                     postBanner("تعذر تحويل الملف الكبير إلى ستيريو محيطي")
                     return@launchSingleFlightProcessing
                 }
                 applyProcessedDiskSourceFile(outFile, appliedToolLabel = "SurroundStereo")
             }
-            postBanner("تم تحويل المقطع إلى ستيريو محيطي متسع (M/S Surround)")
+            val phaseSuffix = report?.let { r ->
+                val badge = if (r.isMonoCompatible) "متوافق مع المونو" else "تحذير تعارض طور"
+                " (${badge}: r=${"%+.2f".format(Locale.US, r.correlation)})"
+            }.orEmpty()
+            postBanner("تم تحويل المقطع إلى ستيريو محيطي متسع (M/S Surround)$phaseSuffix")
         }
     }
 
-    fun applyPitchAndSpeed(semitones: Float, tempoRatio: Float) {
+    fun applyPitchAndSpeed(
+        semitones: Float,
+        tempoRatio: Float,
+        preserveFormants: Boolean = _uiState.value.dspConfig.pitchShift.preserveFormants,
+    ) {
         val src = activeBuffer
         val srcFile = activeSourceFile
         if (src == null && (srcFile == null || !srcFile.exists())) {
@@ -3926,7 +4238,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             sliderDebounceJob?.cancel()
             val bakedCfg = _uiState.value.dspConfig
                 .copy(
-                    pitchShift = _uiState.value.dspConfig.pitchShift.copy(semitones = 0f),
+                    pitchShift = _uiState.value.dspConfig.pitchShift.copy(semitones = 0f, preserveFormants = preserveFormants),
                     timeStretch = _uiState.value.dspConfig.timeStretch.copy(tempoRatio = 1f),
                 )
                 .withSlotEnabled(EffectType.PITCH_SHIFT, false)
@@ -3939,6 +4251,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     buffer = src,
                     semitones = semitones,
                     tempoRatio = tempoRatio,
+                    preserveFormants = preserveFormants,
                     context = getApplication(),
                 ) { p ->
                     _uiState.update { it.copy(purifyProgress = (0.10f + p * 0.85f).coerceIn(0.10f, 0.98f)) }
@@ -3950,6 +4263,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     inputFile = srcFile,
                     semitones = semitones,
                     tempoRatio = tempoRatio,
+                    preserveFormants = preserveFormants,
                 ) { p ->
                     _uiState.update { it.copy(purifyProgress = (0.10f + p * 0.85f).coerceIn(0.10f, 0.98f)) }
                 } ?: run {
@@ -3969,24 +4283,83 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         autoFadeEdges: Boolean,
         previewSelectionOnly: Boolean = true,
     ) {
-        val src = activeBuffer ?: run {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
             postBanner(t(_uiState.value.language, "no_audio_loaded"))
             return
         }
         val st = _uiState.value
-        toggleToolBufferPreview("EditorPreview") {
-            withContext(Dispatchers.Default) {
-                var buf = if (previewSelectionOnly) {
-                    trimToSelectionWithFade(src, st.trimStart, st.trimEnd, autoFadeSec = if (autoFadeEdges) 0.2f else 0f)
-                } else {
-                    src
+        if (src != null) {
+            toggleToolBufferPreview("EditorPreview") {
+                withContext(Dispatchers.Default) {
+                    var buf = if (previewSelectionOnly) {
+                        trimToSelectionWithFade(src, st.trimStart, st.trimEnd, autoFadeSec = if (autoFadeEdges) 0.2f else 0f)
+                    } else {
+                        src
+                    }
+                    if (abs(st.clipGainDb) >= 0.05f && clipGainUnappliedDirty) {
+                        buf = applyGainDb(buf, st.clipGainDb)
+                    }
+                    if (fadeInSec > 0.05f) buf = applyFadeIn(buf, fadeInSec)
+                    if (fadeOutSec > 0.05f) buf = applyFadeOut(buf, fadeOutSec)
+                    renderOfflineDsp(buf, st.dspConfig)
                 }
+            }
+            return
+        }
+        if (_uiState.value.isToolPreviewPlaying && AudioPlayerManager.isPlaying("tool_preview")) {
+            stopToolPreview()
+            return
+        }
+        launchSingleFlightProcessing {
+            stopToolPreview()
+            player.pause()
+            stopMixPreviewPlayer()
+            val durSec = (st.durationMs / 1000.0).coerceAtLeast(0.2)
+            val sSec = if (previewSelectionOnly) (durSec * st.trimStart).coerceIn(0.0, durSec - 0.05) else 0.0
+            val eSec = if (previewSelectionOnly) (durSec * st.trimEnd).coerceIn(sSec + 0.05, durSec) else durSec
+            val segLen = (eSec - sSec).coerceAtLeast(0.05)
+            val filterList = buildList {
                 if (abs(st.clipGainDb) >= 0.05f && clipGainUnappliedDirty) {
-                    buf = applyGainDb(buf, st.clipGainDb)
+                    add("volume=${String.format(Locale.US, "%.2f", st.clipGainDb)}dB")
                 }
-                if (fadeInSec > 0.05f) buf = applyFadeIn(buf, fadeInSec)
-                if (fadeOutSec > 0.05f) buf = applyFadeOut(buf, fadeOutSec)
-                renderOfflineDsp(buf, st.dspConfig)
+                val effIn = if (fadeInSec > 0.05f) fadeInSec.toDouble() else if (autoFadeEdges && segLen > 0.45) 0.2 else 0.0
+                val effOut = if (fadeOutSec > 0.05f) fadeOutSec.toDouble() else if (autoFadeEdges && segLen > 0.45) 0.2 else 0.0
+                if (effIn > 0.02 && segLen > effIn) {
+                    add("afade=t=in:st=0:d=${String.format(Locale.US, "%.2f", effIn)}")
+                }
+                if (effOut > 0.02 && segLen > effOut + 0.05) {
+                    val outStart = (segLen - effOut).coerceAtLeast(0.0)
+                    add("afade=t=out:st=${String.format(Locale.US, "%.3f", outStart)}:d=${String.format(Locale.US, "%.2f", effOut)}")
+                }
+                add("alimiter=limit=0.96")
+            }.joinToString(",")
+            val ssStr = String.format(Locale.US, "%.3f", sSec)
+            val toStr = String.format(Locale.US, "%.3f", eSec)
+            val previewFile = processAudioFileWithFfmpeg(
+                context = getApplication(),
+                inputFile = srcFile!!,
+                preInputArgs = "-ss $ssStr -to $toStr",
+                audioFilter = filterList,
+                toolName = "EditorPreviewLarge",
+            )
+            if (previewFile == null || !previewFile.exists()) {
+                postBanner("تعذر توليد معاينة صوتية للملف الكبير")
+                return@launchSingleFlightProcessing
+            }
+            toolPreviewTempFile = previewFile
+            val started = AudioPlayerManager.playFile(
+                file = previewFile,
+                tag = "tool_preview",
+                onCompletion = { stopToolPreview() },
+                onError = { stopToolPreview() },
+            )
+            if (started) {
+                _uiState.update { it.copy(isToolPreviewPlaying = true) }
+            } else {
+                stopToolPreview()
+                postBanner("تعذر تشغيل المعاينة")
             }
         }
     }
@@ -4067,7 +4440,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             stopToolPreview()
             stopMixPreviewPlayer()
             syncMergeStudioPreview(params)
-            if (_uiState.value.playback.isPlaying) {
+            if (_uiState.value.playback.isPlaying || player.isCurrentlyPlaying()) {
                 player.pause()
             } else {
                 player.play()
@@ -4092,6 +4465,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 val gain1 = (1f + params.primaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
                 val gain2 = (1f + params.secondaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
+                val effSecGain = if (params.mode == MergeStudioMode.OVERLAY && params.autoDuckingEnabled) {
+                    (0.45f * gain2).coerceIn(0.05f, 1.35f)
+                } else {
+                    gain2
+                }
                 val outPreview = File(getApplication<Application>().cacheDir, "merge_preview_large.m4a")
                 _uiState.update { it.copy(exportProgress = 0.45f) }
                 val rendered = mixAudioFilesWithFfmpeg(
@@ -4099,7 +4477,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     primaryFile = f1,
                     secondaryFile = f2,
                     primaryGain = gain1,
-                    secondaryGain = gain2,
+                    secondaryGain = effSecGain,
                     autoDucking = params.autoDuckingEnabled,
                     mode = params.mode,
                     crossfadeSec = params.crossfadeSec,
@@ -4112,6 +4490,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     transitionGapSec = params.transitionGapSec,
                     autoLeveling = params.autoLevelingEnabled,
                     duckingStrengthPct = params.duckingStrengthPct,
+                    echoTransitionEnabled = params.echoTransitionEnabled,
+                    echoTransitionPct = params.echoTransitionPct,
+                    gapWhooshEnabled = params.gapWhooshEnabled,
+                    whooshIntensityPct = params.whooshIntensityPct,
+                    levelingStrengthPct = params.levelingStrengthPct,
+                    primaryDurationSec = _uiState.value.durationMs / 1000f,
                 )
                 if (rendered == null || !rendered.exists()) {
                     postBanner("تعذر توليد معاينة الدمج للملفات الكبيرة")
@@ -4165,12 +4549,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     val gain1 = (1f + params.primaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
                     val gain2 = (1f + params.secondaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
+                    val effSecGain = if (params.mode == MergeStudioMode.OVERLAY && params.autoDuckingEnabled) {
+                        (0.45f * gain2).coerceIn(0.05f, 1.35f)
+                    } else {
+                        gain2
+                    }
                     val outFile = mixAudioFilesWithFfmpeg(
                         context = getApplication(),
                         primaryFile = f1,
                         secondaryFile = f2,
                         primaryGain = gain1,
-                        secondaryGain = gain2,
+                        secondaryGain = effSecGain,
                         autoDucking = params.autoDuckingEnabled,
                         mode = params.mode,
                         crossfadeSec = params.crossfadeSec,
@@ -4182,6 +4571,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         transitionGapSec = params.transitionGapSec,
                         autoLeveling = params.autoLevelingEnabled,
                         duckingStrengthPct = params.duckingStrengthPct,
+                        echoTransitionEnabled = params.echoTransitionEnabled,
+                        echoTransitionPct = params.echoTransitionPct,
+                        gapWhooshEnabled = params.gapWhooshEnabled,
+                        whooshIntensityPct = params.whooshIntensityPct,
+                        levelingStrengthPct = params.levelingStrengthPct,
+                        primaryDurationSec = _uiState.value.durationMs / 1000f,
                     ) ?: run {
                         postBanner("تعذر دمج الملفات الكبيرة عبر FFmpeg")
                         return@launchSingleFlightProcessing
@@ -4242,12 +4637,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     val gain1 = (1f + params.primaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
                     val gain2 = (1f + params.secondaryLevelPct / 100f).coerceIn(0.1f, 2.0f)
+                    val effSecGain = if (params.mode == MergeStudioMode.OVERLAY && params.autoDuckingEnabled) {
+                        (0.45f * gain2).coerceIn(0.05f, 1.35f)
+                    } else {
+                        gain2
+                    }
                     mergedFile = mixAudioFilesWithFfmpeg(
                         context = getApplication(),
                         primaryFile = f1,
                         secondaryFile = f2,
                         primaryGain = gain1,
-                        secondaryGain = gain2,
+                        secondaryGain = effSecGain,
                         autoDucking = params.autoDuckingEnabled,
                         mode = params.mode,
                         crossfadeSec = params.crossfadeSec,
@@ -4259,6 +4659,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         transitionGapSec = params.transitionGapSec,
                         autoLeveling = params.autoLevelingEnabled,
                         duckingStrengthPct = params.duckingStrengthPct,
+                        echoTransitionEnabled = params.echoTransitionEnabled,
+                        echoTransitionPct = params.echoTransitionPct,
+                        gapWhooshEnabled = params.gapWhooshEnabled,
+                        whooshIntensityPct = params.whooshIntensityPct,
+                        levelingStrengthPct = params.levelingStrengthPct,
+                        primaryDurationSec = _uiState.value.durationMs / 1000f,
                     ) ?: run {
                         postBanner("تعذر دمج الملفات قبل التصدير")
                         return@launchSingleFlightProcessing
@@ -4491,13 +4897,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 setActiveBuffer(if (loadPart == 2) part2 else part1, recordUndo = true)
             } else if (srcFile != null) {
                 val durSec = (_uiState.value.durationMs / 1000.0).coerceAtLeast(0.2)
-                val splitSec = String.format(Locale.US, "%.3f", (durSec * fraction).coerceIn(0.05, durSec - 0.05))
+                val splitPointSec = (durSec * fraction).coerceIn(0.05, durSec - 0.05)
+                val splitSec = String.format(Locale.US, "%.3f", splitPointSec)
                 val preArgs = if (loadPart == 2) "-ss $splitSec" else ""
                 val postArgs = if (loadPart == 2) "" else "-t $splitSec"
+                val partFilter = if (loadPart == 2) {
+                    "afade=t=in:st=0:d=0.004"
+                } else {
+                    val fStart = String.format(Locale.US, "%.3f", (splitPointSec - 0.004).coerceAtLeast(0.0))
+                    "afade=t=out:st=$fStart:d=0.004"
+                }
                 val outFile = processAudioFileWithFfmpeg(
                     context = getApplication(),
                     inputFile = srcFile,
-                    audioFilter = "",
+                    audioFilter = partFilter,
                     preInputArgs = preArgs,
                     postInputArgs = postArgs,
                     toolName = "SplitAudioLarge",
@@ -4568,6 +4981,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     format = ExportAudioFormat.M4A,
                     baseFileName = fileName.ifBlank { "Sonix_${bitrateKbps}kbps" },
                     loudnessTarget = _uiState.value.selectedExportLoudness,
+                    dspConfig = _uiState.value.dspConfig,
                 ) ?: run {
                     postBanner("تعذر ضغط وتصدير الملف الصوتي")
                     return@launchSingleFlightProcessing
@@ -5852,9 +6266,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 val res = removeSilenceAuto(getApplication(), src, thresholdDb, minSilenceSec)
                 setActiveBuffer(res, recordUndo = true)
             } else if (srcFile != null) {
+                val sileroOut = SileroVadProcessor.removeSilenceFileWithSileroVad(
+                    context = getApplication(),
+                    inputFile = srcFile,
+                    thresholdDb = thresholdDb,
+                    minSilenceSec = minSilenceSec,
+                )
                 val thDb = String.format(Locale.US, "%.1f", thresholdDb.coerceIn(-65f, -12f))
                 val minD = String.format(Locale.US, "%.2f", minSilenceSec.coerceIn(0.1f, 5.0f))
-                val outFile = processAudioFileWithFfmpeg(
+                val outFile = sileroOut ?: processAudioFileWithFfmpeg(
                     context = getApplication(),
                     inputFile = srcFile,
                     audioFilter = "silenceremove=stop_periods=-1:stop_duration=$minD:stop_threshold=${thDb}dB",
@@ -5893,12 +6313,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 val res = applyAutoCompressorLimiter(getApplication(), src, strengthPct)
                 setActiveBuffer(res, recordUndo = true)
             } else if (srcFile != null) {
-                val ratio = String.format(Locale.US, "%.1f", (2f + (strengthPct / 100f) * 4f).coerceIn(1.5f, 8f))
-                val makeup = String.format(Locale.US, "%.1f", (1f + (strengthPct / 100f) * 4f).coerceIn(0.5f, 6f))
+                val normS = (strengthPct / 100f).coerceIn(0f, 1f)
+                val ratio = String.format(Locale.US, "%.1f", (2f + normS * 4.5f).coerceIn(1.5f, 8f))
+                val thresh = String.format(Locale.US, "%.1f", (-16f - normS * 10f))
+                val makeup = String.format(Locale.US, "%.1f", (1.5f + normS * 4.5f).coerceIn(0.5f, 6f))
+                val dynaudStage = if (normS >= 0.45f) "dynaudnorm=f=150:g=15:p=0.90:m=8," else ""
+                val loudnormStage = if (normS >= 0.60f) "loudnorm=I=-16:TP=-1.5:LRA=11," else ""
                 val outFile = processAudioFileWithFfmpeg(
                     context = getApplication(),
                     inputFile = srcFile,
-                    audioFilter = "acompressor=threshold=-20dB:ratio=$ratio:attack=15:release=160:makeup=${makeup}dB,alimiter=limit=0.95",
+                    audioFilter = "${dynaudStage}acompressor=threshold=${thresh}dB:ratio=$ratio:attack=8:release=95:makeup=$makeup,${loudnormStage}alimiter=limit=0.945:attack=5:release=50",
                     toolName = "AutoCompressorLimiterLarge",
                 ) ?: run {
                     postBanner("تعذر موازنة الملف الصوتي الكبير")
@@ -5912,24 +6336,64 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun previewVocalSplitter(mode: VocalSplitMode, blendRatio: Float) {
-        val src = activeBuffer ?: run {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src != null) {
+            toggleToolBufferPreview("VocalSplitter") {
+                splitVocalAndInstrumental(src, mode, blendRatio)
+            }
+            return
+        }
+        if (srcFile == null || !srcFile.exists()) {
             postBanner(t(_uiState.value.language, "no_audio_loaded"))
             return
         }
-        toggleToolBufferPreview("VocalSplitter") {
-            splitVocalAndInstrumental(src, mode, blendRatio)
+        if (_uiState.value.isToolPreviewPlaying && AudioPlayerManager.isPlaying("tool_preview")) {
+            stopToolPreview()
+            return
+        }
+        launchSingleFlightProcessing {
+            stopToolPreview()
+            player.pause()
+            val outFile = splitVocalAndInstrumentalFile(getApplication(), srcFile, mode, blendRatio)
+            if (outFile == null || !outFile.exists()) {
+                postBanner("تعذر توليد معاينة فصل الصوت للملف الكبير")
+                return@launchSingleFlightProcessing
+            }
+            toolPreviewTempFile = outFile
+            val started = AudioPlayerManager.playFile(
+                file = outFile,
+                tag = "tool_preview",
+                onCompletion = { stopToolPreview() },
+                onError = { stopToolPreview() },
+            )
+            if (started) {
+                _uiState.update { it.copy(isToolPreviewPlaying = true) }
+            } else {
+                stopToolPreview()
+            }
         }
     }
 
     fun applyVocalSplitter(mode: VocalSplitMode, blendRatio: Float) {
-        val src = activeBuffer ?: run {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) {
             postBanner(t(_uiState.value.language, "no_audio_loaded"))
             return
         }
         stopToolPreview()
         launchSingleFlightProcessing {
-            val res = splitVocalAndInstrumental(src, mode, blendRatio)
-            setActiveBuffer(res, recordUndo = true)
+            if (src != null) {
+                val res = splitVocalAndInstrumental(src, mode, blendRatio)
+                setActiveBuffer(res, recordUndo = true)
+            } else if (srcFile != null) {
+                val outFile = splitVocalAndInstrumentalFile(getApplication(), srcFile, mode, blendRatio) ?: run {
+                    postBanner("تعذر فصل الصوت عن الموسيقى في الملف الكبير")
+                    return@launchSingleFlightProcessing
+                }
+                applyProcessedDiskSourceFile(outFile, appliedToolLabel = "VocalSplitter")
+            }
             _uiState.update { it.copy(lastAppliedToolLabel = "VocalSplitter") }
             postBanner("تم تطبيق فصل الصوت البشري عن الموسيقى")
         }
@@ -6227,7 +6691,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val old = cur.batchQueueState.settings
             val next = old.copy(
                 pitchSemitones = (pitchSemitones ?: old.pitchSemitones).coerceIn(-12f, 12f),
-                speedRatio = (speedRatio ?: old.speedRatio).coerceIn(0.5f, 2.0f),
+                speedRatio = (speedRatio ?: old.speedRatio).coerceIn(0.5f, 2.5f),
                 filterPreset = filterPreset ?: old.filterPreset,
                 normalizeOutput = normalizeOutput ?: old.normalizeOutput,
                 outputFormat = outputFormat ?: old.outputFormat,

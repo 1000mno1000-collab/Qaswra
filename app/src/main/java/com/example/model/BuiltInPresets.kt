@@ -7,7 +7,7 @@ val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
             id = GlobalProPresetId.BROADCAST_RADIO,
             titleKey = "pro_preset_broadcast",
             descKey = "pro_preset_broadcast_desc",
-            ffmpegFilter = "acompressor=threshold=-18dB:ratio=4:attack=5:release=50,bass=g=5,treble=g=3,alimiter=limit=0.95",
+            ffmpegFilter = "highpass=f=75,acompressor=threshold=-18dB:ratio=4:attack=5:release=50:makeup=3.2,bass=g=5:f=105,treble=g=3:f=6500,alimiter=limit=0.95",
             dspConfig = def
                 .withSlotEnabled(EffectType.COMPRESSOR, true)
                 .withSlotEnabled(EffectType.BASS_BOOST, true)
@@ -33,7 +33,7 @@ val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
             id = GlobalProPresetId.AUTOTUNE_SYNTH,
             titleKey = "pro_preset_autotune",
             descKey = "pro_preset_autotune_desc",
-            ffmpegFilter = "asetrate=44100*0.97,aresample=44100,aecho=0.8:0.85:40:0.30,treble=g=4,alimiter=limit=0.95",
+            ffmpegFilter = "asetrate=44100*0.97,aresample=44100,atempo=1.0309,aecho=0.8:0.85:40:0.30,treble=g=4:f=6200,alimiter=limit=0.95",
             dspConfig = def
                 .withSlotEnabled(EffectType.PITCH_SHIFT, true)
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
@@ -71,7 +71,7 @@ val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
             id = GlobalProPresetId.EPIC_CINEMATIC,
             titleKey = "pro_preset_cinematic",
             descKey = "pro_preset_cinematic_desc",
-            ffmpegFilter = "asetrate=44100*0.86,aresample=44100,bass=g=7,aecho=0.8:0.85:80:0.42,alimiter=limit=0.95",
+            ffmpegFilter = "asetrate=44100*0.86,aresample=44100,atempo=1.1628,bass=g=7:f=95,acompressor=threshold=-18dB:ratio=3.6:attack=10:release=130:makeup=2.5,aecho=0.8:0.85:24|80|190:0.42|0.30|0.18,alimiter=limit=0.95",
             dspConfig = def
                 .withSlotEnabled(EffectType.PITCH_SHIFT, true)
                 .withSlotEnabled(EffectType.BASS_BOOST, true)
@@ -113,7 +113,7 @@ val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
             id = GlobalProPresetId.SURROUND_8D_CINEMA,
             titleKey = "pro_preset_8d",
             descKey = "pro_preset_8d_desc",
-            ffmpegFilter = "apulsator=hz=0.125,aecho=0.8:0.85:60:0.38,alimiter=limit=0.95",
+            ffmpegFilter = "apulsator=hz=0.125,aecho=0.8:0.85:22|60|140:0.38|0.26|0.16,alimiter=limit=0.95",
             dspConfig = def
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
                 .withSlotEnabled(EffectType.CHORUS, true)
@@ -146,10 +146,126 @@ val GLOBAL_PRO_PRESETS: List<GlobalProPreset> = listOf(
             id = GlobalProPresetId.CRYSTAL_VOCAL,
             titleKey = "pro_preset_crystal",
             descKey = "pro_preset_crystal_desc",
-            ffmpegFilter = com.example.audio.fx.AudioSkillsPresets.CLEAN_PODCAST_MIC,
+            ffmpegFilter = "${com.example.audio.fx.AudioSkillsPresets.CLEAN_PODCAST_MIC},alimiter=limit=0.95",
             dspConfig = com.example.audio.fx.AudioSkillsPresets.cleanPodcastMicDspConfig(),
         )
     },
+)
+
+data class EchoSpacePreset(
+    val id: String,
+    val titleKey: String,
+    val descKey: String,
+    val echoReverb: EchoReverbParams,
+    val ffmpegFilter: String,
+)
+
+val ECHO_SPACE_PRESETS: List<EchoSpacePreset> = listOf(
+    EchoSpacePreset(
+        id = "mosque_dome",
+        titleKey = "echo_space_mosque",
+        descKey = "echo_space_mosque_desc",
+        echoReverb = EchoReverbParams(
+            echoStrength = 0.52f,
+            echoDepth = 0.80f,
+            delayTimeMs = 260f,
+            feedback = 0.44f,
+            reverbSize = 0.92f,
+            reverbDecay = 0.86f,
+            preDelayMs = 48f,
+            wetDryMix = 0.46f,
+            stereoWidth = 0.88f,
+            earlyReflections = 0.62f,
+            lateReflections = 0.88f,
+            damping = 0.28f,
+            diffusion = 0.92f,
+        ),
+        ffmpegFilter = "highpass=f=85,aecho=0.78:0.86:48|125|260|440:0.44|0.34|0.24|0.16,extrastereo=m=1.30,alimiter=limit=0.95",
+    ),
+    EchoSpacePreset(
+        id = "concert_hall",
+        titleKey = "echo_space_hall",
+        descKey = "echo_space_hall_desc",
+        echoReverb = EchoReverbParams(
+            echoStrength = 0.38f,
+            echoDepth = 0.65f,
+            delayTimeMs = 185f,
+            feedback = 0.32f,
+            reverbSize = 0.78f,
+            reverbDecay = 0.70f,
+            preDelayMs = 32f,
+            wetDryMix = 0.38f,
+            stereoWidth = 0.90f,
+            earlyReflections = 0.56f,
+            lateReflections = 0.72f,
+            damping = 0.36f,
+            diffusion = 0.86f,
+        ),
+        ffmpegFilter = "highpass=f=80,aecho=0.80:0.86:32|88|185|290:0.38|0.28|0.19|0.11,extrastereo=m=1.35,alimiter=limit=0.95",
+    ),
+    EchoSpacePreset(
+        id = "broadcast_studio",
+        titleKey = "echo_space_studio",
+        descKey = "echo_space_studio_desc",
+        echoReverb = EchoReverbParams(
+            echoStrength = 0.08f,
+            echoDepth = 0.16f,
+            delayTimeMs = 45f,
+            feedback = 0.08f,
+            reverbSize = 0.18f,
+            reverbDecay = 0.14f,
+            preDelayMs = 8f,
+            wetDryMix = 0.10f,
+            stereoWidth = 0.35f,
+            earlyReflections = 0.24f,
+            lateReflections = 0.12f,
+            damping = 0.68f,
+            diffusion = 0.52f,
+        ),
+        ffmpegFilter = "highpass=f=85,aecho=0.90:0.88:10|24:0.12|0.05,acompressor=threshold=-18dB:ratio=3:attack=8:release=85:makeup=2.0,alimiter=limit=0.95",
+    ),
+    EchoSpacePreset(
+        id = "cave",
+        titleKey = "echo_space_cave",
+        descKey = "echo_space_cave_desc",
+        echoReverb = EchoReverbParams(
+            echoStrength = 0.70f,
+            echoDepth = 0.84f,
+            delayTimeMs = 440f,
+            feedback = 0.56f,
+            reverbSize = 0.98f,
+            reverbDecay = 0.92f,
+            preDelayMs = 68f,
+            wetDryMix = 0.55f,
+            stereoWidth = 0.95f,
+            earlyReflections = 0.78f,
+            lateReflections = 0.92f,
+            damping = 0.52f,
+            diffusion = 0.72f,
+        ),
+        ffmpegFilter = "highpass=f=70,aecho=0.72:0.82:68|185|440|720:0.54|0.42|0.30|0.18,lowpass=f=6800,extrastereo=m=1.40,alimiter=limit=0.95",
+    ),
+    EchoSpacePreset(
+        id = "cinema",
+        titleKey = "echo_space_cinema",
+        descKey = "echo_space_cinema_desc",
+        echoReverb = EchoReverbParams(
+            echoStrength = 0.30f,
+            echoDepth = 0.55f,
+            delayTimeMs = 120f,
+            feedback = 0.24f,
+            reverbSize = 0.68f,
+            reverbDecay = 0.54f,
+            preDelayMs = 26f,
+            wetDryMix = 0.32f,
+            stereoWidth = 0.96f,
+            earlyReflections = 0.60f,
+            lateReflections = 0.58f,
+            damping = 0.44f,
+            diffusion = 0.84f,
+        ),
+        ffmpegFilter = "bass=g=2.5:f=90,aecho=0.82:0.86:26|72|140|220:0.35|0.25|0.16|0.09,extrastereo=m=1.55,alimiter=limit=0.95",
+    ),
 )
 
 val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
@@ -314,6 +430,7 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
                 .withSlotEnabled(EffectType.TREBLE, true)
                 .withSlotEnabled(EffectType.COMPRESSOR, true)
+                .withSlotEnabled(EffectType.LIMITER, true)
                 .copy(
                     treble = TrebleParams(3f, 7500f),
                     compressor = CompressorParams(-16f, 2.8f, 14f, 160f, 2f),
@@ -332,6 +449,7 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                         damping = 0.24f,
                         diffusion = 0.92f,
                     ),
+                    limiter = LimiterParams(ceilingDb = -0.8f, releaseMs = 80f),
                 ),
         )
     },
@@ -348,6 +466,7 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                 .withSlotEnabled(EffectType.CHORUS, true)
                 .withSlotEnabled(EffectType.ECHO_REVERB, true)
                 .withSlotEnabled(EffectType.DISTORTION, true)
+                .withSlotEnabled(EffectType.LIMITER, true)
                 .copy(
                     phaser = PhaserParams(0.85f, 0.82f, 0.5f, 0.45f),
                     chorus = ChorusParams(1.8f, 9f, 0.45f),
@@ -367,6 +486,7 @@ val BUILT_IN_PRESETS: List<StudioPreset> = listOf(
                         damping = 0.35f,
                         diffusion = 0.8f,
                     ),
+                    limiter = LimiterParams(ceilingDb = -0.8f, releaseMs = 80f),
                 ),
         )
     },
