@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "591399918826",
+    "project_id": "sonix-9589a",
+    "storage_bucket": "sonix-9589a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:591399918826:android:7f75f77774e2a4bf028b93",
+        "android_client_info": {
+          "package_name": "com.aistudio.voicepro.sonixk"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "591399918826-9g88f0ff6nr9pqvoargcb6k59t1pjq3r.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.voicepro.sonixk",
+            "certificate_hash": "50646916bf90255a04a3d7809a5c65cd8de71820"
+          }
+        },
+        {
+          "client_id": "591399918826-s9bj1so9evvvvhdccpnjcq68av23t29a.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBnpfeh1i2K-zFMZR96m_4ojDQyETewCsk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "591399918826-s9bj1so9evvvvhdccpnjcq68av23t29a.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
