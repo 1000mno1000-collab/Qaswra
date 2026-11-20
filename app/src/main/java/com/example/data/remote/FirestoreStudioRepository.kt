@@ -37,7 +37,7 @@ import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
@@ -386,7 +386,9 @@ class FirestoreStudioRepository(context: Context) {
     }
 
     fun observeCustomPresets(userId: String): Flow<List<StudioPreset>> {
-        val db = dbOrNull() ?: return flowOf(emptyList())
+        val db = dbOrNull() ?: return flow {
+            throw IllegalStateException("Firebase is not initialized")
+        }
         val path = "users/$userId/custom_presets"
         val snapshotFlow = runCatching {
             db.collection("users")
@@ -396,7 +398,7 @@ class FirestoreStudioRepository(context: Context) {
                 .snapshots()
         }.getOrElse { e ->
             handleFirestoreError(e, OperationType.LIST, path)
-            return flowOf(emptyList())
+            return flow { throw e }
         }
         return snapshotFlow
             .map { snapshot ->
@@ -421,18 +423,11 @@ class FirestoreStudioRepository(context: Context) {
                 }
             }
             .catch { e ->
-                val firestoreEx = generateSequence(e) { it.cause }
-                    .filterIsInstance<FirebaseFirestoreException>()
-                    .firstOrNull()
-                if (firestoreEx != null) {
-                    handleFirestoreError(firestoreEx, OperationType.LIST, path)
-                    emit(emptyList())
-                } else if (e is CancellationException) {
+                if (e is CancellationException) {
                     throw e
-                } else {
-                    handleFirestoreError(e, OperationType.LIST, path)
-                    emit(emptyList())
                 }
+                handleFirestoreError(e, OperationType.LIST, path)
+                throw e
             }
     }
 
@@ -507,7 +502,9 @@ class FirestoreStudioRepository(context: Context) {
     }
 
     fun observeDrafts(userId: String): Flow<List<CloudDraft>> {
-        val db = dbOrNull() ?: return flowOf(emptyList())
+        val db = dbOrNull() ?: return flow {
+            throw IllegalStateException("Firebase is not initialized")
+        }
         val path = "users/$userId/drafts"
         val snapshotFlow = runCatching {
             db.collection("users")
@@ -517,7 +514,7 @@ class FirestoreStudioRepository(context: Context) {
                 .snapshots()
         }.getOrElse { e ->
             handleFirestoreError(e, OperationType.LIST, path)
-            return flowOf(emptyList())
+            return flow { throw e }
         }
         return snapshotFlow
             .map { snapshot ->
@@ -547,18 +544,11 @@ class FirestoreStudioRepository(context: Context) {
                 }
             }
             .catch { e ->
-                val firestoreEx = generateSequence(e) { it.cause }
-                    .filterIsInstance<FirebaseFirestoreException>()
-                    .firstOrNull()
-                if (firestoreEx != null) {
-                    handleFirestoreError(firestoreEx, OperationType.LIST, path)
-                    emit(emptyList())
-                } else if (e is CancellationException) {
+                if (e is CancellationException) {
                     throw e
-                } else {
-                    handleFirestoreError(e, OperationType.LIST, path)
-                    emit(emptyList())
                 }
+                handleFirestoreError(e, OperationType.LIST, path)
+                throw e
             }
     }
 

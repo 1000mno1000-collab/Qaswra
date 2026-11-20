@@ -794,32 +794,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
         isCloudSyncedFlow.value = true
         cloudPresetsJob = viewModelScope.launch(safeCoroutineHandler) {
-            runCatching {
-                firestoreRepo.observeCustomPresets(uid)
-                    .catch { err ->
-                        Log.w("CloudSync", "Cloud presets listener warning: ${err.message}")
-                        emit(emptyList())
-                    }
-                    .collect { list ->
-                        cloudPresetsFlow.value = list
-                    }
-            }.onFailure { err ->
-                Log.w("CloudSync", "Failed attaching presets listener: ${err.message}")
-            }
+            firestoreRepo.observeCustomPresets(uid)
+                .catch { err ->
+                    if (err is CancellationException) throw err
+                    Log.w("CloudSync", "Cloud presets listener warning: ${err.message}", err)
+                    postBanner(t(_uiState.value.language, "cloud_sync_load_error"))
+                }
+                .collect { list ->
+                    cloudPresetsFlow.value = list
+                }
         }
         cloudDraftsJob = viewModelScope.launch(safeCoroutineHandler) {
-            runCatching {
-                firestoreRepo.observeDrafts(uid)
-                    .catch { err ->
-                        Log.w("CloudSync", "Cloud drafts listener warning: ${err.message}")
-                        emit(emptyList())
-                    }
-                    .collect { list ->
-                        cloudDraftsFlow.value = list
-                    }
-            }.onFailure { err ->
-                Log.w("CloudSync", "Failed attaching drafts listener: ${err.message}")
-            }
+            firestoreRepo.observeDrafts(uid)
+                .catch { err ->
+                    if (err is CancellationException) throw err
+                    Log.w("CloudSync", "Cloud drafts listener warning: ${err.message}", err)
+                    postBanner(t(_uiState.value.language, "cloud_sync_load_error"))
+                }
+                .collect { list ->
+                    cloudDraftsFlow.value = list
+                }
         }
     }
 
@@ -3308,8 +3302,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     postBanner("تم حفظ القالب \"$name\" في السحابة بنجاح")
                 } else {
                     Log.w("CloudSync", "Cloud preset save fell back to local storage", res.exceptionOrNull())
-                    runCatching { repository.saveCustomPreset(name, description, _uiState.value.dspConfig) }
-                    postBanner("تم حفظ القالب \"$name\" محلياً على جهازك")
+                    val localSaveSucceeded = runCatching {
+                        repository.saveCustomPreset(name, description, _uiState.value.dspConfig)
+                    }.isSuccess
+                    postBanner(
+                        t(
+                            _uiState.value.language,
+                            if (localSaveSucceeded) "cloud_sync_preset_local_fallback" else "cloud_sync_save_error",
+                        ),
+                    )
                 }
             } else {
                 repository.saveCustomPreset(name, description, _uiState.value.dspConfig)
@@ -3331,8 +3332,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     postBanner("تم حذف القالب المخصص من السحابة")
                 } else {
                     Log.w("CloudSync", "Cloud preset delete warning", res.exceptionOrNull())
-                    runCatching { repository.deleteCustomPreset(presetId) }
-                    postBanner("تعذّر الحذف السحابي مؤقتاً — تم الحذف محلياً")
+                    val localDeleteSucceeded = runCatching {
+                        repository.deleteCustomPreset(presetId)
+                    }.isSuccess
+                    postBanner(
+                        t(
+                            _uiState.value.language,
+                            if (localDeleteSucceeded) "cloud_sync_preset_delete_local" else "cloud_sync_delete_error",
+                        ),
+                    )
                 }
             } else {
                 repository.deleteCustomPreset(presetId)
@@ -3378,7 +3386,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     postBanner(t(lang, "draft_saved_success"))
                 } else {
                     Log.w("CloudSync", "Cloud draft save warning", res.exceptionOrNull())
-                    postBanner("تعذّر المزامنة السحابية حالياً — يمكنك مواصلة العمل محلياً بشكل طبيعي")
+                    postBanner(t(lang, "cloud_sync_save_error"))
                 }
             } finally {
                 _uiState.update { it.copy(isBusy = false) }
@@ -3420,7 +3428,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 postBanner("تم حذف المسودة السحابية")
             } else {
                 Log.w("CloudSync", "Cloud draft delete warning", res.exceptionOrNull())
-                postBanner("تعذّر حذف المسودة من السحابة حالياً")
+                postBanner(t(_uiState.value.language, "cloud_sync_delete_error"))
             }
         }
     }

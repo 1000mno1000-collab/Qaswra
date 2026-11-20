@@ -119,15 +119,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
-private const val OFFICIAL_GOOGLE_WEB_CLIENT_ID =
-    "71794555883-1j2b8ckt6mriegaem2vji34ov5vofpb4.apps.googleusercontent.com"
-
-private fun resolveGoogleWebClientId(context: Context): String {
+private fun resolveGoogleWebClientId(context: Context): String? {
     return runCatching { context.getString(R.string.default_web_client_id) }
         .getOrNull()
         ?.trim()
         ?.takeIf { it.isNotBlank() }
-        ?: OFFICIAL_GOOGLE_WEB_CLIENT_ID
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
@@ -188,9 +184,11 @@ fun AuthScreen(
     }
     val googleWebClientId = remember(context) { resolveGoogleWebClientId(context) }
     val signInWithGoogleRequest = remember(googleWebClientId) {
-        GetCredentialRequest.Builder()
-            .addCredentialOption(GetSignInWithGoogleOption.Builder(googleWebClientId).build())
-            .build()
+        googleWebClientId?.let { clientId ->
+            GetCredentialRequest.Builder()
+                .addCredentialOption(GetSignInWithGoogleOption.Builder(clientId).build())
+                .build()
+        }
     }
     var preparedHandle by remember {
         mutableStateOf<PrepareGetCredentialResponse.PendingGetCredentialHandle?>(null)
@@ -313,7 +311,8 @@ fun AuthScreen(
         }
         // Pre-fetch device Google accounts via CredentialManager.prepareGetCredential (API 34+)
         // so tapping "Sign in with Google" pops up accounts immediately without cold IPC delay.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+        if (signInWithGoogleRequest != null &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
             credentialManager != null
         ) {
             val handle = withContext(Dispatchers.IO) {
@@ -363,6 +362,17 @@ fun AuthScreen(
             if (isSubmitting || isGoogleLoading) return@AuthScreenContent
             isGoogleLoading = true
             errorMsg = null
+
+            val request = signInWithGoogleRequest
+            if (request == null) {
+                isGoogleLoading = false
+                errorMsg = if (isEn) {
+                    "Google Sign-In is not configured. Verify this app's Firebase configuration and Web OAuth client."
+                } else {
+                    "تسجيل الدخول عبر Google غير مهيأ. تحقق من إعداد Firebase ومعرّف عميل OAuth للويب."
+                }
+                return@AuthScreenContent
+            }
 
             val firebaseReady = SonixCrashGuard.ensureFirebaseInitialized(context)
             if (!firebaseReady) {
@@ -416,8 +426,6 @@ fun AuthScreen(
                 }
                 return@AuthScreenContent
             }
-
-            val request = signInWithGoogleRequest
 
             val activityContextWrapper = MutableContextWrapper(activity)
             val cachedHandle = preparedHandle
