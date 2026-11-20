@@ -366,6 +366,7 @@ fun decodeWavBytes(bytes: ByteArray): StereoAudioBuffer? {
 fun readStereoWavFile(
     file: File,
     preserveSampleRate: Boolean = false,
+    onProgress: (Float) -> Unit = {},
 ): StereoAudioBuffer? {
     if (!file.exists() || file.length() < 44L) return null
     return runCatching {
@@ -453,7 +454,17 @@ fun readStereoWavFile(
             if (frameBytes <= 0) return@use null
 
             val totalFramesLong = dataSizeLong / frameBytes
-            if (totalFramesLong <= 0L || totalFramesLong > 90_000_000L) return@use null
+            val outputFrameMultiplier = if (preserveSampleRate || sampleRate >= TARGET_SAMPLE_RATE) {
+                1.0
+            } else {
+                TARGET_SAMPLE_RATE.toDouble() / sampleRate.coerceAtLeast(1)
+            }
+            if (
+                totalFramesLong <= 0L ||
+                totalFramesLong.toDouble() * outputFrameMultiplier * 8.0 > 48.0 * 1024.0 * 1024.0
+            ) {
+                return@use null
+            }
             val totalFrames = totalFramesLong.toInt()
 
             val left = FloatArray(totalFrames)
@@ -462,6 +473,7 @@ fun readStereoWavFile(
             val streamBuf = ByteArray(framesPerChunk * frameBytes)
 
             var frameIdx = 0
+            var lastProgressMs = 0L
             while (frameIdx < totalFrames) {
                 val wantFrames = min(framesPerChunk, totalFrames - frameIdx)
                 val wantBytes = wantFrames * frameBytes
@@ -502,10 +514,21 @@ fun readStereoWavFile(
                     right[frameIdx] = rSample
                     frameIdx++
                 }
+                val now = System.currentTimeMillis()
+                if (now - lastProgressMs >= 50L || frameIdx >= totalFrames) {
+                    lastProgressMs = now
+                    onProgress(frameIdx.toFloat() / totalFrames)
+                }
             }
 
             val raw = StereoAudioBuffer(left, right, sampleRate)
-            if (!preserveSampleRate && sampleRate != TARGET_SAMPLE_RATE) resampleStereo(raw, TARGET_SAMPLE_RATE) else raw
+            val result = if (!preserveSampleRate && sampleRate != TARGET_SAMPLE_RATE) {
+                resampleStereo(raw, TARGET_SAMPLE_RATE)
+            } else {
+                raw
+            }
+            onProgress(1f)
+            result
         }
-    }.getOrNull()
+    }.onFailure { if (it is OutOfMemoryError) throw it }.getOrNull()
 }

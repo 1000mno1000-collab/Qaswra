@@ -4,8 +4,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
@@ -54,8 +52,6 @@ import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -405,7 +401,6 @@ fun AiVoiceOutputPlayerCard(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AiVoiceDialogueTab(
     state: AiVoiceStudioUiState,
@@ -578,40 +573,53 @@ fun AiVoiceDialogueTab(
                         state.selectedEngine.supportedEmotions()
                     }
 
-                    FlowRow(
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        turnSupportedEmotions.forEach { emo ->
-                            val selected = turn.emotion == emo
-                            FilterChip(
-                                selected = selected,
-                                onClick = {
-                                    focusManager.clearFocus()
-                                    onUpdateTurn(turn.id) { it.copy(emotion = emo) }
-                                },
-                                label = { Text(if (isEnglish) emo.titleEn else emo.titleAr, maxLines = 1) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.22f),
-                                    selectedLabelColor = StudioColors.Cyan,
-                                ),
-                            )
+                        CompactDropdownField(
+                            label = if (isEnglish) "Speaker Tone" else "نبرة المتحدث",
+                            selectedText = if (isEnglish) turn.emotion.titleEn else turn.emotion.titleAr,
+                            buttonTag = "dialogue_tone_${turn.id}",
+                            modifier = Modifier.weight(1f),
+                        ) { _, dismiss ->
+                            turnSupportedEmotions.forEach { emotion ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = if (isEnglish) emotion.titleEn else emotion.titleAr,
+                                            color = if (turn.emotion == emotion) StudioColors.Cyan else StudioColors.TextPrimary,
+                                        )
+                                    },
+                                    onClick = {
+                                        focusManager.clearFocus()
+                                        onUpdateTurn(turn.id) { it.copy(emotion = emotion) }
+                                        dismiss()
+                                    },
+                                )
+                            }
                         }
-                    }
-
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        AiDeliveryPace.entries.forEach { pace ->
-                            FilterChip(
-                                selected = turn.pace == pace,
-                                onClick = {
-                                    focusManager.clearFocus()
-                                    onUpdateTurn(turn.id) { it.copy(pace = pace) }
-                                },
-                                label = { Text(if (isEnglish) pace.titleEn else pace.titleAr, maxLines = 1) },
-                            )
+                        CompactDropdownField(
+                            label = if (isEnglish) "Speaking Pace" else "إيقاع الكلام",
+                            selectedText = if (isEnglish) turn.pace.titleEn else turn.pace.titleAr,
+                            buttonTag = "dialogue_pace_${turn.id}",
+                            modifier = Modifier.weight(1f),
+                        ) { _, dismiss ->
+                            AiDeliveryPace.entries.forEach { pace ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = if (isEnglish) pace.titleEn else pace.titleAr,
+                                            color = if (turn.pace == pace) StudioColors.Cyan else StudioColors.TextPrimary,
+                                        )
+                                    },
+                                    onClick = {
+                                        focusManager.clearFocus()
+                                        onUpdateTurn(turn.id) { it.copy(pace = pace) }
+                                        dismiss()
+                                    },
+                                )
+                            }
                         }
                     }
 
@@ -711,6 +719,7 @@ fun AiVoiceCharactersTab(
     onPickReferenceFile: () -> Unit,
     onUseStudioBufferAsReference: () -> Unit,
     onClearReference: () -> Unit,
+    onScriptChange: (String) -> Unit,
     onReferenceTranscriptChange: (String) -> Unit,
     onRightsConfirmedChange: (Boolean) -> Unit,
     onSaveOutputWav: () -> Unit,
@@ -748,6 +757,7 @@ fun AiVoiceCharactersTab(
                     ) {
                         OutlinedButton(
                             onClick = onPickReferenceFile,
+                            enabled = !state.isReferenceImporting,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1f)
@@ -760,7 +770,7 @@ fun AiVoiceCharactersTab(
                         }
                         OutlinedButton(
                             onClick = onUseStudioBufferAsReference,
-                            enabled = hasStudioAudio,
+                            enabled = hasStudioAudio && !state.isReferenceImporting,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1f)
@@ -831,6 +841,65 @@ fun AiVoiceCharactersTab(
                             )
                         }
                     }
+                    if (state.isReferenceImporting || state.referenceImportStatus.isNotBlank()) {
+                        when {
+                            state.referenceImportProgress != null -> {
+                                LinearProgressIndicator(
+                                    progress = { state.referenceImportProgress.coerceIn(0f, 1f) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = StudioColors.Cyan,
+                                )
+                                Text(
+                                    text = "${(state.referenceImportProgress.coerceIn(0f, 1f) * 100).roundToInt()}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioColors.TextSecondary,
+                                )
+                            }
+                            state.isReferenceImporting -> LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp)),
+                                color = StudioColors.Cyan,
+                            )
+                        }
+                        Text(
+                            text = state.referenceImportStatus,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = when {
+                                state.isReferenceImporting -> StudioColors.Cyan
+                                state.referenceImportProgress != null -> StudioColors.Emerald
+                                else -> StudioColors.RoseBright
+                            },
+                        )
+                    }
+                    OutlinedTextField(
+                        value = state.scriptText,
+                        onValueChange = onScriptChange,
+                        label = {
+                            Text(
+                                if (isEnglish) {
+                                    "Text to speak in the cloned voice"
+                                } else {
+                                    "النص المراد نطقه بالصوت المستنسخ"
+                                },
+                            )
+                        },
+                        minLines = 3,
+                        maxLines = 6,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = StudioColors.Cyan,
+                            unfocusedBorderColor = StudioColors.Border,
+                            focusedTextColor = StudioColors.TextPrimary,
+                            unfocusedTextColor = StudioColors.TextPrimary,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("ai_voice_clone_target_text"),
+                    )
                 } else {
                     Text(
                         text = if (isEnglish) {

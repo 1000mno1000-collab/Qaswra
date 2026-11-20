@@ -185,12 +185,14 @@ fun InAppAudioPickerScreen(
     var previewCachedFile by remember { mutableStateOf<File?>(null) }
     var previewCopyJob by remember { mutableStateOf<Job?>(null) }
     var previewCopyProgress by remember { mutableStateOf<Float?>(null) }
+    var previewCopyIndeterminate by remember { mutableStateOf(false) }
     var previewCopyName by remember { mutableStateOf<String?>(null) }
 
     fun stopPreview() {
         previewCopyJob?.cancel()
         previewCopyJob = null
         previewCopyProgress = null
+        previewCopyIndeterminate = false
         previewCopyName = null
         AudioPlayerManager.stop("picker_preview")
         runCatching { previewCachedFile?.delete() }
@@ -226,8 +228,10 @@ fun InAppAudioPickerScreen(
                 }
 
                 previewCopyProgress = 0f
+                previewCopyIndeterminate = false
                 val uploadOutcome = AudioFileUploader.copyAudioUriToCacheDetailed(context, uri) { info ->
                     previewCopyProgress = info.fraction.coerceIn(0f, 1f)
+                    previewCopyIndeterminate = info.totalBytes <= 0L
                 }
                 val uploaded = when (uploadOutcome) {
                     is AudioUploadOutcome.Success -> uploadOutcome.uploaded
@@ -238,6 +242,7 @@ fun InAppAudioPickerScreen(
                     }
                 }
                 previewCopyProgress = null
+                previewCopyIndeterminate = false
                 previewCachedFile = uploaded.file
                 val ok = AudioPlayerManager.playFile(
                     file = uploaded.file,
@@ -425,8 +430,9 @@ fun InAppAudioPickerScreen(
                     val isGlobalUpload = uiState.importProgress != null
                     val byteTransferActive = isGlobalUpload && !uiState.importBytesLabel.isNullOrBlank()
                     val byteFraction = uiState.importBytesProgress
-                    val shownProgress = if (isGlobalUpload) byteFraction ?: prog else prog
-                    val pct = (shownProgress.coerceIn(0f, 1f) * 100f).toInt()
+                    val isIndeterminate = (byteTransferActive && byteFraction == null) ||
+                        (!isGlobalUpload && previewCopyIndeterminate)
+                    val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = StudioColors.CardSurface,
@@ -452,7 +458,7 @@ fun InAppAudioPickerScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    text = if (byteTransferActive && byteFraction == null) {
+                                    text = if (isIndeterminate) {
                                         phaseLabel.orEmpty()
                                     } else {
                                         "$phaseLabel $pct%"
@@ -492,7 +498,7 @@ fun InAppAudioPickerScreen(
                                     }
                                 }
                             }
-                            if (byteTransferActive && byteFraction == null) {
+                            if (isIndeterminate) {
                                 LinearProgressIndicator(
                                     color = StudioColors.Cyan,
                                     trackColor = StudioColors.BgTop,
@@ -503,7 +509,7 @@ fun InAppAudioPickerScreen(
                                 )
                             } else {
                                 LinearProgressIndicator(
-                                    progress = { shownProgress.coerceIn(0f, 1f) },
+                                    progress = { prog.coerceIn(0f, 1f) },
                                     color = StudioColors.Cyan,
                                     trackColor = StudioColors.BgTop,
                                     modifier = Modifier

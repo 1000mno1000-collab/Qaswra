@@ -4,6 +4,20 @@ import org.json.JSONObject
 
 object AiVoicePromptBuilder {
 
+    fun normalizeTargetText(text: String, language: AiVoiceLanguage, dialect: AiArabicDialect): String {
+        val cleanText = text
+            .replace(Regex("</?[A-Za-z][A-Za-z0-9:_-]*(?:\\s+[^<>]*?)?\\s*/?>"), " ")
+            .trim()
+            .replace(Regex("\\s+"), " ")
+        if (language != AiVoiceLanguage.AR) return cleanText
+        return when (dialect) {
+            AiArabicDialect.MSA -> cleanText
+            AiArabicDialect.IRAQI, AiArabicDialect.SAUDI -> cleanText.replace('ق', 'گ')
+            AiArabicDialect.EGYPTIAN -> cleanText.replace('ج', 'گ')
+            AiArabicDialect.SYRIAN -> cleanText.replace('ق', 'ء')
+        }
+    }
+
     /**
      * Builds deterministic Style Conditioning instruction for VoxCPM2.
      */
@@ -12,6 +26,7 @@ object AiVoicePromptBuilder {
 
         val profile = request.voiceDescriptionPrompt.lowercase()
         val catHint = when {
+            request.category == AiVoiceCategory.CHILD -> "child speaker"
             "child" in profile || "طفل" in profile -> "child speaker"
             "elder" in profile || "مسن" in profile -> "elderly male speaker"
             request.category == AiVoiceCategory.MALE -> "male adult speaker"
@@ -19,6 +34,9 @@ object AiVoicePromptBuilder {
         }
         parts.add(catHint)
         parts.add("speaking ${request.language.titleEn}")
+        if (request.language == AiVoiceLanguage.EN) {
+            parts.add("English accent: ${request.englishAccent.titleEn}")
+        }
 
         val intensityLabel = when {
             request.emotionIntensity >= 0.80f -> "strong intense"
@@ -64,7 +82,7 @@ object AiVoicePromptBuilder {
         referenceAudioBase64: String? = null,
     ): JSONObject {
         val voxInstruction = buildVoxCpmInstruction(request)
-        val processedText = textChunk.trim()
+        val processedText = normalizeTargetText(textChunk, request.language, request.dialect)
 
         return JSONObject().apply {
             put("engine", request.engine.id)
@@ -72,8 +90,9 @@ object AiVoicePromptBuilder {
             put("text", processedText)
             put("raw_text", processedText)
             put("language", request.language.code)
-            put("dialect", "default")
-            put("dialect_hint", request.language.titleEn)
+            put("dialect", request.dialect.id)
+            put("dialect_hint", request.dialect.localeTag)
+            put("english_accent", request.englishAccent.id)
             put("category", request.category.id)
             put("voice_mode", if (!referenceAudioBase64.isNullOrBlank()) "clone" else "design")
             put("voice_description", request.voiceDescriptionPrompt.trim())
@@ -105,9 +124,12 @@ object AiVoicePromptBuilder {
     fun splitTextIntoChunks(text: String, maxCharsPerChunk: Int = 260): List<String> {
         val normalized = text.trim().replace(Regex("\\s+"), " ")
         if (normalized.isEmpty()) return emptyList()
-        if (normalized.length <= maxCharsPerChunk) return listOf(normalized)
+        val phraseBoundary = Regex("(?<=[.!؟?!\\n؛،,])\\s+")
+        if (normalized.length <= maxCharsPerChunk && !phraseBoundary.containsMatchIn(normalized)) {
+            return listOf(normalized)
+        }
 
-        val sentences = normalized.split(Regex("(?<=[.!؟?!\\n؛])\\s+"))
+        val sentences = normalized.split(phraseBoundary)
         val chunks = mutableListOf<String>()
         val current = StringBuilder()
 
@@ -135,6 +157,13 @@ object AiVoicePromptBuilder {
                 }
                 if (current.isNotEmpty()) current.append(' ')
                 current.append(s)
+            }
+            if (
+                (s.endsWith('،') || s.endsWith(',') || s.endsWith('؛') || s.endsWith(';')) &&
+                current.isNotEmpty()
+            ) {
+                chunks.add(current.toString().trim())
+                current.clear()
             }
         }
         if (current.isNotEmpty()) {

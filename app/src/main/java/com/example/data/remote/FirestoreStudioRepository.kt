@@ -457,12 +457,12 @@ class FirestoreStudioRepository(context: Context) {
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp(),
             )
-            val completed = withTimeoutOrNull(4500L) {
+            val completed = withTimeoutOrNull(30_000L) {
                 docRef.set(payload).await()
                 true
             }
             if (completed != true) {
-                val timeoutEx = SocketTimeoutException("Firestore write timed out after 4500ms at $path")
+                val timeoutEx = SocketTimeoutException("Firestore write timed out after 30000ms at $path")
                 handleFirestoreError(timeoutEx, OperationType.CREATE, path)
                 return Result.failure(timeoutEx)
             }
@@ -479,7 +479,7 @@ class FirestoreStudioRepository(context: Context) {
             ?: return Result.failure(IllegalStateException("Firebase is not initialized"))
         val path = "users/$userId/custom_presets/$docId"
         return try {
-            val completed = withTimeoutOrNull(4500L) {
+            val completed = withTimeoutOrNull(30_000L) {
                 db.collection("users")
                     .document(userId)
                     .collection("custom_presets")
@@ -489,7 +489,7 @@ class FirestoreStudioRepository(context: Context) {
                 true
             }
             if (completed != true) {
-                val timeoutEx = SocketTimeoutException("Firestore delete timed out after 4500ms at $path")
+                val timeoutEx = SocketTimeoutException("Firestore delete timed out after 30000ms at $path")
                 handleFirestoreError(timeoutEx, OperationType.DELETE, path)
                 return Result.failure(timeoutEx)
             }
@@ -584,7 +584,7 @@ class FirestoreStudioRepository(context: Context) {
                     "dspConfig" to DspConfigFirestoreMapper.toMap(config),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
-                withTimeoutOrNull(4500L) {
+                withTimeoutOrNull(30_000L) {
                     targetRef.update(updates).await()
                     true
                 }
@@ -599,13 +599,13 @@ class FirestoreStudioRepository(context: Context) {
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
-                withTimeoutOrNull(4500L) {
+                withTimeoutOrNull(30_000L) {
                     targetRef.set(payload).await()
                     true
                 }
             }
             if (completed != true) {
-                val timeoutEx = SocketTimeoutException("Firestore draft write timed out after 4500ms at $path")
+                val timeoutEx = SocketTimeoutException("Firestore draft write timed out after 30000ms at $path")
                 handleFirestoreError(timeoutEx, opType, path)
                 return Result.failure(timeoutEx)
             }
@@ -626,7 +626,7 @@ class FirestoreStudioRepository(context: Context) {
             ?: return Result.failure(IllegalStateException("Firebase is not initialized"))
         val path = "users/$userId/drafts/$draftId"
         return try {
-            val completed = withTimeoutOrNull(4500L) {
+            val completed = withTimeoutOrNull(30_000L) {
                 db.collection("users")
                     .document(userId)
                     .collection("drafts")
@@ -636,7 +636,7 @@ class FirestoreStudioRepository(context: Context) {
                 true
             }
             if (completed != true) {
-                val timeoutEx = SocketTimeoutException("Firestore draft delete timed out after 4500ms at $path")
+                val timeoutEx = SocketTimeoutException("Firestore draft delete timed out after 30000ms at $path")
                 handleFirestoreError(timeoutEx, OperationType.DELETE, path)
                 return Result.failure(timeoutEx)
             }

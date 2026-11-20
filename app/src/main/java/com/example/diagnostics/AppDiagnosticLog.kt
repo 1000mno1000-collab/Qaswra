@@ -2,6 +2,7 @@ package com.example.diagnostics
 
 import android.content.Context
 import android.util.Log
+import com.example.model.AppLanguage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -87,15 +88,16 @@ object AppDiagnosticLog {
         extraTrace: String? = null,
     ): AppDiagnosticEntry {
         val trace = buildTrace(throwable, extraTrace)
+        val memoryPressure = isMemoryPressure(errorCode, titleAr, titleEn, causeAr, causeEn, trace, throwable)
         val entry = AppDiagnosticEntry(
             id = UUID.randomUUID().toString(),
             severity = DiagnosticSeverity.RECOVERABLE,
-            titleAr = titleAr,
-            titleEn = titleEn,
-            causeAr = causeAr,
-            causeEn = causeEn,
+            titleAr = safeTitle(titleAr, memoryPressure, AppLanguage.AR),
+            titleEn = safeTitle(titleEn, memoryPressure, AppLanguage.EN),
+            causeAr = safeCause(causeAr, memoryPressure, AppLanguage.AR),
+            causeEn = safeCause(causeEn, memoryPressure, AppLanguage.EN),
             toolName = toolName.ifBlank { "Studio" },
-            errorCode = errorCode.ifBlank { throwable?.javaClass?.simpleName ?: "RECOVERABLE" },
+            errorCode = if (memoryPressure) "OOM_GUARD" else errorCode.ifBlank { throwable?.javaClass?.simpleName ?: "RECOVERABLE" },
             stackTrace = trace,
             timestampMs = System.currentTimeMillis(),
         )
@@ -115,15 +117,16 @@ object AppDiagnosticLog {
         requestUserRestartConsent: Boolean = true,
     ): AppDiagnosticEntry {
         val trace = buildTrace(throwable, extraTrace)
+        val memoryPressure = isMemoryPressure(errorCode, titleAr, titleEn, causeAr, causeEn, trace, throwable)
         val entry = AppDiagnosticEntry(
             id = UUID.randomUUID().toString(),
             severity = DiagnosticSeverity.CRITICAL,
-            titleAr = titleAr,
-            titleEn = titleEn,
-            causeAr = causeAr,
-            causeEn = causeEn,
+            titleAr = safeTitle(titleAr, memoryPressure, AppLanguage.AR),
+            titleEn = safeTitle(titleEn, memoryPressure, AppLanguage.EN),
+            causeAr = safeCause(causeAr, memoryPressure, AppLanguage.AR),
+            causeEn = safeCause(causeEn, memoryPressure, AppLanguage.EN),
             toolName = toolName.ifBlank { "System" },
-            errorCode = errorCode.ifBlank { throwable?.javaClass?.simpleName ?: "CRITICAL" },
+            errorCode = if (memoryPressure) "OOM_GUARD" else errorCode.ifBlank { throwable?.javaClass?.simpleName ?: "CRITICAL" },
             stackTrace = trace,
             timestampMs = System.currentTimeMillis(),
         )
@@ -169,19 +172,109 @@ object AppDiagnosticLog {
 
     fun formatFullReport(entry: AppDiagnosticEntry): String {
         return buildString {
-            appendLine("=== Sonix Technical Report ===")
-            appendLine("Tool: ${entry.toolName}")
-            appendLine("Severity: ${entry.severity.name}")
+            appendLine("Sonix Support Summary")
+            appendLine("Tool: Sonix audio processing")
             appendLine("Time: ${formatTimestamp(entry.timestampMs)}")
-            appendLine("Code: ${entry.errorCode}")
             appendLine("Occurrences: ${entry.occurrenceCount.coerceAtLeast(1)}")
-            appendLine("Title (AR): ${entry.titleAr}")
-            appendLine("Title (EN): ${entry.titleEn}")
-            appendLine("Cause (AR): ${entry.causeAr}")
-            appendLine("Cause (EN): ${entry.causeEn}")
-            appendLine("--- StackTrace / Details ---")
-            appendLine(entry.stackTrace)
+            appendLine("Summary: ${userFacingTitle(entry, AppLanguage.EN)}")
+            appendLine(userFacingCause(entry, AppLanguage.EN))
         }
+    }
+
+    fun userFacingTitle(entry: AppDiagnosticEntry, language: AppLanguage): String {
+        val candidate = if (language == AppLanguage.EN) entry.titleEn else entry.titleAr
+        val memoryPressure = isMemoryPressure(
+            entry.errorCode,
+            entry.titleAr,
+            entry.titleEn,
+            entry.causeAr,
+            entry.causeEn,
+            entry.stackTrace,
+            null,
+        )
+        return safeTitle(candidate, memoryPressure, language)
+    }
+
+    fun userFacingCause(entry: AppDiagnosticEntry, language: AppLanguage): String {
+        val candidate = if (language == AppLanguage.EN) entry.causeEn else entry.causeAr
+        val memoryPressure = isMemoryPressure(
+            entry.errorCode,
+            entry.titleAr,
+            entry.titleEn,
+            entry.causeAr,
+            entry.causeEn,
+            entry.stackTrace,
+            null,
+        )
+        return safeCause(candidate, memoryPressure, language)
+    }
+
+    fun userFacingTechnicalMessage(message: String, language: AppLanguage): String {
+        val memoryPressure = isMemoryPressure(
+            errorCode = "",
+            titleAr = "",
+            titleEn = "",
+            causeAr = message,
+            causeEn = message,
+            trace = message,
+            throwable = null,
+        )
+        return safeCause(message, memoryPressure, language)
+    }
+
+    private fun isMemoryPressure(
+        errorCode: String,
+        titleAr: String,
+        titleEn: String,
+        causeAr: String,
+        causeEn: String,
+        trace: String,
+        throwable: Throwable?,
+    ): Boolean {
+        val details = listOf(errorCode, titleAr, titleEn, causeAr, causeEn, trace, throwable?.toString().orEmpty())
+            .joinToString(" ")
+        return Regex(
+            "(?i)(outofmemoryerror|out of memory|failed to allocate|allocation failed|heap|memory pressure|oom[_ -]?guard)",
+        ).containsMatchIn(details)
+    }
+
+    private fun safeTitle(title: String, memoryPressure: Boolean, language: AppLanguage): String {
+        if (memoryPressure) {
+            return if (language == AppLanguage.EN) "Temporary memory pressure" else "ضغط مؤقت في الذاكرة"
+        }
+        if (isTechnicalDump(title)) {
+            return if (language == AppLanguage.EN) "Audio operation interrupted" else "تعذر إكمال العملية الصوتية"
+        }
+        return title.trim().take(100).ifBlank {
+            if (language == AppLanguage.EN) "Audio operation notice" else "تنبيه معالجة صوتية"
+        }
+    }
+
+    private fun safeCause(cause: String, memoryPressure: Boolean, language: AppLanguage): String {
+        if (memoryPressure) {
+            return if (language == AppLanguage.EN) {
+                "The operation was stopped to protect the app. Try a shorter audio clip."
+            } else {
+                "تم إيقاف العملية لحماية التطبيق. جرّب مقطعاً أقصر."
+            }
+        }
+        if (isTechnicalDump(cause)) {
+            return if (language == AppLanguage.EN) {
+                "The operation could not be completed. Please try again."
+            } else {
+                "تعذر إكمال العملية. يرجى المحاولة مرة أخرى."
+            }
+        }
+        return cause.trim().take(180).ifBlank {
+            if (language == AppLanguage.EN) "Please try the operation again." else "يرجى المحاولة مرة أخرى."
+        }
+    }
+
+    private fun isTechnicalDump(text: String): Boolean {
+        return text.length > 240 ||
+            text.contains('\n') ||
+            Regex("(?i)(outofmemoryerror|failed to allocate|java\\.|kotlin\\.|exception|stack trace|caused by:|ffmpeg.*(failed|error)|\\berror\\b|\\bfailed\\b)")
+                .containsMatchIn(text)
     }
 
     private fun buildTrace(throwable: Throwable?, extraTrace: String?): String {

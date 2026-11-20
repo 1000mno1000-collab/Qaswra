@@ -103,16 +103,18 @@ fun PresetsScreen(
                     onRedo = { viewModel.redoLastEdit() },
                 )
             },
-        )
-
-        StudioPreviewControlsBar(
-            uiState = uiState,
-            onHoldBypassChange = { viewModel.setHoldBypass(it) },
-            onToggleBypass = { viewModel.toggleBypass() },
-            onUndo = { viewModel.undoLastEdit() },
-            onRedo = { viewModel.redoLastEdit() },
-            onResetZero = { viewModel.resetAllEffects() },
-            onOpenSaveDraft = { saveDraftDialogOpen = true },
+            bottomContent = {
+                StudioPreviewControlsBar(
+                    uiState = uiState,
+                    onHoldBypassChange = { viewModel.setHoldBypass(it) },
+                    onToggleBypass = { viewModel.toggleBypass() },
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                    onResetZero = { viewModel.resetAllEffects() },
+                    onOpenSaveDraft = { saveDraftDialogOpen = true },
+                    embedded = true,
+                )
+            },
         )
 
         Row(
@@ -678,6 +680,21 @@ fun ProjectsExportScreen(
                         text = t(lang, "cloud_drafts_title"),
                         style = MaterialTheme.typography.titleMedium,
                         color = StudioColors.TextPrimary,
+                    )
+                }
+
+                if (uiState.isCloudSyncing) {
+                    Text(
+                        text = uiState.cloudSyncLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.Cyan,
+                    )
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(CircleShape),
+                        color = StudioColors.Cyan,
                     )
                 }
 

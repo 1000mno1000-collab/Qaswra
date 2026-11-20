@@ -79,6 +79,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.audio.aivoice.AiVoiceCharacter
+import com.example.audio.aivoice.AiArabicDialect
+import com.example.audio.aivoice.AiEnglishAccent
 import com.example.audio.aivoice.AiBreathCadence
 import com.example.audio.aivoice.AiVoiceEmotion
 import com.example.audio.aivoice.AiVoiceEngineKind
@@ -428,13 +430,15 @@ internal fun AiVoiceEngineSelectionCard(
 }
 
 // =========================================================================
-// Card 2: اختيار الصوت (رجالي / نسائي — 3 أصوات احترافية ثابتة لكل تبويب)
+// Card 2: اختيار اللغة واللهجة وفئة الصوت
 // =========================================================================
 @Composable
 internal fun AiVoiceGroup2VoiceSelectionCard(
     state: AiVoiceStudioUiState,
     isEnglish: Boolean,
     onSelectLanguage: (AiVoiceLanguage) -> Unit,
+    onSelectDialect: (AiArabicDialect) -> Unit,
+    onSelectEnglishAccent: (AiEnglishAccent) -> Unit,
     onSelectCharacter: (AiVoiceCharacter) -> Unit,
     onToggleFavorite: (String) -> Unit,
 ) {
@@ -481,7 +485,7 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                     )
                 }
 
-                // Compact language dropdown (Arabic / Global languages) without dialect clutter
+                // Compact dropdown for the four supported output languages.
                 Box(modifier = Modifier.widthIn(min = 120.dp, max = 160.dp)) {
                     CompactDropdownField(
                         label = if (isEnglish) "Language" else "اللغة",
@@ -518,7 +522,58 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                 }
             }
 
-            // Clean 2 Tabs: رجالي / نسائي
+            if (state.selectedLanguage == AiVoiceLanguage.AR) {
+                CompactDropdownField(
+                    label = if (isEnglish) "Arabic Dialect" else "اللهجة العربية",
+                    selectedText = if (isEnglish) state.selectedDialect.titleEn else state.selectedDialect.titleAr,
+                    buttonTag = "ai_voice_dialect_dropdown",
+                ) { _, dismiss ->
+                    AiArabicDialect.entries.forEach { dialect ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = if (isEnglish) dialect.titleEn else dialect.titleAr,
+                                    color = if (dialect == state.selectedDialect) StudioColors.Cyan else StudioColors.TextPrimary,
+                                )
+                            },
+                            onClick = {
+                                focusManager.clearFocus()
+                                onSelectDialect(dialect)
+                                dismiss()
+                            },
+                            modifier = Modifier.testTag("ai_voice_dialect_${dialect.id}"),
+                        )
+                    }
+                }
+            } else if (state.selectedLanguage == AiVoiceLanguage.EN) {
+                CompactDropdownField(
+                    label = if (isEnglish) "English Accent" else "اللكنة الإنجليزية",
+                    selectedText = if (isEnglish) {
+                        state.selectedEnglishAccent.titleEn
+                    } else {
+                        state.selectedEnglishAccent.titleAr
+                    },
+                    buttonTag = "ai_voice_english_accent_dropdown",
+                ) { _, dismiss ->
+                    AiEnglishAccent.entries.forEach { accent ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = if (isEnglish) accent.titleEn else accent.titleAr,
+                                    color = if (accent == state.selectedEnglishAccent) StudioColors.Cyan else StudioColors.TextPrimary,
+                                )
+                            },
+                            onClick = {
+                                focusManager.clearFocus()
+                                onSelectEnglishAccent(accent)
+                                dismiss()
+                            },
+                            modifier = Modifier.testTag("ai_voice_english_accent_${accent.id}"),
+                        )
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -632,6 +687,84 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AiVoiceCloudPackCard(
+    state: AiVoiceStudioUiState,
+    isEnglish: Boolean,
+    onPrepare: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+        border = BorderStroke(1.dp, StudioColors.Border),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("ai_voice_cloud_pack_card"),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = if (isEnglish) {
+                    "Caches the fixed voice profiles and a short warm-up sample; the VoxCPM2 model remains cloud-hosted."
+                } else {
+                    "يحفظ ملفات تعريف الأصوات الثابتة وعينة تهيئة قصيرة؛ يبقى نموذج VoxCPM2 مستضافاً سحابياً."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = StudioColors.TextSecondary,
+            )
+            Button(
+                onClick = onPrepare,
+                enabled = !state.isPreparingCloudVoicePack,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp)
+                    .testTag("ai_voice_prepare_cloud_pack_button"),
+            ) {
+                Icon(Icons.Rounded.CloudQueue, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (state.isPreparingCloudVoicePack) {
+                        if (isEnglish) "Preparing Cloud Voice Pack..." else "جاري تهيئة ملفات الصوت..."
+                    } else if (isEnglish) {
+                        "Download & Prepare Cloud Voice Pack"
+                    } else {
+                        "تحميل وتهيئة ملفات الصوت السحابية"
+                    },
+                    maxLines = 2,
+                )
+            }
+
+            if (state.cloudVoicePackProgress != null || state.cloudVoicePackStatus.isNotBlank()) {
+                state.cloudVoicePackProgress?.let { progress ->
+                    LinearProgressIndicator(
+                        progress = { progress.coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = if (state.cloudVoicePackReady) StudioColors.Emerald else StudioColors.Cyan,
+                    )
+                    Text(
+                        text = "${(progress.coerceIn(0f, 1f) * 100).roundToInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = StudioColors.TextSecondary,
+                    )
+                }
+                Text(
+                    text = state.cloudVoicePackStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (state.cloudVoicePackReady) StudioColors.Emerald else StudioColors.TextSecondary,
+                )
             }
         }
     }
@@ -1052,13 +1185,25 @@ internal fun AiVoiceStickyBottomActionBar(
                             .clip(RoundedCornerShape(3.dp)),
                     )
                     if (state.synthesisStatusLabel.isNotBlank()) {
-                        Text(
-                            text = state.synthesisStatusLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = StudioColors.Cyan,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = state.synthesisStatusLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioColors.Cyan,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "${(state.synthesisProgress.coerceIn(0f, 1f) * 100).roundToInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioColors.Cyan,
+                            )
+                        }
                     }
                 }
 

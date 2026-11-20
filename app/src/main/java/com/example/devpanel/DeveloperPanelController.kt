@@ -7,6 +7,7 @@ import com.example.audio.aivoice.AiDeliveryPace
 import com.example.audio.aivoice.AiDialogueTurn
 import com.example.audio.aivoice.AiVoiceCategory
 import com.example.audio.aivoice.AiVoiceCharacter
+import com.example.audio.aivoice.FIXED_DETERMINISTIC_SEED
 import com.example.audio.aivoice.AiVoiceEmotion
 import com.example.audio.aivoice.AiVoiceEngineKind
 import com.example.audio.aivoice.AiVoiceLanguage
@@ -525,6 +526,8 @@ class DeveloperPanelController(
             dialect = AiArabicDialect.MSA,
             preferredEngine = engineKind,
             voiceDescriptionPrompt = "رجل بصوت رصين واضح",
+            fixedSid = 0,
+            fixedSeed = FIXED_DETERMINISTIC_SEED,
         )
         val c2 = AiVoiceCharacter(
             id = "dev_test_char_2",
@@ -535,6 +538,8 @@ class DeveloperPanelController(
             dialect = AiArabicDialect.MSA,
             preferredEngine = engineKind,
             voiceDescriptionPrompt = "امرأة بصوت دافئ واضح",
+            fixedSid = 1,
+            fixedSeed = FIXED_DETERMINISTIC_SEED + 1,
         )
         val turns = listOf(
             AiDialogueTurn(id = "t1", characterId = c1.id, text = "أهلاً بكِ في الاختبار.", pauseAfterMs = 250),

@@ -11,6 +11,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -31,9 +32,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowDownward
-import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.BlurOn
+import androidx.compose.material.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Waves
@@ -62,22 +62,30 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -218,16 +226,18 @@ fun EchoReverbScreen(
                     },
                 )
             },
-        )
-
-        StudioPreviewControlsBar(
-            uiState = uiState,
-            onHoldBypassChange = { viewModel.setHoldBypass(it) },
-            onToggleBypass = { viewModel.toggleBypass() },
-            onUndo = { viewModel.undoLastEdit() },
-            onRedo = { viewModel.redoLastEdit() },
-            onResetZero = { viewModel.resetAllEffects() },
-            onOpenSaveDraft = { saveDraftDialogOpen = true },
+            bottomContent = {
+                StudioPreviewControlsBar(
+                    uiState = uiState,
+                    onHoldBypassChange = { viewModel.setHoldBypass(it) },
+                    onToggleBypass = { viewModel.toggleBypass() },
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                    onResetZero = { viewModel.resetAllEffects() },
+                    onOpenSaveDraft = { saveDraftDialogOpen = true },
+                    embedded = true,
+                )
+            },
         )
 
         // Simple / Pro Toggle
@@ -940,6 +950,8 @@ fun EffectsChainScreen(
 ) {
     val lang = uiState.language
     val chain = uiState.dspConfig.chain
+    val itemCenters = remember { mutableMapOf<EffectType, Float>() }
+    val latestChain by rememberUpdatedState(chain)
 
     StudioScrollColumn {
         StudioFocusTopBar(
@@ -1031,6 +1043,11 @@ fun EffectsChainScreen(
 
         chain.forEachIndexed { idx, slot ->
             val slotInteraction = remember { MutableInteractionSource() }
+            var isDragging by remember(slot.type) { mutableStateOf(false) }
+            var dragOffsetY by remember(slot.type) { mutableFloatStateOf(0f) }
+            var dragOriginY by remember(slot.type) { mutableFloatStateOf(0f) }
+            var dragStartIndex by remember(slot.type) { mutableIntStateOf(idx) }
+            var dragTargetIndex by remember(slot.type) { mutableIntStateOf(idx) }
             Card(
                 onClick = { onOpenEffect(slot.type) },
                 interactionSource = slotInteraction,
@@ -1044,19 +1061,65 @@ fun EffectsChainScreen(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .onGloballyPositioned { coordinates ->
+                        itemCenters[slot.type] = coordinates.positionInRoot().y + coordinates.size.height / 2f
+                    }
+                    .pointerInput(slot.type) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                val currentIndex = latestChain.indexOfFirst { it.type == slot.type }
+                                if (currentIndex >= 0) {
+                                    dragStartIndex = currentIndex
+                                    dragTargetIndex = currentIndex
+                                    dragOriginY = itemCenters[slot.type] ?: 0f
+                                    dragOffsetY = 0f
+                                    isDragging = true
+                                }
+                            },
+                            onDragEnd = {
+                                if (dragTargetIndex != dragStartIndex) {
+                                    viewModel.moveEffectInChain(dragStartIndex, dragTargetIndex)
+                                }
+                                isDragging = false
+                                dragOffsetY = 0f
+                            },
+                            onDragCancel = {
+                                isDragging = false
+                                dragOffsetY = 0f
+                            },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                dragOffsetY += amount.y
+                                val draggedCenter = dragOriginY + dragOffsetY
+                                val targetIndex = latestChain.indices.minByOrNull { candidate ->
+                                    val candidateCenter = itemCenters[latestChain[candidate].type]
+                                        ?: Float.POSITIVE_INFINITY
+                                    abs(candidateCenter - draggedCenter)
+                                }
+                                if (targetIndex != null) {
+                                    dragTargetIndex = targetIndex
+                                }
+                            },
+                        )
+                    }
+                    .graphicsLayer { translationY = dragOffsetY }
+                    .shadow(
+                        elevation = if (isDragging) 10.dp else 0.dp,
+                        shape = RoundedCornerShape(18.dp),
+                    )
                     .lit(slotInteraction, MaterialTheme.colorScheme.primary, selected = slot.enabled, cornerRadius = 18.dp)
                     .testTag("chain_slot_${slot.type.name.lowercase()}"),
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(34.dp)
+                            .size(28.dp)
                             .clip(CircleShape)
                             .background(if (slot.enabled) StudioColors.Cyan else StudioColors.BgMid),
                         contentAlignment = Alignment.Center,
@@ -1067,6 +1130,15 @@ fun EffectsChainScreen(
                             color = if (slot.enabled) StudioColors.BgTop else StudioColors.TextSecondary,
                         )
                     }
+
+                    Icon(
+                        imageVector = Icons.Rounded.DragIndicator,
+                        contentDescription = if (lang == AppLanguage.EN) "Reorder effect" else "سحب لإعادة ترتيب المؤثر",
+                        tint = if (isDragging) StudioColors.Cyan else StudioColors.TextMuted,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .testTag("chain_drag_handle_${slot.type.name.lowercase()}"),
+                    )
 
                     Column(
                         modifier = Modifier.weight(1f),
@@ -1088,40 +1160,6 @@ fun EffectsChainScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = if (slot.enabled) StudioColors.Cyan else StudioColors.TextMuted,
                         )
-                    }
-
-                    val upInteraction = remember { MutableInteractionSource() }
-                    IconButton(
-                        onClick = { viewModel.moveEffectInChain(idx, idx - 1) },
-                        enabled = idx > 0,
-                        interactionSource = upInteraction,
-                        colors = IconButtonDefaults.iconButtonColors(
-                            contentColor = StudioColors.TextSecondary,
-                            disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
-                        ),
-                        modifier = Modifier
-                            .size(48.dp)
-                            .lit(upInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                            .testTag("chain_up_${slot.type.name.lowercase()}"),
-                    ) {
-                        Icon(Icons.Rounded.ArrowUpward, contentDescription = t(lang, "move_up"), modifier = Modifier.size(18.dp))
-                    }
-
-                    val downInteraction = remember { MutableInteractionSource() }
-                    IconButton(
-                        onClick = { viewModel.moveEffectInChain(idx, idx + 1) },
-                        enabled = idx < chain.lastIndex,
-                        interactionSource = downInteraction,
-                        colors = IconButtonDefaults.iconButtonColors(
-                            contentColor = StudioColors.TextSecondary,
-                            disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
-                        ),
-                        modifier = Modifier
-                            .size(48.dp)
-                            .lit(downInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                            .testTag("chain_down_${slot.type.name.lowercase()}"),
-                    ) {
-                        Icon(Icons.Rounded.ArrowDownward, contentDescription = t(lang, "move_down"), modifier = Modifier.size(18.dp))
                     }
 
                     Switch(
@@ -1214,16 +1252,18 @@ fun EffectDetailScreen(
                     },
                 )
             },
-        )
-
-        StudioPreviewControlsBar(
-            uiState = uiState,
-            onHoldBypassChange = { viewModel.setHoldBypass(it) },
-            onToggleBypass = { viewModel.toggleBypass() },
-            onUndo = { viewModel.undoLastEdit() },
-            onRedo = { viewModel.redoLastEdit() },
-            onResetZero = { viewModel.resetAllEffects() },
-            onOpenSaveDraft = { saveDraftDialogOpen = true },
+            bottomContent = {
+                StudioPreviewControlsBar(
+                    uiState = uiState,
+                    onHoldBypassChange = { viewModel.setHoldBypass(it) },
+                    onToggleBypass = { viewModel.toggleBypass() },
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                    onResetZero = { viewModel.resetAllEffects() },
+                    onOpenSaveDraft = { saveDraftDialogOpen = true },
+                    embedded = true,
+                )
+            },
         )
 
         Card(

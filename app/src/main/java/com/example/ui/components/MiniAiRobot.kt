@@ -111,6 +111,7 @@ fun MiniAiRobotCompanion(
         when (language) {
             AppLanguage.EN -> if (cleanName != null) "Welcome back, $cleanName ✦" else "Welcome, Creator ✦"
             AppLanguage.FA -> if (cleanName != null) "خوش آمدی، $cleanName ✦" else "خوش آمدی هنرمند ✦"
+            AppLanguage.TR -> if (cleanName != null) "Tekrar hoş geldin, $cleanName ✦" else "Hoş geldin, üretici ✦"
             AppLanguage.AR -> if (cleanName != null) "أهلاً بك يا $cleanName ✦" else "أهلاً بك يا مبدع ✦"
         }
     }

@@ -142,13 +142,19 @@ object AudioFileUploader {
                         copiedBytes += read
 
                         val fraction = if (effectiveTotal > 0L) {
-                            (copiedBytes.toDouble() / effectiveTotal.toDouble()).toFloat().coerceIn(0f, 1f)
+                            (copiedBytes.toDouble() / effectiveTotal.toDouble()).toFloat().coerceIn(0f, 0.99f)
                         } else {
-                            (1f - 1f / (1f + copiedBytes / 524_288f)).coerceIn(0.04f, 0.96f)
+                            0f
                         }
-                        val pct = (fraction * 100f).roundToInt().coerceIn(0, 100)
+                        val pct = if (effectiveTotal > 0L) {
+                            (fraction * 100f).roundToInt().coerceIn(0, 99)
+                        } else {
+                            -1
+                        }
                         val now = System.currentTimeMillis()
-                        if ((pct != lastEmittedPct && now - lastEmittedMs >= 35L) || now - lastEmittedMs >= 90L || (effectiveTotal > 0L && copiedBytes >= effectiveTotal)) {
+                        if ((pct >= 0 && pct != lastEmittedPct && now - lastEmittedMs >= 35L) ||
+                            now - lastEmittedMs >= 90L
+                        ) {
                             lastEmittedPct = pct
                             lastEmittedMs = now
                             onProgress(
@@ -181,7 +187,7 @@ object AudioFileUploader {
                     }
                 }
 
-                val finalTotal = if (effectiveTotal > 0L) effectiveTotal else copiedBytes
+                val finalTotal = copiedBytes
                 com.example.audio.cache.SmartCacheManager.pruneManagedBuckets(context)
                 onProgress(
                     UploadProgressInfo(

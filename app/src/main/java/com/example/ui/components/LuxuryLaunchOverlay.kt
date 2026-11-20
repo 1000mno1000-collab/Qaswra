@@ -147,6 +147,7 @@ fun SonixLuxuryLaunchOverlay(
         val subtitle = when (language) {
             AppLanguage.AR -> "استوديو الهندسة الصوتية الاحترافي"
             AppLanguage.FA -> "استودیوی حرفه‌ای مهندسی صدا"
+            AppLanguage.TR -> "Profesyonel ses mühendisliği stüdyosu"
             AppLanguage.EN -> "MASTER AUDIO ENGINEERING STUDIO"
         }
 

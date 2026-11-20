@@ -49,9 +49,6 @@ sealed interface StudioRoute {
     data class AiToolDetail(val tool: AiToolType) : StudioRoute
 
     @Serializable
-    data object TtsStudio : StudioRoute
-
-    @Serializable
     data object AiVoiceStudio : StudioRoute
 
     @Serializable

@@ -13,11 +13,16 @@ import com.example.audio.aivoice.AiVoiceLanguage
 import com.example.audio.aivoice.AiVoicePromptBuilder
 import com.example.audio.aivoice.AiVoiceStudioUiState
 import com.example.audio.aivoice.AiVoiceSynthRequest
+import com.example.audio.aivoice.VoxCpm2CloudProvider
 import com.example.audio.aivoice.BUILT_IN_AI_VOICE_CHARACTERS
 import com.example.audio.aivoice.WavStitchSegment
 import com.example.audio.writeStereoWavFile
+import com.example.model.AppLanguage
 import com.example.model.StereoAudioBuffer
+import com.example.model.TTS_DIALECTS
 import kotlinx.serialization.json.Json
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -58,6 +63,144 @@ class AiVoiceStudioTests {
     }
 
     @Test
+    fun dialectNormalizerUsesOnlyTheSelectedArabicPronunciationRules() {
+        assertEquals(
+            "گواك الله، گال",
+            AiVoicePromptBuilder.normalizeTargetText(
+                "قواك الله، قال",
+                AiVoiceLanguage.AR,
+                AiArabicDialect.IRAQI,
+            ),
+        )
+        assertEquals(
+            "گواد",
+            AiVoicePromptBuilder.normalizeTargetText(
+                "جواد",
+                AiVoiceLanguage.AR,
+                AiArabicDialect.EGYPTIAN,
+            ),
+        )
+        assertEquals(
+            "ءال",
+            AiVoicePromptBuilder.normalizeTargetText(
+                "قال",
+                AiVoiceLanguage.AR,
+                AiArabicDialect.SYRIAN,
+            ),
+        )
+        assertEquals(
+            "قال",
+            AiVoicePromptBuilder.normalizeTargetText(
+                "قال",
+                AiVoiceLanguage.AR,
+                AiArabicDialect.MSA,
+            ),
+        )
+        assertEquals(
+            "قال",
+            AiVoicePromptBuilder.normalizeTargetText(
+                "قال",
+                AiVoiceLanguage.EN,
+                AiArabicDialect.IRAQI,
+            ),
+        )
+        assertEquals(
+            "گال",
+            AiVoicePromptBuilder.normalizeTargetText(
+                "<speak><prosody rate=\"slow\">قال</prosody></speak>",
+                AiVoiceLanguage.AR,
+                AiArabicDialect.IRAQI,
+            ),
+        )
+    }
+
+    @Test
+    fun backendTextPayloadContainsNormalizedTextWithoutVoiceInstructions() {
+        val request = AiVoiceSynthRequest(
+            engine = AiVoiceEngineKind.VOXCPM_2,
+            text = "قال",
+            language = AiVoiceLanguage.AR,
+            dialect = AiArabicDialect.SAUDI,
+            category = AiVoiceCategory.MALE,
+            voiceDescriptionPrompt = "Warm studio narrator",
+            emotion = AiVoiceEmotion.CALM,
+            emotionIntensity = 0.6f,
+            fixedSid = 4,
+            fixedSeed = 4246,
+        )
+
+        val payload = AiVoicePromptBuilder.buildBackendPayloadJson(request, request.text)
+
+        assertEquals("گال", payload.getString("text"))
+        assertEquals("گال", payload.getString("raw_text"))
+        assertEquals("saudi", payload.getString("dialect"))
+        assertEquals(4, payload.getInt("speaker_id"))
+        assertEquals(4246, payload.getInt("seed"))
+    }
+
+    @Test
+    fun publicSpaceKeepsStyleControlsSeparateFromTargetText() {
+        val request = AiVoiceSynthRequest(
+            engine = AiVoiceEngineKind.VOXCPM_2,
+            text = "قال",
+            language = AiVoiceLanguage.AR,
+            dialect = AiArabicDialect.IRAQI,
+            category = AiVoiceCategory.MALE,
+            voiceDescriptionPrompt = "Warm studio narrator",
+            emotion = AiVoiceEmotion.CALM,
+            emotionIntensity = 0.6f,
+            fixedSid = 4,
+            fixedSeed = 4246,
+        )
+        val params = JSONArray()
+            .put(JSONObject().put("parameter_name", "text"))
+            .put(JSONObject().put("parameter_name", "control"))
+            .put(JSONObject().put("parameter_name", "speaker_id"))
+            .put(JSONObject().put("parameter_name", "seed"))
+        val instruction = AiVoicePromptBuilder.buildVoxCpmInstruction(request)
+
+        val args = VoxCpm2CloudProvider().buildGradioDataArgs(params, "قال", instruction, request)
+
+        assertEquals("گال", args.getString(0))
+        assertTrue(!args.getString(0).contains("Warm"))
+        assertEquals(instruction, args.getString(1))
+        assertEquals(4, args.getInt(2))
+        assertEquals(4246, args.getInt(3))
+    }
+
+    @Test
+    fun voiceCatalogIsRestrictedAndIncludesDeterministicChildVoicesForEveryLanguage() {
+        assertEquals(
+            listOf(AppLanguage.AR, AppLanguage.EN, AppLanguage.TR, AppLanguage.FA),
+            AppLanguage.entries,
+        )
+        assertEquals(
+            listOf(AiVoiceLanguage.AR, AiVoiceLanguage.EN, AiVoiceLanguage.TR, AiVoiceLanguage.FA),
+            AiVoiceLanguage.entries,
+        )
+        assertEquals(
+            listOf("standard", "iraqi", "egyptian", "saudi", "syrian", "en_us", "persian", "turkish"),
+            TTS_DIALECTS.map { it.id },
+        )
+        assertEquals(
+            listOf(
+                AiArabicDialect.MSA,
+                AiArabicDialect.IRAQI,
+                AiArabicDialect.EGYPTIAN,
+                AiArabicDialect.SAUDI,
+                AiArabicDialect.SYRIAN,
+            ),
+            AiArabicDialect.entries,
+        )
+        val children = BUILT_IN_AI_VOICE_CHARACTERS.filter { it.category == AiVoiceCategory.CHILD }
+        assertEquals(AiVoiceLanguage.entries.toSet(), children.map { it.language }.toSet())
+        assertEquals(children.size, children.map { it.fixedSeed }.toSet().size)
+        assertEquals(children.size, children.map { it.fixedSid }.toSet().size)
+        assertEquals(BUILT_IN_AI_VOICE_CHARACTERS.size, BUILT_IN_AI_VOICE_CHARACTERS.map { it.fixedSeed }.toSet().size)
+        assertEquals(BUILT_IN_AI_VOICE_CHARACTERS.size, BUILT_IN_AI_VOICE_CHARACTERS.map { it.fixedSid }.toSet().size)
+    }
+
+    @Test
     fun chunkSplitterSplitsLongArabicParagraphsOnSentenceBoundaries() {
         val text = "الجملة الأولى في المشهد الدرامي تتحدث عن البداية! " +
             "هل سمعت الصوت القادِم من البعيد؟ " +
@@ -69,6 +212,14 @@ class AiVoiceStudioTests {
         assertTrue("Expected multiple chunks for long script", chunks.size >= 3)
         assertTrue(chunks.all { it.length <= 95 })
         assertTrue(chunks.joinToString(" ").contains("تختم الحوار بهدوء."))
+    }
+
+    @Test
+    fun chunkSplitterCreatesDeterministicBreathBoundariesAtCommas() {
+        assertEquals(
+            listOf("أهلاً بكم،", "نبدأ الآن."),
+            AiVoicePromptBuilder.splitTextIntoChunks("أهلاً بكم، نبدأ الآن."),
+        )
     }
 
     @Test

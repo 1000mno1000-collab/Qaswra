@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
-import android.provider.OpenableColumns
 import android.util.Log
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Immutable
@@ -39,6 +38,7 @@ import com.example.audio.ai.SmartAssistantAndSearch
 import com.example.audio.ai.SonixUnifiedAIEngine
 import com.example.audio.ai.ToolGuideResult
 import com.example.audio.aivoice.AiArabicDialect
+import com.example.audio.aivoice.AiEnglishAccent
 import com.example.audio.aivoice.AiBreathCadence
 import com.example.audio.aivoice.AiDeliveryPace
 import com.example.audio.aivoice.AiDialogueTurn
@@ -56,6 +56,7 @@ import com.example.audio.aivoice.AiVoiceSynthOutcome
 import com.example.audio.aivoice.AiVoiceSynthRequest
 import com.example.audio.aivoice.AiVoiceTimbre
 import com.example.audio.aivoice.AiVocalStyle
+import com.example.audio.aivoice.FIXED_DETERMINISTIC_SEED
 import com.example.audio.aivoice.defaultVocalStyle
 import com.example.audio.fx.StudioLuxuryAudioFilter
 import com.example.audio.fx.VoiceEffect
@@ -273,6 +274,8 @@ data class StudioUiState(
     val cloudDrafts: List<CloudDraft> = emptyList(),
     val activeCloudDraftId: String? = null,
     val isCloudSynced: Boolean = false,
+    val isCloudSyncing: Boolean = false,
+    val cloudSyncLabel: String = "",
     val previewWavPath: String? = null,
     val recordings: List<AudioRecordingItem> = emptyList(),
     val customPresets: List<StudioPreset> = emptyList(),
@@ -347,6 +350,7 @@ data class StudioUiState(
     val batchQueueState: BatchQueueUiState = BatchQueueUiState(),
     val localModelStatus: LocalModelStatus = LocalModelStatus(),
     val isVoiceAiConverting: Boolean = false,
+    val voiceAiProgress: Float? = null,
     val voiceAiStatusNote: String? = null,
     val smartMasterAnalyzingAi: Boolean = false,
     val transcriptionProgressLabel: String? = null,
@@ -385,6 +389,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 isOnlineTaskRunning = false,
                 onlineTaskLabel = "",
                 isVoiceAiConverting = false,
+                voiceAiProgress = null,
                 smartMasterAnalyzingAi = false,
                 importProgress = null,
                 importLabel = null,
@@ -468,11 +473,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val processingMutex = Mutex()
     private val undoStack = ArrayDeque<EditorSnapshot>()
     private val redoStack = ArrayDeque<EditorSnapshot>()
+    private val maxUndoPcmBytes = 96L * 1024L * 1024L
     private var lastDspSnapshotTimeMs: Long = 0L
     private var activeLiveToolSession: LiveToolSessionSnapshot? = null
     private var livePreviewStartedPlayback: Boolean = false
     private var preEntryClipGainDb: Float = 0f
     private var clipGainUnappliedDirty: Boolean = false
+    @Volatile private var editorPlaybackBoundsEnabled: Boolean = false
 
     private fun hasLoadedAudio(): Boolean {
         val buf = activeBuffer
@@ -483,6 +490,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun canStartPlayback(): Boolean = hasLoadedAudio()
+
+    fun setEditorPlaybackBoundsEnabled(enabled: Boolean) {
+        editorPlaybackBoundsEnabled = enabled
+        val state = _uiState.value
+        player.setPlaybackBounds(enabled, state.trimStart, state.trimEnd)
+        if (!enabled) {
+            player.setLoop(state.loopSelection || state.autoLoopOnPlayback, state.trimStart, state.trimEnd)
+        }
+    }
 
     private inline fun launchSingleFlightProcessing(
         purifyInitProgress: Float? = null,
@@ -514,7 +530,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         errorCode = t.javaClass.simpleName,
                         throwable = t,
                     )
-                    postBanner(t.localizedMessage ?: "تعذر إكمال المعالجة الصوتية")
+                    postBanner(
+                        AppDiagnosticLog.userFacingTechnicalMessage(
+                            t.localizedMessage ?: t.javaClass.simpleName,
+                            _uiState.value.language,
+                        ),
+                    )
                 } finally {
                     _uiState.update {
                         it.copy(
@@ -542,7 +563,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private var cloudPresetsJob: Job? = null
     private var cloudDraftsJob: Job? = null
     private var aiVoiceSynthJob: Job? = null
+    private var aiVoiceReferenceImportJob: Job? = null
+    private var aiVoiceCloudPackJob: Job? = null
     private var aiVoicePlaybackPollJob: Job? = null
+    private var characterVoicePreviewJob: Job? = null
     private var pendingExportResult: ExportedAudioResult? = null
     private var pendingSuggestedFileName: String? = null
     @Volatile private var defaultSaveTreeUriString: String? = null
@@ -996,14 +1020,39 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
+    private fun snapshotPcmBytes(snapshot: EditorSnapshot): Long =
+        snapshot.buffer?.frameCount?.toLong()?.times(8L) ?: 0L
+
+    private fun appendBoundedSnapshot(
+        stack: ArrayDeque<EditorSnapshot>,
+        snapshot: EditorSnapshot,
+    ): Boolean {
+        val snapshotBytes = snapshotPcmBytes(snapshot)
+        if (snapshotBytes > maxUndoPcmBytes) return false
+        while (
+            stack.isNotEmpty() &&
+            (stack.size >= 20 || stack.sumOf(::snapshotPcmBytes) + snapshotBytes > maxUndoPcmBytes)
+        ) {
+            stack.removeFirst()
+        }
+        stack.addLast(snapshot)
+        return true
+    }
+
     private fun pushUndoSnapshot(debounced: Boolean) {
         val now = System.currentTimeMillis()
         if (debounced && now - lastDspSnapshotTimeMs < 550L) {
             return
         }
         lastDspSnapshotTimeMs = if (debounced) now else 0L
-        if (undoStack.size >= 20) undoStack.removeFirst()
-        undoStack.addLast(currentSnapshot())
+        val snapshot = currentSnapshot()
+        if (!appendBoundedSnapshot(undoStack, snapshot)) {
+            undoStack.clear()
+            redoStack.clear()
+            _uiState.update { it.copy(canUndoEdit = false, canRedoEdit = false) }
+            postBanner("تم تقليص سجل التراجع لحماية الذاكرة في المقاطع الكبيرة")
+            return
+        }
         redoStack.clear()
     }
 
@@ -1078,6 +1127,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             sampleRate = meta.sampleRate,
             resetPosition = true,
         )
+        player.setPlaybackBounds(editorPlaybackBoundsEnabled, 0f, 1f)
         _uiState.update { cur ->
             cur.copy(
                 hasAudio = true,
@@ -1129,6 +1179,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         replaceActiveSourceFile(null)
         activeBuffer = buf
         player.setBuffer(buf, resetPosition = true)
+        player.setPlaybackBounds(editorPlaybackBoundsEnabled, 0f, 1f)
         val cleanCfg = DspConfig()
         if (resetDspOnNewEntry) {
             syncPlayerConfig(cleanCfg, holdBypass = false)
@@ -1338,15 +1389,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 undoStack.removeLast()
             }
             if (_uiState.value.dspConfig != snap.dspConfig) {
-                if (undoStack.size >= 20) undoStack.removeFirst()
-                undoStack.addLast(
-                    EditorSnapshot(
-                        buffer = srcBuffer,
-                        dspConfig = snap.dspConfig,
-                        activePresetId = snap.activePresetId,
-                        selectedPresetLabel = snap.selectedPresetLabel,
-                    ),
+                val snapshot = EditorSnapshot(
+                    buffer = srcBuffer,
+                    dspConfig = snap.dspConfig,
+                    activePresetId = snap.activePresetId,
+                    selectedPresetLabel = snap.selectedPresetLabel,
                 )
+                if (!appendBoundedSnapshot(undoStack, snapshot)) undoStack.clear()
                 redoStack.clear()
             }
             snap.committed = true
@@ -1718,15 +1767,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         viewModelScope.launch {
             val app = getApplication<Application>()
-            runCatching {
-                app.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    app.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
             }
-            val resolvedName = AudioFileUploader.resolveDisplayName(app, uri)
-                ?: resolveFileName(uri)
-                ?: "ملف مستورد"
+            val resolvedName = withContext(Dispatchers.IO) {
+                AudioFileUploader.resolveDisplayName(app, uri)
+            }
             _uiState.update {
                 it.copy(
                     isBusy = true,
@@ -1884,15 +1935,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun resolveFileName(uri: Uri): String? {
-        val resolver = getApplication<Application>().contentResolver
-        return runCatching {
-            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-                if (c.moveToFirst()) c.getString(0) else null
-            }
-        }.getOrNull() ?: uri.lastPathSegment
-    }
-
     // Purifier
     fun applyVoicePurifyPreset(preset: VoicePurifyPreset) {
         updateDspConfig { prev ->
@@ -2000,6 +2042,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(trimStart = cs, trimEnd = ce) }
         val st = _uiState.value
         player.setLoop(st.loopSelection || st.autoLoopOnPlayback, cs, ce)
+        player.setPlaybackBounds(editorPlaybackBoundsEnabled, cs, ce)
     }
 
     fun detectSpeechBoundsWithSileroVad() {
@@ -2084,6 +2127,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(trimStart = 0f, trimEnd = 1f) }
         val st = _uiState.value
         player.setLoop(st.loopSelection || st.autoLoopOnPlayback, 0f, 1f)
+        player.setPlaybackBounds(editorPlaybackBoundsEnabled, 0f, 1f)
         postBanner("تم تحديد المقطع بالكامل")
     }
 
@@ -2132,43 +2176,60 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         player.setClipGainDb(0f)
     }
 
+    private suspend fun applyTrimSelection(
+        autoFade: Boolean,
+        recordUndo: Boolean,
+    ): Boolean {
+        val src = activeBuffer
+        val srcFile = activeSourceFile
+        if (src == null && (srcFile == null || !srcFile.exists())) return false
+        val st = _uiState.value
+        if (src != null) {
+            val trimmed = withContext(Dispatchers.Default) {
+                trimToSelectionWithFade(src, st.trimStart, st.trimEnd, autoFadeSec = if (autoFade) 0.2f else 0f)
+            }
+            setActiveBuffer(trimmed, recordUndo = recordUndo)
+        } else if (srcFile != null) {
+            val durSec = (st.durationMs / 1000.0).coerceAtLeast(0.2)
+            val sSec = (durSec * st.trimStart).coerceIn(0.0, durSec - 0.05)
+            val eSec = (durSec * st.trimEnd).coerceIn(sSec + 0.05, durSec)
+            val segLen = (eSec - sSec).coerceAtLeast(0.05)
+            val fadeFilter = if (autoFade && segLen > 0.45) {
+                val fadeOutStart = String.format(Locale.US, "%.3f", segLen - 0.2)
+                "afade=t=in:st=0:d=0.2,afade=t=out:st=$fadeOutStart:d=0.2"
+            } else {
+                ""
+            }
+            val ssStr = String.format(Locale.US, "%.3f", sSec)
+            val toStr = String.format(Locale.US, "%.3f", eSec)
+            val outFile = processAudioFileWithFfmpeg(
+                context = getApplication(),
+                inputFile = srcFile,
+                preInputArgs = "-ss $ssStr -to $toStr",
+                audioFilter = fadeFilter,
+                toolName = "TrimKeepLarge",
+            ) ?: run {
+                postBanner("تعذر اقتصاص الملف الصوتي الكبير")
+                return false
+            }
+            applyProcessedDiskSourceFile(
+                outFile,
+                recordUndo = recordUndo,
+                appliedToolLabel = "TrimKeep",
+            )
+            if (activeSourceFile != outFile) return false
+        }
+        return true
+    }
+
     fun trimKeepSelection(autoFade: Boolean = false) {
         val src = activeBuffer
         val srcFile = activeSourceFile
         if (src == null && (srcFile == null || !srcFile.exists())) return
-        val st = _uiState.value
         launchSingleFlightProcessing {
-            if (src != null) {
-                val trimmed = withContext(Dispatchers.Default) {
-                    trimToSelectionWithFade(src, st.trimStart, st.trimEnd, autoFadeSec = if (autoFade) 0.2f else 0f)
-                }
-                setActiveBuffer(trimmed, recordUndo = true)
-            } else if (srcFile != null) {
-                val durSec = (st.durationMs / 1000.0).coerceAtLeast(0.2)
-                val sSec = (durSec * st.trimStart).coerceIn(0.0, durSec - 0.05)
-                val eSec = (durSec * st.trimEnd).coerceIn(sSec + 0.05, durSec)
-                val segLen = (eSec - sSec).coerceAtLeast(0.05)
-                val fadeFilter = if (autoFade && segLen > 0.45) {
-                    val fadeOutStart = String.format(Locale.US, "%.3f", segLen - 0.2)
-                    "afade=t=in:st=0:d=0.2,afade=t=out:st=$fadeOutStart:d=0.2"
-                } else {
-                    ""
-                }
-                val ssStr = String.format(Locale.US, "%.3f", sSec)
-                val toStr = String.format(Locale.US, "%.3f", eSec)
-                val outFile = processAudioFileWithFfmpeg(
-                    context = getApplication(),
-                    inputFile = srcFile,
-                    preInputArgs = "-ss $ssStr -to $toStr",
-                    audioFilter = fadeFilter,
-                    toolName = "TrimKeepLarge",
-                ) ?: run {
-                    postBanner("تعذر اقتصاص الملف الصوتي الكبير")
-                    return@launchSingleFlightProcessing
-                }
-                applyProcessedDiskSourceFile(outFile, appliedToolLabel = "TrimKeep")
+            if (applyTrimSelection(autoFade = autoFade, recordUndo = true)) {
+                postBanner("تم اقتصاص المقطع والإبقاء على الجزء المحدد")
             }
-            postBanner("تم اقتصاص المقطع والإبقاء على الجزء المحدد")
         }
     }
 
@@ -2366,15 +2427,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         viewModelScope.launch {
             val app = getApplication<Application>()
-            runCatching {
-                app.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    app.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
             }
-            val name = AudioFileUploader.resolveDisplayName(app, uri)
-                ?: resolveFileName(uri)
-                ?: "Background Track"
+            val name = withContext(Dispatchers.IO) {
+                AudioFileUploader.resolveDisplayName(app, uri)
+            }
             _uiState.update {
                 it.copy(
                     isBusy = true,
@@ -2832,15 +2895,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch {
             val app = getApplication<Application>()
-            runCatching {
-                app.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    app.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
             }
-            val name = AudioFileUploader.resolveDisplayName(app, uri)
-                ?: resolveFileName(uri)
-                ?: "Extra Clip"
+            val name = withContext(Dispatchers.IO) {
+                AudioFileUploader.resolveDisplayName(app, uri)
+            }
             _uiState.update {
                 it.copy(
                     isBusy = true,
@@ -2896,7 +2961,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             postBanner("تعذر قراءة المقطع الأساسي للدمج")
                             return@launch
                         }
-                        _uiState.update { it.copy(importProgress = 0.72f) }
                         val mergedFile = mixAudioFilesWithFfmpeg(
                             context = app,
                             primaryFile = f1,
@@ -2908,7 +2972,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             postBanner("تعذر دمج الملف الصوتي الكبير عبر FFmpeg")
                             return@launch
                         }
-                        _uiState.update { it.copy(importProgress = 0.90f) }
                         applyProcessedDiskSourceFile(mergedFile, appliedToolLabel = "AppendClip")
                         _uiState.update { it.copy(importProgress = 1.0f) }
                         postBanner("تم دمج المقطع الصوتي في نهاية الصوت بنجاح")
@@ -2934,7 +2997,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         postBanner("تعذر فك ترميز المقطع الإضافي للدمج: ملف فارغ (0 إطارات)")
                         return@launch
                     }
-                    _uiState.update { it.copy(importProgress = 0.90f) }
                     val merged = mergeClipsStreamingOnDisk(app, src, extra, crossfadeMs = 15)
                     setActiveBuffer(merged, recordUndo = true)
                     _uiState.update { it.copy(importProgress = 1.0f) }
@@ -3031,8 +3093,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun undoLastEdit() {
         val prev = undoStack.removeLastOrNull() ?: return
         lastDspSnapshotTimeMs = 0L
-        if (redoStack.size >= 20) redoStack.removeFirst()
-        redoStack.addLast(currentSnapshot())
+        appendBoundedSnapshot(redoStack, currentSnapshot())
 
         val bufferChanged = prev.buffer != null && prev.buffer !== activeBuffer
         if (bufferChanged) {
@@ -3075,8 +3136,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun redoLastEdit() {
         val next = redoStack.removeLastOrNull() ?: return
         lastDspSnapshotTimeMs = 0L
-        if (undoStack.size >= 20) undoStack.removeFirst()
-        undoStack.addLast(currentSnapshot())
+        appendBoundedSnapshot(undoStack, currentSnapshot())
 
         val bufferChanged = next.buffer != null && next.buffer !== activeBuffer
         if (bufferChanged) {
@@ -3147,11 +3207,36 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun saveEditsPermanent() {
-        undoStack.clear()
-        redoStack.clear()
-        lastDspSnapshotTimeMs = 0L
-        _uiState.update { it.copy(canUndoEdit = false, canRedoEdit = false) }
-        saveCurrentProject()
+        val state = _uiState.value
+        val selectionChanged = state.trimStart > 0.0005f || state.trimEnd < 0.9995f
+        launchSingleFlightProcessing {
+            if (selectionChanged && !applyTrimSelection(autoFade = false, recordUndo = false)) {
+                return@launchSingleFlightProcessing
+            }
+            undoStack.clear()
+            redoStack.clear()
+            lastDspSnapshotTimeMs = 0L
+            val current = _uiState.value
+            val saved = repository.saveProject(
+                existingId = current.activeProjectId,
+                name = current.activeProjectName,
+                buffer = activeBuffer,
+                config = current.dspConfig,
+            )
+            _uiState.update {
+                it.copy(
+                    activeProjectId = saved.id,
+                    activeProjectName = saved.name,
+                    canUndoEdit = false,
+                    canRedoEdit = false,
+                    hasUnsavedChanges = false,
+                )
+            }
+            postBanner(
+                if (selectionChanged) "تم حفظ التعديلات وتحديث الموجة للمقطع المحدد"
+                else "تم حفظ المشروع بنجاح",
+            )
+        }
     }
 
     fun newProject() {
@@ -3301,22 +3386,38 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(safeCoroutineHandler) {
             val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
             if (!uid.isNullOrBlank()) {
-                val res = runCatching {
-                    firestoreRepo.saveCustomPreset(uid, name, description, _uiState.value.dspConfig)
-                }.getOrElse { Result.failure(it) }
-                if (res.isSuccess) {
-                    postBanner("تم حفظ القالب \"$name\" في السحابة بنجاح")
-                } else {
-                    Log.w("CloudSync", "Cloud preset save fell back to local storage", res.exceptionOrNull())
-                    val localSaveSucceeded = runCatching {
-                        repository.saveCustomPreset(name, description, _uiState.value.dspConfig)
-                    }.isSuccess
-                    postBanner(
-                        t(
-                            _uiState.value.language,
-                            if (localSaveSucceeded) "cloud_sync_preset_local_fallback" else "cloud_sync_save_error",
-                        ),
+                if (_uiState.value.isCloudSyncing) {
+                    postBanner("تجري مزامنة سحابية أخرى حالياً")
+                    return@launch
+                }
+                val lang = _uiState.value.language
+                _uiState.update {
+                    it.copy(
+                        isCloudSyncing = true,
+                        cloudSyncLabel = if (lang == AppLanguage.EN) "Saving preset to cloud..." else "جاري حفظ القالب سحابياً...",
                     )
+                }
+                postBanner(if (lang == AppLanguage.EN) "Saving preset to cloud..." else "جاري حفظ القالب في السحابة...")
+                try {
+                    val res = runCatching {
+                        firestoreRepo.saveCustomPreset(uid, name, description, _uiState.value.dspConfig)
+                    }.getOrElse { Result.failure(it) }
+                    if (res.isSuccess) {
+                        postBanner("تم حفظ القالب \"$name\" في السحابة بنجاح")
+                    } else {
+                        Log.w("CloudSync", "Cloud preset save fell back to local storage", res.exceptionOrNull())
+                        val localSaveSucceeded = runCatching {
+                            repository.saveCustomPreset(name, description, _uiState.value.dspConfig)
+                        }.isSuccess
+                        postBanner(
+                            t(
+                                _uiState.value.language,
+                                if (localSaveSucceeded) "cloud_sync_preset_local_fallback" else "cloud_sync_save_error",
+                            ),
+                        )
+                    }
+                } finally {
+                    _uiState.update { it.copy(isCloudSyncing = false, cloudSyncLabel = "") }
                 }
             } else {
                 repository.saveCustomPreset(name, description, _uiState.value.dspConfig)
@@ -3331,22 +3432,38 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val match = _uiState.value.customPresets.firstOrNull { it.id == presetId }
             val cloudDocId = match?.cloudDocId
             if (!uid.isNullOrBlank() && !cloudDocId.isNullOrBlank()) {
-                val res = runCatching {
-                    firestoreRepo.deleteCustomPreset(uid, cloudDocId)
-                }.getOrElse { Result.failure(it) }
-                if (res.isSuccess) {
-                    postBanner("تم حذف القالب المخصص من السحابة")
-                } else {
-                    Log.w("CloudSync", "Cloud preset delete warning", res.exceptionOrNull())
-                    val localDeleteSucceeded = runCatching {
-                        repository.deleteCustomPreset(presetId)
-                    }.isSuccess
-                    postBanner(
-                        t(
-                            _uiState.value.language,
-                            if (localDeleteSucceeded) "cloud_sync_preset_delete_local" else "cloud_sync_delete_error",
-                        ),
+                if (_uiState.value.isCloudSyncing) {
+                    postBanner("تجري مزامنة سحابية أخرى حالياً")
+                    return@launch
+                }
+                val lang = _uiState.value.language
+                _uiState.update {
+                    it.copy(
+                        isCloudSyncing = true,
+                        cloudSyncLabel = if (lang == AppLanguage.EN) "Deleting cloud preset..." else "جاري حذف القالب السحابي...",
                     )
+                }
+                postBanner(if (lang == AppLanguage.EN) "Deleting cloud preset..." else "جاري حذف القالب من السحابة...")
+                try {
+                    val res = runCatching {
+                        firestoreRepo.deleteCustomPreset(uid, cloudDocId)
+                    }.getOrElse { Result.failure(it) }
+                    if (res.isSuccess) {
+                        postBanner("تم حذف القالب المخصص من السحابة")
+                    } else {
+                        Log.w("CloudSync", "Cloud preset delete warning", res.exceptionOrNull())
+                        val localDeleteSucceeded = runCatching {
+                            repository.deleteCustomPreset(presetId)
+                        }.isSuccess
+                        postBanner(
+                            t(
+                                _uiState.value.language,
+                                if (localDeleteSucceeded) "cloud_sync_preset_delete_local" else "cloud_sync_delete_error",
+                            ),
+                        )
+                    }
+                } finally {
+                    _uiState.update { it.copy(isCloudSyncing = false, cloudSyncLabel = "") }
                 }
             } else {
                 repository.deleteCustomPreset(presetId)
@@ -3364,10 +3481,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             postBanner(t(lang, "cloud_drafts_signin_hint"))
             return
         }
+        if (_uiState.value.isCloudSyncing) {
+            postBanner(if (lang == AppLanguage.EN) "A cloud sync is already in progress." else "تجري مزامنة سحابية أخرى حالياً")
+            return
+        }
         val st = _uiState.value
         val presetName = st.selectedPresetLabel.ifBlank { st.activeProjectName }
         viewModelScope.launch(safeCoroutineHandler) {
-            _uiState.update { it.copy(isBusy = true) }
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    isCloudSyncing = true,
+                    cloudSyncLabel = if (lang == AppLanguage.EN) "Saving project to cloud..." else "جاري حفظ المشروع سحابياً...",
+                )
+            }
+            postBanner(if (lang == AppLanguage.EN) "Saving project to cloud..." else "جاري حفظ المشروع في السحابة...")
             try {
                 val res = runCatching {
                     firestoreRepo.saveDraft(
@@ -3395,7 +3523,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     postBanner(t(lang, "cloud_sync_save_error"))
                 }
             } finally {
-                _uiState.update { it.copy(isBusy = false) }
+                _uiState.update {
+                    it.copy(isBusy = false, isCloudSyncing = false, cloudSyncLabel = "")
+                }
             }
         }
     }
@@ -3423,18 +3553,34 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteCloudDraft(draftId: String) {
         val uid = runCatching { Firebase.auth.currentUser?.uid }.getOrNull() ?: return
+        if (_uiState.value.isCloudSyncing) {
+            postBanner("تجري مزامنة سحابية أخرى حالياً")
+            return
+        }
         viewModelScope.launch(safeCoroutineHandler) {
-            val res = runCatching {
-                firestoreRepo.deleteDraft(uid, draftId)
-            }.getOrElse { Result.failure(it) }
-            if (res.isSuccess) {
-                if (_uiState.value.activeCloudDraftId == draftId) {
-                    _uiState.update { it.copy(activeCloudDraftId = null) }
+            val lang = _uiState.value.language
+            _uiState.update {
+                it.copy(
+                    isCloudSyncing = true,
+                    cloudSyncLabel = if (lang == AppLanguage.EN) "Deleting cloud project..." else "جاري حذف المشروع السحابي...",
+                )
+            }
+            postBanner(if (lang == AppLanguage.EN) "Deleting cloud project..." else "جاري حذف المشروع من السحابة...")
+            try {
+                val res = runCatching {
+                    firestoreRepo.deleteDraft(uid, draftId)
+                }.getOrElse { Result.failure(it) }
+                if (res.isSuccess) {
+                    if (_uiState.value.activeCloudDraftId == draftId) {
+                        _uiState.update { it.copy(activeCloudDraftId = null) }
+                    }
+                    postBanner("تم حذف المسودة السحابية")
+                } else {
+                    Log.w("CloudSync", "Cloud draft delete warning", res.exceptionOrNull())
+                    postBanner(t(_uiState.value.language, "cloud_sync_delete_error"))
                 }
-                postBanner("تم حذف المسودة السحابية")
-            } else {
-                Log.w("CloudSync", "Cloud draft delete warning", res.exceptionOrNull())
-                postBanner(t(_uiState.value.language, "cloud_sync_delete_error"))
+            } finally {
+                _uiState.update { it.copy(isCloudSyncing = false, cloudSyncLabel = "") }
             }
         }
     }
@@ -4721,12 +4867,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun toggleToolBufferPreview(
         toolLabel: String,
         computePreview: suspend () -> StereoAudioBuffer?,
-    ) {
+    ): Job? {
         if (_uiState.value.isToolPreviewPlaying && AudioPlayerManager.isPlaying("tool_preview")) {
             stopToolPreview()
-            return
+            return null
         }
-        viewModelScope.launch(safeCoroutineHandler) {
+        return viewModelScope.launch(safeCoroutineHandler) {
             stopToolPreview()
             player.pause()
             stopMixPreviewPlayer()
@@ -4752,6 +4898,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     stopToolPreview()
                     postBanner("تعذر تشغيل المعاينة")
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (t: Throwable) {
                 AppDiagnosticLog.logRecoverable(
                     toolName = toolLabel,
@@ -5032,15 +5180,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun extractAudioFromVideoUri(videoUri: Uri) {
         viewModelScope.launch {
             val app = getApplication<Application>()
-            runCatching {
-                app.contentResolver.takePersistableUriPermission(
-                    videoUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    app.contentResolver.takePersistableUriPermission(
+                        videoUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
             }
-            val resolvedName = AudioFileUploader.resolveDisplayName(app, videoUri)
-                ?: resolveFileName(videoUri)
-                ?: "فيديو مستورد"
+            val resolvedName = withContext(Dispatchers.IO) {
+                AudioFileUploader.resolveDisplayName(app, videoUri)
+            }
             _uiState.update {
                 it.copy(
                     isBusy = true,
@@ -5861,6 +6011,251 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+    }
+
+    fun previewCharacterVoiceWithVox(
+        text: String,
+        language: AiVoiceLanguage,
+        dialect: AiArabicDialect,
+        englishAccent: AiEnglishAccent,
+        persona: TtsVoicePersona?,
+        acousticMode: TtsPersonaAcousticMode,
+        pitchSemitones: Float,
+        formantShift: Float,
+        warmthDb: Float,
+        presenceDb: Float,
+        styleIntensity: Float,
+    ) {
+        if (text.isBlank()) {
+            postBanner(if (_uiState.value.language == AppLanguage.EN) "Enter text to preview." else "أدخل النص لمعاينته.")
+            return
+        }
+        characterVoicePreviewJob = toggleToolBufferPreview("Vox Character Preview") {
+            _uiState.update {
+                it.copy(isVoiceAiConverting = true, voiceAiProgress = 0.02f, voiceAiStatusNote = null)
+            }
+            try {
+                synthesizeCharacterVoiceWithVox(
+                    text = text,
+                    language = language,
+                    dialect = dialect,
+                    englishAccent = englishAccent,
+                    persona = persona,
+                    acousticMode = acousticMode,
+                    pitchSemitones = pitchSemitones,
+                    formantShift = formantShift,
+                    warmthDb = warmthDb,
+                    presenceDb = presenceDb,
+                    styleIntensity = styleIntensity,
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                val message = e.localizedMessage ?: e.javaClass.simpleName
+                _uiState.update { it.copy(voiceAiStatusNote = message, voiceAiProgress = null) }
+                postBanner(if (_uiState.value.language == AppLanguage.EN) "VoxCPM2 preview failed: $message" else "فشلت معاينة VoxCPM2: $message")
+                null
+            } finally {
+                _uiState.update { it.copy(isVoiceAiConverting = false) }
+            }
+        }
+    }
+
+    fun cancelCharacterVoiceWithVox() {
+        characterVoicePreviewJob?.cancel()
+        characterVoicePreviewJob = null
+        activeOnlineJob?.cancel()
+        stopToolPreview()
+        _uiState.update {
+            it.copy(
+                isVoiceAiConverting = false,
+                voiceAiProgress = null,
+                voiceAiStatusNote = if (_uiState.value.language == AppLanguage.EN) {
+                    "VoxCPM2 operation canceled."
+                } else {
+                    "تم إلغاء عملية VoxCPM2."
+                },
+            )
+        }
+    }
+
+    fun applyCharacterVoiceWithVox(
+        text: String,
+        language: AiVoiceLanguage,
+        dialect: AiArabicDialect,
+        englishAccent: AiEnglishAccent,
+        persona: TtsVoicePersona?,
+        acousticMode: TtsPersonaAcousticMode,
+        pitchSemitones: Float,
+        formantShift: Float,
+        warmthDb: Float,
+        presenceDb: Float,
+        styleIntensity: Float,
+    ) {
+        if (text.isBlank()) {
+            postBanner(if (_uiState.value.language == AppLanguage.EN) "Enter text to create a voice clip." else "أدخل النص لإنشاء المقطع الصوتي.")
+            return
+        }
+        characterVoicePreviewJob?.cancel()
+        characterVoicePreviewJob = null
+        activeOnlineJob?.cancel()
+        activeOnlineJob = viewModelScope.launch(safeCoroutineHandler) {
+            stopToolPreview()
+            player.pause()
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    isVoiceAiConverting = true,
+                    voiceAiProgress = 0.02f,
+                    isOnlineTaskRunning = true,
+                    onlineTaskLabel = "VoxCPM2 Character Voice",
+                    voiceAiStatusNote = null,
+                )
+            }
+            try {
+                val buffer = synthesizeCharacterVoiceWithVox(
+                    text = text,
+                    language = language,
+                    dialect = dialect,
+                    englishAccent = englishAccent,
+                    persona = persona,
+                    acousticMode = acousticMode,
+                    pitchSemitones = pitchSemitones,
+                    formantShift = formantShift,
+                    warmthDb = warmthDb,
+                    presenceDb = presenceDb,
+                    styleIntensity = styleIntensity,
+                )
+                setActiveBuffer(buffer, recordUndo = activeBuffer != null)
+                _uiState.update {
+                    it.copy(
+                        voiceAiProgress = 1f,
+                        voiceAiStatusNote = if (_uiState.value.language == AppLanguage.EN) {
+                            "VoxCPM2 voice is ready in the studio."
+                        } else {
+                            "اكتمل إنشاء الصوت عبر VoxCPM2 وأصبح جاهزاً في الاستوديو."
+                        },
+                    )
+                }
+                postBanner(if (_uiState.value.language == AppLanguage.EN) "VoxCPM2 character voice added to the studio." else "تمت إضافة صوت الشخصية من VoxCPM2 إلى الاستوديو.")
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                val message = e.localizedMessage ?: e.javaClass.simpleName
+                _uiState.update { it.copy(voiceAiStatusNote = message, voiceAiProgress = null) }
+                postBanner(if (_uiState.value.language == AppLanguage.EN) "VoxCPM2 conversion failed: $message" else "فشل تحويل VoxCPM2: $message")
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isVoiceAiConverting = false,
+                        isOnlineTaskRunning = false,
+                        onlineTaskLabel = "",
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun synthesizeCharacterVoiceWithVox(
+        text: String,
+        language: AiVoiceLanguage,
+        dialect: AiArabicDialect,
+        englishAccent: AiEnglishAccent,
+        persona: TtsVoicePersona?,
+        acousticMode: TtsPersonaAcousticMode,
+        pitchSemitones: Float,
+        formantShift: Float,
+        warmthDb: Float,
+        presenceDb: Float,
+        styleIntensity: Float,
+    ): StereoAudioBuffer {
+        val style = persona?.defaultStyle ?: TtsDeliveryStyle.NATURAL_WARM
+        val category = when {
+            persona?.id == "child_voice" -> AiVoiceCategory.CHILD
+            persona?.gender == TtsGender.FEMALE -> AiVoiceCategory.FEMALE
+            else -> AiVoiceCategory.MALE
+        }
+        val request = AiVoiceSynthRequest(
+            engine = AiVoiceEngineKind.VOXCPM_2,
+            text = text.trim(),
+            language = language,
+            dialect = dialect,
+            englishAccent = englishAccent,
+            category = category,
+            voiceDescriptionPrompt = listOfNotNull(
+                persona?.let { if (language == AiVoiceLanguage.AR) it.descAr else it.descEn },
+                if (language == AiVoiceLanguage.AR) acousticMode.descAr else acousticMode.descEn,
+            ).joinToString(". "),
+            emotion = when (style) {
+                TtsDeliveryStyle.ENERGETIC -> AiVoiceEmotion.EXCITED
+                TtsDeliveryStyle.SAD -> AiVoiceEmotion.SAD
+                TtsDeliveryStyle.ANGRY, TtsDeliveryStyle.DRAMATIC, TtsDeliveryStyle.RADIO_ANCHOR -> AiVoiceEmotion.SERIOUS
+                TtsDeliveryStyle.STORYTELLING -> AiVoiceEmotion.CALM
+                TtsDeliveryStyle.NATURAL_WARM -> AiVoiceEmotion.NEUTRAL
+            },
+            emotionIntensity = styleIntensity.coerceIn(0f, 1f),
+            pace = AiDeliveryPace.fromSpeechRate(style.rateFactor),
+            speechRate = style.rateFactor,
+            pitchOffsetSemitones = pitchSemitones + (persona?.defaultPitchSemitones ?: 0f),
+            fixedSid = persona?.id?.hashCode()?.and(Int.MAX_VALUE) ?: 0,
+            fixedSeed = FIXED_DETERMINISTIC_SEED,
+            fixedFormantShift = (formantShift * (persona?.defaultFormantShift ?: 1f)).coerceIn(0.6f, 1.5f),
+            fixedEqLowDb = warmthDb + style.warmthDb,
+            fixedEqPresenceDb = presenceDb,
+            vocalStyle = when (style) {
+                TtsDeliveryStyle.NATURAL_WARM -> AiVocalStyle.WARM
+                TtsDeliveryStyle.ENERGETIC, TtsDeliveryStyle.ANGRY -> AiVocalStyle.ENERGETIC
+                TtsDeliveryStyle.SAD, TtsDeliveryStyle.STORYTELLING -> AiVocalStyle.STORYTELLING
+                TtsDeliveryStyle.DRAMATIC -> AiVocalStyle.DRAMATIC
+                TtsDeliveryStyle.RADIO_ANCHOR -> AiVocalStyle.NEWS_ANCHOR
+            },
+            breathCadence = when {
+                style.breathPauseMs >= 350 -> AiBreathCadence.DRAMATIC
+                style.breathPauseMs >= 280 -> AiBreathCadence.MEASURED
+                style.breathPauseMs <= 150 -> AiBreathCadence.BRISK
+                else -> AiBreathCadence.NATURAL
+            },
+            pitchContour = if (style == TtsDeliveryStyle.DRAMATIC) {
+                AiPitchContour.EXPRESSIVE_SWELL
+            } else {
+                AiPitchContour.STEADY
+            },
+            timbre = when {
+                warmthDb >= 4f -> AiVoiceTimbre.WARM
+                presenceDb >= 4f -> AiVoiceTimbre.BRIGHT
+                else -> AiVoiceTimbre.BALANCED
+            },
+            articulationClarity = (0.45f + styleIntensity.coerceIn(0f, 1f) * 0.45f).coerceIn(0f, 1f),
+        )
+        val app = getApplication<Application>()
+        val outputDir = File(app.cacheDir, "voice_transformer_vox").apply { mkdirs() }
+        val outcome = aiVoiceCoordinator.synthesizeSingle(
+            context = app,
+            request = request,
+            backendUrl = "",
+            outputDir = outputDir,
+        ) { progress, status ->
+            _uiState.update { it.copy(voiceAiProgress = progress.coerceIn(0f, 1f), voiceAiStatusNote = status) }
+        }
+        val success = outcome as? AiVoiceSynthOutcome.Success
+            ?: when (outcome) {
+                is AiVoiceSynthOutcome.Error -> throw IllegalStateException(
+                    if (language == AiVoiceLanguage.EN) outcome.messageEn else outcome.messageAr,
+                )
+                is AiVoiceSynthOutcome.ConfigurationRequired -> throw IllegalStateException(
+                    if (language == AiVoiceLanguage.EN) outcome.explanationEn else outcome.explanationAr,
+                )
+                is AiVoiceSynthOutcome.Success -> outcome
+            }
+        val outputFile = File(success.audioFilePath)
+        val buffer = withContext(Dispatchers.IO) {
+            AiVoiceAudioStitcher.readSimplePcmWav(outputFile) ?: AudioDecoder.decodeFile(outputFile)
+        }
+        return buffer?.takeIf { it.frameCount > 0 }
+            ?: throw IllegalStateException(
+                if (language == AiVoiceLanguage.EN) "VoxCPM2 returned an unreadable or empty WAV file." else "أعاد VoxCPM2 ملف WAV فارغاً أو غير قابل للقراءة.",
+            )
     }
 
     // Native Android SpeechRecognizer + Sherpa-ONNX Moonshine AR Studio
@@ -6773,13 +7168,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             for (uri in uris) {
                 val uriStr = uri.toString()
                 if (!existingKeys.add(uriStr)) continue
-                runCatching {
-                    app.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        app.contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                        )
+                    }
                 }
-                val name = AudioFileUploader.resolveDisplayName(app, uri)
+                val name = withContext(Dispatchers.IO) {
+                    AudioFileUploader.resolveDisplayName(app, uri)
+                }
                 added += BatchQueueItem(
                     id = "batch_${UUID.randomUUID().toString().take(8)}",
                     displayName = name,
@@ -7353,13 +7752,23 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setAiVoiceLanguage(language: AiVoiceLanguage) {
         _aiVoiceUiState.update {
-            it.copy(selectedLanguage = language, selectedStudioPreset = AiStudioPreset.CUSTOM)
+            it.copy(
+                selectedLanguage = language,
+                selectedDialect = if (language == AiVoiceLanguage.AR) it.selectedDialect else AiArabicDialect.MSA,
+                selectedStudioPreset = AiStudioPreset.CUSTOM,
+            )
         }
     }
 
     fun setAiVoiceDialect(dialect: AiArabicDialect) {
         _aiVoiceUiState.update {
             it.copy(selectedDialect = dialect, selectedStudioPreset = AiStudioPreset.CUSTOM)
+        }
+    }
+
+    fun setAiVoiceEnglishAccent(accent: AiEnglishAccent) {
+        _aiVoiceUiState.update {
+            it.copy(selectedEnglishAccent = accent, selectedStudioPreset = AiStudioPreset.CUSTOM)
         }
     }
 
@@ -7637,24 +8046,64 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun importAiVoiceReferenceFromUri(uri: Uri) {
-        viewModelScope.launch(safeCoroutineHandler) {
+        if (_aiVoiceUiState.value.isReferenceImporting) return
+        aiVoiceReferenceImportJob = viewModelScope.launch(safeCoroutineHandler) {
             val app = getApplication<Application>()
             val refDir = File(app.filesDir, "ai_voice_refs").apply { mkdirs() }
             val outWav = File(refDir, "ref_${System.currentTimeMillis()}.wav")
-            val displayName = resolveFileName(uri) ?: "reference_voice.wav"
-            val prepared = AiVoiceAudioStitcher.prepareReferenceWavFromUri(app, uri, outWav)
-            if (prepared == null) {
-                postBanner("تعذر قراءة الملف المرجعي للاستنساخ الصوتي")
-                return@launch
-            }
             _aiVoiceUiState.update {
                 it.copy(
-                    referenceAudioPath = prepared.wavFile.absolutePath,
-                    referenceAudioName = displayName,
-                    referenceAudioDurationMs = prepared.durationMs,
+                    isReferenceImporting = true,
+                    referenceImportProgress = 0f,
+                    referenceImportStatus = "جاري رفع العينة وتحضيرها...",
+                    errorTitle = null,
+                    errorDetail = null,
                 )
             }
-            postBanner("تم تجهيز العينة المرجعية ($displayName) للاستنساخ الصوتي")
+            try {
+                val displayName = withContext(Dispatchers.IO) {
+                    AudioFileUploader.resolveDisplayName(app, uri)
+                }
+                val prepared = AiVoiceAudioStitcher.prepareReferenceWavFromUri(
+                    context = app,
+                    uri = uri,
+                    outWavFile = outWav,
+                ) { progress, status ->
+                    _aiVoiceUiState.update {
+                        it.copy(
+                            referenceImportProgress = progress,
+                            referenceImportStatus = status,
+                        )
+                    }
+                } ?: throw IllegalStateException("تعذر قراءة الملف المرجعي للاستنساخ الصوتي")
+                _aiVoiceUiState.update {
+                    it.copy(
+                        referenceAudioPath = prepared.wavFile.absolutePath,
+                        referenceAudioName = displayName,
+                        referenceAudioDurationMs = prepared.durationMs,
+                        referenceImportProgress = 1f,
+                        referenceImportStatus = "اكتمل تجهيز العينة المرجعية",
+                    )
+                }
+                postBanner("تم تجهيز العينة المرجعية ($displayName) للاستنساخ الصوتي")
+            } catch (ce: CancellationException) {
+                runCatching { outWav.delete() }
+                throw ce
+            } catch (e: Exception) {
+                runCatching { outWav.delete() }
+                val message = e.localizedMessage ?: e.javaClass.simpleName
+                _aiVoiceUiState.update {
+                    it.copy(
+                        referenceImportProgress = null,
+                        referenceImportStatus = "تعذر تجهيز العينة المرجعية: $message",
+                        errorTitle = "تعذر استيراد العينة المرجعية",
+                        errorDetail = message,
+                    )
+                }
+                postBanner("تعذر تجهيز العينة المرجعية: $message")
+            } finally {
+                _aiVoiceUiState.update { it.copy(isReferenceImporting = false) }
+            }
         }
     }
 
@@ -7664,28 +8113,66 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             postBanner("لا يوجد تسجيل أو ملف صوتي حالي في الاستوديو لاستخدامه كمرجع")
             return
         }
-        viewModelScope.launch(safeCoroutineHandler) {
+        if (_aiVoiceUiState.value.isReferenceImporting) return
+        aiVoiceReferenceImportJob = viewModelScope.launch(safeCoroutineHandler) {
             val app = getApplication<Application>()
             val refDir = File(app.filesDir, "ai_voice_refs").apply { mkdirs() }
             val outWav = File(refDir, "studio_ref_${System.currentTimeMillis()}.wav")
-            val prepared = AiVoiceAudioStitcher.prepareReferenceWavFromBuffer(buf, outWav)
-            if (prepared == null) {
-                postBanner("تعذر تجهيز صوت الاستوديو كعينة مرجعية")
-                return@launch
-            }
-            val label = _uiState.value.activeProjectName.ifBlank { "تسجيل الاستوديو الحالي" }
             _aiVoiceUiState.update {
                 it.copy(
-                    referenceAudioPath = prepared.wavFile.absolutePath,
-                    referenceAudioName = label,
-                    referenceAudioDurationMs = prepared.durationMs,
+                    isReferenceImporting = true,
+                    referenceImportProgress = 0f,
+                    referenceImportStatus = "جاري تجهيز صوت الاستوديو كعينة مرجعية...",
+                    errorTitle = null,
+                    errorDetail = null,
                 )
             }
-            postBanner("تم استخدام صوت الاستوديو كعينة مرجعية (${formatDurationMs(prepared.durationMs)})")
+            try {
+                val prepared = AiVoiceAudioStitcher.prepareReferenceWavFromBuffer(
+                    buffer = buf,
+                    outWavFile = outWav,
+                ) { progress, status ->
+                    _aiVoiceUiState.update {
+                        it.copy(
+                            referenceImportProgress = progress,
+                            referenceImportStatus = status,
+                        )
+                    }
+                } ?: throw IllegalStateException("تعذر تجهيز صوت الاستوديو كعينة مرجعية")
+                val label = _uiState.value.activeProjectName.ifBlank { "تسجيل الاستوديو الحالي" }
+                _aiVoiceUiState.update {
+                    it.copy(
+                        referenceAudioPath = prepared.wavFile.absolutePath,
+                        referenceAudioName = label,
+                        referenceAudioDurationMs = prepared.durationMs,
+                        referenceImportProgress = 1f,
+                        referenceImportStatus = "اكتمل تجهيز العينة المرجعية",
+                    )
+                }
+                postBanner("تم استخدام صوت الاستوديو كعينة مرجعية (${formatDurationMs(prepared.durationMs)})")
+            } catch (ce: CancellationException) {
+                runCatching { outWav.delete() }
+                throw ce
+            } catch (e: Exception) {
+                runCatching { outWav.delete() }
+                val message = e.localizedMessage ?: e.javaClass.simpleName
+                _aiVoiceUiState.update {
+                    it.copy(
+                        referenceImportProgress = null,
+                        referenceImportStatus = "تعذر تجهيز العينة المرجعية: $message",
+                        errorTitle = "تعذر تجهيز العينة المرجعية",
+                        errorDetail = message,
+                    )
+                }
+                postBanner("تعذر تجهيز العينة المرجعية: $message")
+            } finally {
+                _aiVoiceUiState.update { it.copy(isReferenceImporting = false) }
+            }
         }
     }
 
     fun clearAiVoiceReference() {
+        aiVoiceReferenceImportJob?.cancel()
         val oldPath = _aiVoiceUiState.value.referenceAudioPath
         if (!oldPath.isNullOrBlank()) {
             val isUsedBySavedChar = _aiVoiceUiState.value.savedCharacters.any { it.referenceAudioPath == oldPath }
@@ -7699,6 +8186,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 referenceAudioName = null,
                 referenceAudioDurationMs = 0L,
                 referenceTranscript = "",
+                isReferenceImporting = false,
+                referenceImportProgress = null,
+                referenceImportStatus = "",
             )
         }
     }
@@ -7839,6 +8329,173 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun prepareAiVoiceCloudPack() {
+        if (_aiVoiceUiState.value.isPreparingCloudVoicePack) return
+        if (_aiVoiceUiState.value.isSynthesizing) {
+            postBanner("يرجى انتظار انتهاء توليد الصوت قبل تهيئة الملفات السحابية")
+            return
+        }
+        aiVoiceCloudPackJob?.cancel()
+        aiVoiceCloudPackJob = viewModelScope.launch(safeCoroutineHandler) {
+            val isEnglish = _uiState.value.language == AppLanguage.EN ||
+                _uiState.value.language == AppLanguage.TR
+            _aiVoiceUiState.update {
+                it.copy(
+                    isPreparingCloudVoicePack = true,
+                    cloudVoicePackProgress = 0f,
+                    cloudVoicePackStatus = if (isEnglish) {
+                        "Preparing fixed voice profiles..."
+                    } else {
+                        "جاري تجهيز ملفات تعريف الأصوات الثابتة..."
+                    },
+                    cloudVoicePackReady = false,
+                )
+            }
+            try {
+                val app = getApplication<Application>()
+                val packDirectory = File(app.filesDir, "ai_voice_cloud_pack").apply { mkdirs() }
+                val current = _aiVoiceUiState.value
+                withContext(Dispatchers.IO) {
+                    val profiles = org.json.JSONArray()
+                    val characters = current.allCharacters
+                    characters.forEachIndexed { index, character ->
+                        profiles.put(
+                            org.json.JSONObject()
+                                .put("id", character.id)
+                                .put("language", character.language.code)
+                                .put("dialect", character.dialect.id)
+                                .put("category", character.category.id)
+                                .put("speaker_id", character.fixedSid)
+                                .put("seed", character.fixedSeed)
+                                .put("voice_prompt", character.voiceDescriptionPrompt),
+                        )
+                        _aiVoiceUiState.update {
+                            it.copy(
+                                cloudVoicePackProgress =
+                                    ((index + 1).toFloat() / characters.size.coerceAtLeast(1)) * 0.12f,
+                            )
+                        }
+                    }
+                    File(packDirectory, "voice_profiles.json").writeText(profiles.toString())
+                }
+                _aiVoiceUiState.update {
+                    it.copy(
+                        cloudVoicePackProgress = 0.12f,
+                        cloudVoicePackStatus = if (isEnglish) {
+                            "Checking cloud availability..."
+                        } else {
+                            "جاري التحقق من توفر الخدمة السحابية..."
+                        },
+                    )
+                }
+
+                val health = aiVoiceCoordinator.checkBackendHealth(
+                    context = app,
+                    backendUrl = "",
+                    bearerToken = "",
+                )
+                _aiVoiceUiState.update { it.copy(backendHealth = health) }
+                if (!health.serverReachable) {
+                    throw IllegalStateException(
+                        if (isEnglish) "VoxCPM2 cloud service is unavailable." else "خدمة VoxCPM2 السحابية غير متاحة حالياً.",
+                    )
+                }
+
+                val sampleText = when (current.selectedLanguage) {
+                    AiVoiceLanguage.AR -> "مرحبا، هذا اختبار جاهزية الصوت."
+                    AiVoiceLanguage.EN -> "Hello, this is a voice readiness check."
+                    AiVoiceLanguage.TR -> "Merhaba, bu ses hazırlık kontrolüdür."
+                    AiVoiceLanguage.FA -> "سلام، این یک بررسی آمادگی صدا است."
+                }
+                val request = AiVoiceSynthRequest(
+                    engine = AiVoiceEngineKind.VOXCPM_2,
+                    text = sampleText,
+                    language = current.selectedLanguage,
+                    dialect = current.selectedDialect,
+                    englishAccent = current.selectedEnglishAccent,
+                    category = current.selectedCategory,
+                    voiceDescriptionPrompt = current.voiceDescriptionPrompt,
+                    emotion = current.selectedEmotion,
+                    emotionIntensity = current.emotionIntensity,
+                    pace = current.selectedPace,
+                    speechRate = current.speechRate,
+                    pitchOffsetSemitones = current.pitchOffsetSemitones,
+                    fixedSid = current.fixedSid,
+                    fixedSeed = current.fixedSeed,
+                    fixedFormantShift = current.fixedFormantShift,
+                    fixedEqLowDb = current.fixedEqLowDb,
+                    fixedEqPresenceDb = current.fixedEqPresenceDb,
+                    vocalStyle = current.selectedVocalStyle,
+                    breathCadence = current.selectedBreathCadence,
+                    pitchContour = current.selectedPitchContour,
+                    timbre = current.selectedTimbre,
+                    articulationClarity = current.articulationClarity,
+                )
+                val outcome = aiVoiceCoordinator.synthesizeSingle(
+                    context = app,
+                    request = request,
+                    backendUrl = "",
+                    outputDir = File(app.cacheDir, "ai_voice_cloud_pack").apply { mkdirs() },
+                    bearerToken = "",
+                ) { progress, status ->
+                    _aiVoiceUiState.update {
+                        it.copy(
+                            cloudVoicePackProgress = (0.12f + progress.coerceIn(0f, 1f) * 0.88f)
+                                .coerceIn(0f, 1f),
+                            cloudVoicePackStatus = status,
+                        )
+                    }
+                }
+                if (outcome !is AiVoiceSynthOutcome.Success) {
+                    val error = when (outcome) {
+                        is AiVoiceSynthOutcome.Error -> if (isEnglish) outcome.messageEn else outcome.messageAr
+                        is AiVoiceSynthOutcome.ConfigurationRequired ->
+                            if (isEnglish) outcome.explanationEn else outcome.explanationAr
+                        is AiVoiceSynthOutcome.Success -> ""
+                    }
+                    throw IllegalStateException(error)
+                }
+                _aiVoiceUiState.update {
+                    it.copy(
+                        isPreparingCloudVoicePack = false,
+                        cloudVoicePackProgress = 1f,
+                        cloudVoicePackStatus = if (isEnglish) {
+                            "Cloud voice pack prepared and warm-up audio cached."
+                        } else {
+                            "اكتملت تهيئة ملفات الصوت السحابية وحُفظت عينة البدء."
+                        },
+                        cloudVoicePackReady = true,
+                    )
+                }
+                postBanner(
+                    if (isEnglish) {
+                        "VoxCPM2 cloud voices are prepared for this session."
+                    } else {
+                        "تم تجهيز أصوات VoxCPM2 السحابية لهذه الجلسة."
+                    },
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                val message = e.localizedMessage ?: e.javaClass.simpleName
+                _aiVoiceUiState.update {
+                    it.copy(
+                        cloudVoicePackProgress = null,
+                        cloudVoicePackStatus = if (isEnglish) {
+                            "Preparation failed: $message"
+                        } else {
+                            "فشلت التهيئة: $message"
+                        },
+                        cloudVoicePackReady = false,
+                    )
+                }
+                postBanner(if (isEnglish) "Cloud voice preparation failed: $message" else "تعذر تهيئة الأصوات السحابية: $message")
+            } finally {
+                _aiVoiceUiState.update { it.copy(isPreparingCloudVoicePack = false) }
+            }
+        }
+    }
+
     fun synthesizeAiVoiceSingle(overrideEngine: AiVoiceEngineKind? = null) {
         val cur = _aiVoiceUiState.value
         val engine = overrideEngine ?: cur.selectedEngine
@@ -7882,6 +8539,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 text = cur.scriptText.trim(),
                 language = cur.selectedLanguage,
                 dialect = cur.selectedDialect,
+                englishAccent = cur.selectedEnglishAccent,
                 category = cur.selectedCategory,
                 voiceDescriptionPrompt = cur.voiceDescriptionPrompt.trim(),
                 emotion = cur.selectedEmotion,

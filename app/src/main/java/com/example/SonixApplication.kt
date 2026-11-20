@@ -540,8 +540,13 @@ class SonixApplication : Application() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= TRIM_MEMORY_BACKGROUND) {
+        if (level >= TRIM_MEMORY_RUNNING_LOW) {
             runCatching { SmartCacheManager.trimSessionCache(this, keepCount = 5) }
         }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        runCatching { SmartCacheManager.trimSessionCache(this, keepCount = 5) }
     }
 }

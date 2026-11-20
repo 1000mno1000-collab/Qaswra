@@ -556,31 +556,33 @@ fun PitchAndSpeedScreen(
                     },
                 )
             },
+            bottomContent = {
+                StudioPreviewControlsBar(
+                    uiState = uiState,
+                    onHoldBypassChange = { viewModel.setHoldBypass(it) },
+                    onToggleBypass = { viewModel.toggleBypass() },
+                    onUndo = {
+                        userEditedSliders = false
+                        viewModel.undoLastEdit()
+                    },
+                    onRedo = {
+                        userEditedSliders = false
+                        viewModel.redoLastEdit()
+                    },
+                    onResetZero = {
+                        userEditedSliders = false
+                        localSemitones = 0f
+                        localTempo = 1.0f
+                        localPreserveFormants = true
+                        viewModel.resetAllEffects()
+                    },
+                    onOpenSaveDraft = { saveDraftDialogOpen = true },
+                    embedded = true,
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
-
-        StudioPreviewControlsBar(
-            uiState = uiState,
-            onHoldBypassChange = { viewModel.setHoldBypass(it) },
-            onToggleBypass = { viewModel.toggleBypass() },
-            onUndo = {
-                userEditedSliders = false
-                viewModel.undoLastEdit()
-            },
-            onRedo = {
-                userEditedSliders = false
-                viewModel.redoLastEdit()
-            },
-            onResetZero = {
-                userEditedSliders = false
-                localSemitones = 0f
-                localTempo = 1.0f
-                localPreserveFormants = true
-                viewModel.resetAllEffects()
-            },
-            onOpenSaveDraft = { saveDraftDialogOpen = true },
-        )
 
         val bypassActive = uiState.dspConfig.bypassAll || uiState.isHoldBypassing
         if (bypassActive) {
@@ -910,27 +912,29 @@ fun SurroundStereoScreen(
                     },
                 )
             },
+            bottomContent = {
+                StudioPreviewControlsBar(
+                    uiState = uiState,
+                    onHoldBypassChange = { viewModel.setHoldBypass(it) },
+                    onToggleBypass = { viewModel.toggleBypass() },
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                    onResetZero = {
+                        preferVmUndo = false
+                        midAdjustPct = 0f
+                        sideBoostPct = 0f
+                        widthPct = 0f
+                        stereoHistory.commit(Triple(0f, 0f, 0f))
+                        viewModel.updateSurroundLiveParams(0f, 0f, 0f)
+                        viewModel.resetAllEffects()
+                    },
+                    onOpenSaveDraft = { saveDraftDialogOpen = true },
+                    embedded = true,
+                )
+            },
         )
 
         ActiveTrackPromptCard(uiState = uiState, onPickMainAudio = { onOpenPicker(AudioPickerTarget.IMPORT_MAIN) })
-
-        StudioPreviewControlsBar(
-            uiState = uiState,
-            onHoldBypassChange = { viewModel.setHoldBypass(it) },
-            onToggleBypass = { viewModel.toggleBypass() },
-            onUndo = { viewModel.undoLastEdit() },
-            onRedo = { viewModel.redoLastEdit() },
-            onResetZero = {
-                preferVmUndo = false
-                midAdjustPct = 0f
-                sideBoostPct = 0f
-                widthPct = 0f
-                stereoHistory.commit(Triple(0f, 0f, 0f))
-                viewModel.updateSurroundLiveParams(0f, 0f, 0f)
-                viewModel.resetAllEffects()
-            },
-            onOpenSaveDraft = { saveDraftDialogOpen = true },
-        )
 
         Card(
             shape = RoundedCornerShape(20.dp),

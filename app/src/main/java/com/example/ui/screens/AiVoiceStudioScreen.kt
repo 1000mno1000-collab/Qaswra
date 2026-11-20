@@ -13,11 +13,13 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -43,6 +45,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.audio.aivoice.AiDialogueTurn
 import com.example.audio.aivoice.AiBreathCadence
+import com.example.audio.aivoice.AiArabicDialect
+import com.example.audio.aivoice.AiEnglishAccent
 import com.example.audio.aivoice.AiPitchContour
 import com.example.audio.aivoice.AiStudioPreset
 import com.example.audio.aivoice.AiVoiceCharacter
@@ -67,7 +71,7 @@ fun AiVoiceStudioScreen(
 ) {
     val state by viewModel.aiVoiceUiState.collectAsStateWithLifecycle()
     val lang = uiState.language
-    val isEnglish = lang == AppLanguage.EN
+    val isEnglish = lang == AppLanguage.EN || lang == AppLanguage.TR
 
     BackHandler(onBack = onBack)
 
@@ -83,12 +87,14 @@ fun AiVoiceStudioScreen(
     var advancedSubTab by rememberSaveable { mutableIntStateOf(0) } // 0=Dialogue, 1=Clone & Save
     val isDialogueMode = state.activeTab == 1 && advancedSubTab == 0
 
-    val currentInputSignature = remember(state) {
+    val currentInputSignature = remember(state, advancedSubTab) {
         buildString {
             append(state.activeTab).append('|')
+            append(advancedSubTab).append('|')
             append(state.selectedEngine.id).append('|')
             append(state.selectedLanguage.code).append('|')
             append(state.selectedDialect.id).append('|')
+            append(state.selectedEnglishAccent.id).append('|')
             append(state.selectedCategory.id).append('|')
             append(state.selectedCharacterId).append('|')
             append(state.fixedSid).append('|')
@@ -149,8 +155,8 @@ fun AiVoiceStudioScreen(
             }
             viewModel.setAiVoiceScriptText(nextText)
         },
-        onSelectEngine = viewModel::setAiVoiceEngine,
         onSelectLanguage = viewModel::setAiVoiceLanguage,
+        onSelectDialect = viewModel::setAiVoiceDialect,
         onSelectCharacter = viewModel::selectAiVoiceCharacter,
         onToggleFavorite = viewModel::toggleAiVoiceCharacterFavorite,
         onSelectEmotion = viewModel::setAiVoiceEmotion,
@@ -230,15 +236,8 @@ fun AiVoiceStudioScreen(
                 }
             }
         },
-        bottomHelpSlot = {
-            SupportUpdatesQaSection(
-                uiState = uiState,
-                viewModel = viewModel,
-                onOpenFullLab = null,
-                collapsible = true,
-                initiallyExpanded = false,
-            )
-        },
+        onSelectEnglishAccent = viewModel::setAiVoiceEnglishAccent,
+        onPrepareCloudPack = viewModel::prepareAiVoiceCloudPack,
     )
 }
 
@@ -261,8 +260,9 @@ fun AiVoiceStudioContentLayout(
     onShare: () -> Unit,
     onInsertIntoStudio: () -> Unit,
     onScriptChange: (String) -> Unit,
-    onSelectEngine: (AiVoiceEngineKind) -> Unit,
     onSelectLanguage: (AiVoiceLanguage) -> Unit,
+    onSelectDialect: (AiArabicDialect) -> Unit = {},
+    onSelectEnglishAccent: (AiEnglishAccent) -> Unit = {},
     onSelectCharacter: (AiVoiceCharacter) -> Unit,
     onToggleFavorite: (String) -> Unit,
     onSelectEmotion: (AiVoiceEmotion) -> Unit,
@@ -292,29 +292,26 @@ fun AiVoiceStudioContentLayout(
     onSaveBackendUrl: (String) -> Unit = {},
     onSaveBackendToken: (String) -> Unit = {},
     onCheckHealth: (String, String) -> Unit = { _, _ -> },
+    onPrepareCloudPack: () -> Unit = {},
     onPreviewClick: () -> Unit,
     onCancelSynthesis: () -> Unit,
     onApproveClick: () -> Unit,
-    bottomHelpSlot: @Composable () -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
 ) {
-    val isEnglish = language == AppLanguage.EN
-    val showSynthesisBottomBar = state.activeTab == 0 || (state.activeTab == 1 && advancedSubTab == 0)
+    val isEnglish = language == AppLanguage.EN || language == AppLanguage.TR
 
     Scaffold(
         containerColor = StudioColors.BgTop,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            if (showSynthesisBottomBar) {
-                AiVoiceStickyBottomActionBar(
-                    state = state,
-                    hasStudioAudio = hasStudioAudio,
-                    isEnglish = isEnglish,
-                    onPreviewClick = onPreviewClick,
-                    onCancelSynthesis = onCancelSynthesis,
-                    onApproveClick = onApproveClick,
-                )
-            }
+            AiVoiceStickyBottomActionBar(
+                state = state,
+                hasStudioAudio = hasStudioAudio,
+                isEnglish = isEnglish,
+                onPreviewClick = onPreviewClick,
+                onCancelSynthesis = onCancelSynthesis,
+                onApproveClick = onApproveClick,
+            )
         },
     ) { innerPadding ->
         Box(
@@ -396,7 +393,7 @@ fun AiVoiceStudioContentLayout(
                         }
                     }
 
-                    if (!state.lastOutputWavPath.isNullOrBlank() && showSynthesisBottomBar) {
+                    if (!state.lastOutputWavPath.isNullOrBlank()) {
                         item(key = "output_player") {
                             AiVoiceOutputPlayerCard(
                                 state = state,
@@ -414,27 +411,22 @@ fun AiVoiceStudioContentLayout(
 
                     when (safeActiveTab) {
                         0 -> {
-                            item(key = "studio_text") {
-                                AiVoiceGroup1TextCard(
-                                    scriptText = state.scriptText,
-                                    isEnglish = isEnglish,
-                                    onScriptChange = onScriptChange,
-                                )
-                            }
-                            item(key = "card_1_engine") {
-                                AiVoiceEngineSelectionCard(
-                                    selectedEngine = state.selectedEngine,
-                                    isEnglish = isEnglish,
-                                    onSelectEngine = onSelectEngine,
-                                )
-                            }
                             item(key = "card_2_voice") {
                                 AiVoiceGroup2VoiceSelectionCard(
                                     state = state,
                                     isEnglish = isEnglish,
                                     onSelectLanguage = onSelectLanguage,
+                                    onSelectDialect = onSelectDialect,
+                                    onSelectEnglishAccent = onSelectEnglishAccent,
                                     onSelectCharacter = onSelectCharacter,
                                     onToggleFavorite = onToggleFavorite,
+                                )
+                            }
+                            item(key = "cloud_voice_pack") {
+                                AiVoiceCloudPackCard(
+                                    state = state,
+                                    isEnglish = isEnglish,
+                                    onPrepare = onPrepareCloudPack,
                                 )
                             }
                             item(key = "card_3_emotion") {
@@ -443,6 +435,13 @@ fun AiVoiceStudioContentLayout(
                                     isEnglish = isEnglish,
                                     onSelectEmotion = onSelectEmotion,
                                     onSelectVocalStyle = onSelectVocalStyle,
+                                )
+                            }
+                            item(key = "studio_text") {
+                                AiVoiceGroup1TextCard(
+                                    scriptText = state.scriptText,
+                                    isEnglish = isEnglish,
+                                    onScriptChange = onScriptChange,
                                 )
                             }
                             item(key = "card_4_controls") {
@@ -459,47 +458,50 @@ fun AiVoiceStudioContentLayout(
                                     onResetTuning = onResetTuning,
                                 )
                             }
-                            item(key = "group_more_and_help") {
-                                bottomHelpSlot()
-                            }
                         }
                         else -> {
                             item(key = "advanced_sub_switcher") {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
-                                    val subItems = listOf(
-                                        0 to (if (isEnglish) "Dialogue" else "الحوار المتعدد"),
-                                        1 to (if (isEnglish) "Clone & Save" else "استنساخ الصوت"),
-                                        2 to (if (isEnglish) "Engine" else "المحرك السحابي"),
-                                    )
-                                    subItems.forEach { (idx, title) ->
-                                        val selected = advancedSubTab == idx
-                                        Surface(
-                                            onClick = { onSelectAdvancedSubTab(idx) },
-                                            shape = RoundedCornerShape(10.dp),
-                                            color = if (selected) StudioColors.Cyan.copy(alpha = 0.16f) else StudioColors.CardSurface,
-                                            border = BorderStroke(
-                                                width = if (selected) 1.5.dp else 1.dp,
-                                                color = if (selected) StudioColors.Cyan else StudioColors.Border,
-                                            ),
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .defaultMinSize(minHeight = 48.dp)
-                                                .testTag("ai_voice_advanced_sub_$idx"),
-                                        ) {
-                                            Box(
-                                                contentAlignment = Alignment.Center,
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        val subItems = listOf(
+                                            0 to (if (isEnglish) "Dialogue" else "الحوار المتعدد"),
+                                            1 to (if (isEnglish) "Voice Cloning" else "استنساخ الصوت"),
+                                            2 to (if (isEnglish) "Cloud Engine" else "المحرك السحابي"),
+                                        )
+                                        subItems.forEach { (idx, title) ->
+                                            val selected = advancedSubTab == idx
+                                            Surface(
+                                                onClick = { onSelectAdvancedSubTab(idx) },
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = if (selected) StudioColors.Cyan.copy(alpha = 0.16f) else StudioColors.CardSurface,
+                                                border = BorderStroke(
+                                                    width = if (selected) 1.5.dp else 1.dp,
+                                                    color = if (selected) StudioColors.Cyan else StudioColors.Border,
+                                                ),
+                                                modifier = Modifier
+                                                    .widthIn(min = 112.dp)
+                                                    .defaultMinSize(minHeight = 48.dp)
+                                                    .testTag("ai_voice_advanced_sub_$idx"),
                                             ) {
-                                                Text(
-                                                    text = title,
-                                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                                    color = if (selected) StudioColors.Cyan else StudioColors.TextPrimary,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                )
+                                                Box(
+                                                    contentAlignment = Alignment.Center,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                                                ) {
+                                                    Text(
+                                                        text = title,
+                                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                                        color = if (selected) StudioColors.Cyan else StudioColors.TextPrimary,
+                                                        maxLines = 2,
+                                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -533,6 +535,7 @@ fun AiVoiceStudioContentLayout(
                                             onPickReferenceFile = onPickReferenceFile,
                                             onUseStudioBufferAsReference = onUseStudioBufferAsReference,
                                             onClearReference = onClearReference,
+                                            onScriptChange = onScriptChange,
                                             onReferenceTranscriptChange = onReferenceTranscriptChange,
                                             onRightsConfirmedChange = onRightsConfirmedChange,
                                             onSaveOutputWav = onSaveWav,

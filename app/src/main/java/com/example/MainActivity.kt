@@ -11,7 +11,6 @@ import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -82,11 +81,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -110,10 +107,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -170,7 +164,6 @@ import com.example.ui.screens.SmartMusicMixerScreen
 import com.example.ui.screens.SmartQaLabScreen
 import com.example.ui.screens.SpeechToTextScreen
 import com.example.ui.screens.SurroundStereoScreen
-import com.example.ui.screens.TextToSpeechStudioScreen
 import com.example.ui.screens.VoicePurifierScreen
 import com.example.ui.screens.VoiceTransformerScreen
 import com.example.ui.theme.SonixTheme
@@ -455,40 +448,13 @@ private fun SonixRootApp(
     val context = LocalContext.current
     val lang = uiState.language
     val layoutDirection = if (lang.isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
-    val requiredPermissions = remember { mandatoryRuntimePermissions() }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var permissionRefreshVersion by remember { mutableIntStateOf(0) }
-    var hasRequestedMandatoryPermissions by rememberSaveable { mutableStateOf(false) }
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                permissionRefreshVersion++
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-    val missingPermissions = remember(permissionRefreshVersion) {
-        requiredPermissions.filter { permission ->
-            ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED
-        }
-    }
-    val permissionRequestLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
-        permissionRefreshVersion++
-    }
-    val activity = context as? Activity
-    val permanentlyDeniedPermission = hasRequestedMandatoryPermissions &&
-        missingPermissions.any { permission ->
-            activity?.shouldShowRequestPermissionRationale(permission) == false
-        }
 
     // Hoist Home LazyListState at parent composable level outside NavHost/conditionals
     // so scroll position stays intact across any tool navigation and return.
     val homeListState = rememberLazyListState()
     var sleepTimerDialogOpen by remember { mutableStateOf(false) }
     var askedNotificationOnce by remember { mutableStateOf(false) }
+    var showNotificationPermissionRationale by remember { mutableStateOf(false) }
     var showLuxuryLaunch by rememberSaveable { mutableStateOf(true) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -575,24 +541,6 @@ private fun SonixRootApp(
                         viewModel.clearBanner()
                     },
                 )
-            } else if (missingPermissions.isNotEmpty()) {
-                MandatoryPermissionsGateScreen(
-                    isArabic = lang.isRtl,
-                    missingPermissions = missingPermissions,
-                    permanentlyDenied = permanentlyDeniedPermission,
-                    onRequestPermissions = {
-                        hasRequestedMandatoryPermissions = true
-                        permissionRequestLauncher.launch(missingPermissions.toTypedArray())
-                    },
-                    onOpenSettings = {
-                        context.startActivity(
-                            Intent(
-                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                Uri.fromParts("package", context.packageName, null),
-                            ),
-                        )
-                    },
-                )
             } else {
                 val uidKey = (uiState.authSession as? AuthSession.SignedIn)?.uid ?: "guest"
                 key(uidKey) {
@@ -600,7 +548,8 @@ private fun SonixRootApp(
                     val navBackStackEntry by navController.currentBackStackEntryAsState()
                     val currentDest = navBackStackEntry?.destination
                     val isHomeTab = currentDest?.hasRoute<StudioRoute.Home>() == true
-                    val isLibraryTab = currentDest?.hasRoute<StudioRoute.AudioPicker>() == true &&
+                    val isAudioPickerScreen = currentDest?.hasRoute<StudioRoute.AudioPicker>() == true
+                    val isLibraryTab = isAudioPickerScreen &&
                         runCatching { navBackStackEntry?.toRoute<StudioRoute.AudioPicker>()?.target }.getOrNull() == AudioPickerTarget.LIBRARY_BROWSE
                     val isProjectsTab = currentDest?.hasRoute<StudioRoute.ProjectsExport>() == true
                     val showBottomNav = isHomeTab || isLibraryTab || isProjectsTab
@@ -648,9 +597,7 @@ private fun SonixRootApp(
                                             ) != PackageManager.PERMISSION_GRANTED
                                         ) {
                                             askedNotificationOnce = true
-                                            runCatching {
-                                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                            }
+                                            showNotificationPermissionRationale = true
                                         }
                                         viewModel.togglePlayPause()
                                     } catch (e: Exception) {
@@ -773,10 +720,11 @@ private fun SonixRootApp(
                             .consumeWindowInsets(innerPadding),
                     ) {
 
-                        uiState.importProgress?.let { progress ->
+                        if (!isAudioPickerScreen) {
+                            uiState.importProgress?.let { progress ->
                             val byteTransferActive = !uiState.importBytesLabel.isNullOrBlank()
                             val byteFraction = uiState.importBytesProgress
-                            val pct = ((byteFraction ?: progress).coerceIn(0f, 1f) * 100f).toInt()
+                            val pct = (progress.coerceIn(0f, 1f) * 100f).toInt()
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -842,7 +790,7 @@ private fun SonixRootApp(
                                             )
                                         } else {
                                             LinearProgressIndicator(
-                                                progress = { (byteFraction ?: progress).coerceIn(0f, 1f) },
+                                                progress = { progress.coerceIn(0f, 1f) },
                                                 color = StudioColors.Cyan,
                                                 trackColor = StudioColors.BgTop,
                                                 modifier = Modifier
@@ -852,6 +800,7 @@ private fun SonixRootApp(
                                                     .testTag("global_import_progress_bar"),
                                             )
                                         }
+                                    }
                                     }
                                 }
                             }
@@ -1002,13 +951,6 @@ private fun SonixRootApp(
                                     onBack = popBackOrHome,
                                 )
                             }
-                            composable<StudioRoute.TtsStudio> {
-                                TextToSpeechStudioScreen(
-                                    uiState = uiState,
-                                    viewModel = viewModel,
-                                    onBack = returnToHome,
-                                )
-                            }
                             composable<StudioRoute.AiVoiceStudio> {
                                 AiVoiceStudioScreen(
                                     uiState = uiState,
@@ -1122,7 +1064,6 @@ private fun SonixRootApp(
                                 SpeechToTextScreen(
                                     uiState = uiState,
                                     viewModel = viewModel,
-                                    onOpenPicker = { target -> navController.navigate(StudioRoute.AudioPicker(target)) },
                                     onBack = returnToHome,
                                 )
                             }
@@ -1142,7 +1083,6 @@ private fun SonixRootApp(
                                         val dest: StudioRoute = when (toolId) {
                                             "noise_reduction" -> StudioRoute.VoicePurifier
                                             "voice_changer" -> StudioRoute.VoiceTransformer
-                                            "human_tts" -> StudioRoute.TtsStudio
                                             "reels_audio_templates" -> StudioRoute.ReelsAudioTemplates
                                             "extract_video" -> StudioRoute.ExtractVideoAudio
                                             "surround_stereo" -> StudioRoute.SurroundStereo
@@ -1322,6 +1262,40 @@ private fun SonixRootApp(
                 }
             }
 
+            if (showNotificationPermissionRationale) {
+                AlertDialog(
+                    onDismissRequest = { showNotificationPermissionRationale = false },
+                    containerColor = StudioColors.CardSurface,
+                    title = {
+                        Text(
+                            text = t(lang, "playback_notification_permission_title"),
+                            color = StudioColors.TextPrimary,
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = t(lang, "playback_notification_permission_desc"),
+                            color = StudioColors.TextSecondary,
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showNotificationPermissionRationale = false
+                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            },
+                        ) {
+                            Text(t(lang, "continue"), color = StudioColors.Cyan)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showNotificationPermissionRationale = false }) {
+                            Text(t(lang, "cancel"), color = StudioColors.TextSecondary)
+                        }
+                    },
+                )
+            }
+
             val criticalPrompt by AppDiagnosticLog.criticalRestartPrompt.collectAsStateWithLifecycle()
             criticalPrompt?.let { promptEntry ->
                 AlertDialog(
@@ -1347,7 +1321,7 @@ private fun SonixRootApp(
                     },
                     text = {
                         Text(
-                            text = "${t(lang, "crash_dialog_body")}\n\n[${promptEntry.errorCode}] ${promptEntry.causeAr}",
+                            text = "${t(lang, "crash_dialog_body")}\n\n${AppDiagnosticLog.userFacingCause(promptEntry, lang)}",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     },
@@ -1389,124 +1363,6 @@ private fun SonixRootApp(
                 language = lang,
                 onFinished = { showLuxuryLaunch = false },
             )
-        }
-    }
-}
-
-private fun mandatoryRuntimePermissions(): List<String> = buildList {
-    add(Manifest.permission.RECORD_AUDIO)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        add(Manifest.permission.READ_MEDIA_AUDIO)
-        add(Manifest.permission.POST_NOTIFICATIONS)
-    } else {
-        add(Manifest.permission.READ_EXTERNAL_STORAGE)
-    }
-}
-
-@Composable
-private fun MandatoryPermissionsGateScreen(
-    isArabic: Boolean,
-    missingPermissions: List<String>,
-    permanentlyDenied: Boolean,
-    onRequestPermissions: () -> Unit,
-    onOpenSettings: () -> Unit,
-) {
-    val permissionLabels = missingPermissions.map { permission ->
-        when (permission) {
-            Manifest.permission.RECORD_AUDIO ->
-                if (isArabic) "إمكانية استخدام الميكروفون" else "Microphone access"
-            Manifest.permission.READ_MEDIA_AUDIO,
-            Manifest.permission.READ_EXTERNAL_STORAGE ->
-                if (isArabic) "إمكانية الوصول إلى الملفات الصوتية" else "Audio files access"
-            Manifest.permission.POST_NOTIFICATIONS ->
-                if (isArabic) "إمكانية إرسال الإشعارات" else "Notifications"
-            else -> permission
-        }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .systemBarsPadding()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 480.dp),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-            border = BorderStroke(1.dp, StudioColors.BorderBright),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Info,
-                    contentDescription = null,
-                    tint = StudioColors.Cyan,
-                    modifier = Modifier.size(40.dp),
-                )
-                Text(
-                    text = if (isArabic) "الصلاحيات مطلوبة للمتابعة" else "Permissions required to continue",
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = StudioColors.TextPrimary,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    text = if (isArabic) {
-                        "لن تتمكن من دخول الاستوديو حتى تسمح بجميع الصلاحيات التالية:"
-                    } else {
-                        "You can't enter the studio until you allow all of the following permissions:"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = StudioColors.TextSecondary,
-                    textAlign = TextAlign.Center,
-                )
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    permissionLabels.forEach { label ->
-                        Text(
-                            text = "• $label",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = StudioColors.TextPrimary,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-                Button(
-                    onClick = onRequestPermissions,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = StudioColors.Cyan,
-                        contentColor = StudioColors.BgTop,
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp),
-                ) {
-                    Text(if (isArabic) "السماح بالصلاحيات" else "Allow permissions")
-                }
-                if (permanentlyDenied) {
-                    OutlinedButton(
-                        onClick = onOpenSettings,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp),
-                    ) {
-                        Text(
-                            if (isArabic) "فتح إعدادات التطبيق" else "Open app settings",
-                            color = StudioColors.Cyan,
-                        )
-                    }
-                }
-            }
         }
     }
 }
@@ -1589,19 +1445,19 @@ private fun StartupErrorScreen(
                         modifier = Modifier.size(36.dp),
                     )
                     Text(
-                        text = "Sonix ✦ Safe Recovery",
+                        text = "تعذر إكمال العملية",
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                         color = StudioColors.TextPrimary,
                         textAlign = TextAlign.Center,
                     )
                     Text(
-                        text = "An unexpected startup or runtime error was intercepted so the studio did not crash. Local audio tools remain safe to retry.",
+                        text = "تم إيقاف العملية لحماية التطبيق. يمكنك إعادة المحاولة.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = StudioColors.TextSecondary,
                         textAlign = TextAlign.Center,
                     )
                     Text(
-                        text = "تم اعتراض خطأ غير متوقع بأمان لمنع توقف التطبيق. يمكنك إعادة تشغيل الاستوديو أو نسخ تفاصيل الخطأ.",
+                        text = "يمكنك إعادة تشغيل الاستوديو أو نسخ ملخص التنبيه.",
                         style = MaterialTheme.typography.bodySmall,
                         color = StudioColors.TextSecondary,
                         textAlign = TextAlign.Center,
@@ -1611,26 +1467,13 @@ private fun StartupErrorScreen(
                         shape = RoundedCornerShape(14.dp),
                         color = StudioColors.BgTop,
                         border = BorderStroke(1.dp, StudioColors.Border),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 90.dp, max = 220.dp),
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .verticalScroll(rememberScrollState())
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
+                        Box(modifier = Modifier.padding(12.dp)) {
                             Text(
-                                text = "[${report.threadName}] ${report.message}",
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                text = AppDiagnosticLog.userFacingTechnicalMessage(report.message, AppLanguage.AR),
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                                 color = StudioColors.RoseBright,
-                            )
-                            Text(
-                                text = report.stackTrace,
-                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                color = StudioColors.TextMuted,
                             )
                         }
                     }
@@ -1646,8 +1489,8 @@ private fun StartupErrorScreen(
                                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                                     cm?.setPrimaryClip(
                                         ClipData.newPlainText(
-                                            "Sonix Error",
-                                            "[${report.threadName}] ${report.message}\n\n${report.stackTrace}",
+                                            "Sonix Support Summary",
+                                            AppDiagnosticLog.userFacingTechnicalMessage(report.message, AppLanguage.AR),
                                         ),
                                     )
                                     copied = true
@@ -1670,7 +1513,7 @@ private fun StartupErrorScreen(
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                text = if (copied) "Copied" else "Copy Details",
+                                text = if (copied) "تم النسخ" else "نسخ الملخص",
                                 color = StudioColors.TextPrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,

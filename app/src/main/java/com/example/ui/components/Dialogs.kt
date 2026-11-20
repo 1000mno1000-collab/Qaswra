@@ -298,6 +298,7 @@ fun ExportFormatDialog(
                             when (language) {
                                 AppLanguage.EN -> "File Name"
                                 AppLanguage.FA -> "نام فایل"
+                                AppLanguage.TR -> "Dosya adı"
                                 AppLanguage.AR -> "اسم الملف"
                             },
                         )

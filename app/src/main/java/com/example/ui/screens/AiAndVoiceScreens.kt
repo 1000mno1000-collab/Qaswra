@@ -4,7 +4,6 @@ import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,7 +17,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -47,8 +45,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MenuAnchorType
@@ -87,18 +83,21 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.BuildConfig
 import com.example.audio.OnlineGuard
+import com.example.audio.aivoice.AiArabicDialect
+import com.example.audio.aivoice.AiEnglishAccent
+import com.example.audio.aivoice.AiVoiceLanguage
 import com.example.audio.fx.VoiceEffect
 import com.example.audio.tts.TtsTextLimits
 import com.example.i18n.t
 import com.example.model.AiToolType
 import com.example.model.AppLanguage
+import com.example.model.AuthSession
 import com.example.model.TTS_DIALECTS
 import com.example.model.TTS_VOICE_PERSONAS
 import com.example.model.TtsDeliveryStyle
@@ -108,7 +107,7 @@ import com.example.model.TtsVoicePersona
 import com.example.studio.ui.lit
 import com.example.ui.components.InfoBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
-import com.example.ui.components.PreviewAndApplyActionRow
+import com.example.ui.components.MicrophonePermissionRationaleDialog
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
@@ -434,9 +433,9 @@ fun AiToolDetailScreen(
                                 )
                                 Text(
                                     text = if (lang == AppLanguage.EN) {
-                                        "Gemini 2.5 AI Audio Engineer analyzing acoustics & building FFmpeg chain..."
+                                        "Analyzing the acoustic profile..."
                                     } else {
-                                        "مهندس الصوت الذكي (Gemini 2.5) يحلل الترددات ويجهز فلاتر FFmpegKit..."
+                                        "يجري تحليل البصمة الصوتية..."
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = StudioColors.Cyan,
@@ -468,31 +467,6 @@ fun AiToolDetailScreen(
                                 }
                             }
 
-                            if (!analysis.aiDiagnosticNotes.isNullOrBlank()) {
-                                Surface(
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = StudioColors.Cyan.copy(alpha = 0.10f),
-                                    border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                                    ) {
-                                        Text(
-                                            text = if (lang == AppLanguage.EN) "AI Engineer Diagnosis" else "تشخيص مهندس الصوت الذكي",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = StudioColors.Cyan,
-                                        )
-                                        Text(
-                                            text = analysis.aiDiagnosticNotes,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = StudioColors.TextPrimary,
-                                        )
-                                    }
-                                }
-                            }
-
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -509,61 +483,35 @@ fun AiToolDetailScreen(
                             }
 
                             if (!analysis.recommendedFfmpegFilter.isNullOrBlank()) {
-                                Surface(
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = StudioColors.BgMid,
-                                    border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.45f)),
-                                    modifier = Modifier.fillMaxWidth(),
+                                val applyFfmpegInt = remember { MutableInteractionSource() }
+                                Button(
+                                    onClick = { viewModel.applyAiEngineerFfmpegFilter() },
+                                    enabled = !uiState.isBusy && !uiState.isProcessing && !analysis.ffmpegFilterApplied,
+                                    interactionSource = applyFfmpegInt,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (analysis.ffmpegFilterApplied) StudioColors.Emerald else StudioColors.Violet,
+                                        contentColor = StudioColors.BgTop,
+                                    ),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .lit(applyFfmpegInt, StudioColors.Violet, cornerRadius = 12.dp)
+                                        .testTag("ai_smart_master_apply_ffmpeg_button"),
                                 ) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        Text(
-                                            text = if (lang == AppLanguage.EN) {
-                                                "Recommended FFmpegKit Master Chain"
-                                            } else {
-                                                "سلسلة فلاتر FFmpegKit الموصى بها"
-                                            },
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = StudioColors.Violet,
-                                        )
-                                        Text(
-                                            text = analysis.recommendedFfmpegFilter,
-                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                            color = StudioColors.TextSecondary,
-                                        )
-                                        val applyFfmpegInt = remember { MutableInteractionSource() }
-                                        Button(
-                                            onClick = { viewModel.applyAiEngineerFfmpegFilter() },
-                                            enabled = !uiState.isBusy && !uiState.isProcessing && !analysis.ffmpegFilterApplied,
-                                            interactionSource = applyFfmpegInt,
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = if (analysis.ffmpegFilterApplied) StudioColors.Emerald else StudioColors.Violet,
-                                                contentColor = StudioColors.BgTop,
-                                            ),
-                                            shape = RoundedCornerShape(12.dp),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .defaultMinSize(minHeight = 48.dp)
-                                                .lit(applyFfmpegInt, StudioColors.Violet, cornerRadius = 12.dp)
-                                                .testTag("ai_smart_master_apply_ffmpeg_button"),
-                                        ) {
-                                            Icon(
-                                                imageVector = if (analysis.ffmpegFilterApplied) Icons.Rounded.CheckCircle else Icons.Rounded.GraphicEq,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp),
-                                            )
-                                            Spacer(Modifier.width(8.dp))
-                                            Text(
-                                                text = if (analysis.ffmpegFilterApplied) {
-                                                    if (lang == AppLanguage.EN) "FFmpegKit Filter Applied" else "تم تطبيق فلاتر FFmpegKit بنجاح"
-                                                } else {
-                                                    if (lang == AppLanguage.EN) "Apply Recommended FFmpegKit Filters (1-Tap)" else "تطبيق فلاتر FFmpegKit المقترحة بضغطة زر"
-                                                },
-                                            )
-                                        }
-                                    }
+                                    Icon(
+                                        imageVector = if (analysis.ffmpegFilterApplied) Icons.Rounded.CheckCircle else Icons.Rounded.GraphicEq,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = if (analysis.ffmpegFilterApplied) {
+                                            if (lang == AppLanguage.EN) "Processing applied" else "تم تنفيذ المعالجة"
+                                        } else {
+                                            if (lang == AppLanguage.EN) "Apply sound adjustments" else "تنفيذ التعديلات الصوتية"
+                                        },
+                                    )
                                 }
                             }
 
@@ -1666,6 +1614,10 @@ fun VoiceTransformerScreen(
     val lang = uiState.language
     var selectedPersona by remember { mutableStateOf<TtsVoicePersona?>(null) }
     var selectedAcousticMode by remember { mutableStateOf(TtsPersonaAcousticMode.NATURAL) }
+    var selectedVoiceLanguage by rememberSaveable { mutableStateOf(AiVoiceLanguage.AR) }
+    var selectedArabicDialect by rememberSaveable { mutableStateOf(AiArabicDialect.MSA) }
+    var selectedEnglishAccent by rememberSaveable { mutableStateOf(AiEnglishAccent.AMERICAN) }
+    var targetText by rememberSaveable { mutableStateOf("") }
     var pitchSemitones by remember { mutableFloatStateOf(0f) }
     var formantShift by remember { mutableFloatStateOf(1.0f) }
     var warmthDb by remember { mutableFloatStateOf(0f) }
@@ -1675,6 +1627,38 @@ fun VoiceTransformerScreen(
     var infoOpen by remember { mutableStateOf(false) }
     var selectedLiveEffect by remember { mutableStateOf(uiState.liveVoiceEffect) }
     var preferVmUndo by remember { mutableStateOf(false) }
+    var showMicPermissionRationale by remember { mutableStateOf(false) }
+    val runVoxGeneration: (Boolean) -> Unit = { previewOnly ->
+        if (previewOnly) {
+            viewModel.previewCharacterVoiceWithVox(
+                text = targetText,
+                language = selectedVoiceLanguage,
+                dialect = selectedArabicDialect,
+                englishAccent = selectedEnglishAccent,
+                persona = selectedPersona,
+                acousticMode = selectedAcousticMode,
+                pitchSemitones = pitchSemitones,
+                formantShift = formantShift,
+                warmthDb = warmthDb,
+                presenceDb = presenceDb,
+                styleIntensity = mix,
+            )
+        } else {
+            viewModel.applyCharacterVoiceWithVox(
+                text = targetText,
+                language = selectedVoiceLanguage,
+                dialect = selectedArabicDialect,
+                englishAccent = selectedEnglishAccent,
+                persona = selectedPersona,
+                acousticMode = selectedAcousticMode,
+                pitchSemitones = pitchSemitones,
+                formantShift = formantShift,
+                warmthDb = warmthDb,
+                presenceDb = presenceDb,
+                styleIntensity = mix,
+            )
+        }
+    }
     val voiceHistory = rememberEditHistory(
         VoiceTransformSnapshot(
             pitchSemitones = pitchSemitones,
@@ -1724,6 +1708,16 @@ fun VoiceTransformerScreen(
             viewModel.setMicPermissionDeniedError()
         }
     }
+
+    MicrophonePermissionRationaleDialog(
+        open = showMicPermissionRationale,
+        language = lang,
+        onDismiss = { showMicPermissionRationale = false },
+        onConfirm = {
+            showMicPermissionRationale = false
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        },
+    )
 
     LaunchedEffect(uiState.restoredToolSession?.id) {
         val restored = viewModel.consumeRestoredToolSession("voice_transformer")
@@ -1788,7 +1782,8 @@ fun VoiceTransformerScreen(
         }
     }
 
-    StudioScrollColumn {
+    Box(modifier = Modifier.fillMaxSize()) {
+    StudioScrollColumn(modifier = Modifier.padding(bottom = 128.dp)) {
         StudioFocusTopBar(
             title = t(lang, "section_voice_transformer_title"),
             subtitle = t(lang, "section_voice_transformer_subtitle"),
@@ -1825,37 +1820,39 @@ fun VoiceTransformerScreen(
                     },
                 )
             },
-        )
-
-        StudioPreviewControlsBar(
-            uiState = uiState,
-            onHoldBypassChange = { viewModel.setHoldBypass(it) },
-            onToggleBypass = { viewModel.toggleBypass() },
-            onUndo = { viewModel.undoLastEdit() },
-            onRedo = { viewModel.redoLastEdit() },
-            onResetZero = {
-                preferVmUndo = false
-                selectedPersona = null
-                selectedAcousticMode = TtsPersonaAcousticMode.NATURAL
-                pitchSemitones = 0f
-                formantShift = 1.0f
-                warmthDb = 0f
-                presenceDb = 0f
-                mix = 0f
-                voiceHistory.commit(
-                    currentVoiceSnap(
-                        pitch = 0f,
-                        formant = 1.0f,
-                        warmth = 0f,
-                        presence = 0f,
-                        mixVal = 0f,
-                        personaId = null,
-                        acousticMode = TtsPersonaAcousticMode.NATURAL,
-                    ),
+            bottomContent = {
+                StudioPreviewControlsBar(
+                    uiState = uiState,
+                    onHoldBypassChange = { viewModel.setHoldBypass(it) },
+                    onToggleBypass = { viewModel.toggleBypass() },
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                    onResetZero = {
+                        preferVmUndo = false
+                        selectedPersona = null
+                        selectedAcousticMode = TtsPersonaAcousticMode.NATURAL
+                        pitchSemitones = 0f
+                        formantShift = 1.0f
+                        warmthDb = 0f
+                        presenceDb = 0f
+                        mix = 0f
+                        voiceHistory.commit(
+                            currentVoiceSnap(
+                                pitch = 0f,
+                                formant = 1.0f,
+                                warmth = 0f,
+                                presence = 0f,
+                                mixVal = 0f,
+                                personaId = null,
+                                acousticMode = TtsPersonaAcousticMode.NATURAL,
+                            ),
+                        )
+                        viewModel.resetAllEffects()
+                    },
+                    onOpenSaveDraft = { saveDraftDialogOpen = true },
+                    embedded = true,
                 )
-                viewModel.resetAllEffects()
             },
-            onOpenSaveDraft = { saveDraftDialogOpen = true },
         )
 
         // Live zero-latency microphone character tester (VoiceProcessor)
@@ -1905,43 +1902,25 @@ fun VoiceTransformerScreen(
                         VoiceEffect.NONE to "Natural",
                     )
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    liveOptions.forEach { (eff, fallbackLabel) ->
-                        val isSel = selectedLiveEffect == eff
-                        val chipLabel = when (eff) {
-                            VoiceEffect.CHILD_NATURAL -> t(lang, "voice_char_child")
-                            else -> fallbackLabel
+                VoiceModeDropdown(
+                    label = if (lang == AppLanguage.EN) "Live microphone effect" else "تأثير الميكروفون الحي",
+                    selected = selectedLiveEffect,
+                    options = liveOptions.map { it.first },
+                    optionLabel = { effect ->
+                        if (effect == VoiceEffect.CHILD_NATURAL) {
+                            t(lang, "voice_char_child")
+                        } else {
+                            liveOptions.first { it.first == effect }.second
                         }
-                        FilterChip(
-                            selected = isSel,
-                            onClick = {
-                                selectedLiveEffect = eff
-                                if (uiState.isLiveVoiceChangerActive) {
-                                    viewModel.setLiveVoiceEffect(eff)
-                                }
-                            },
-                            label = {
-                                Text(
-                                    text = chipLabel,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = StudioColors.Cyan.copy(alpha = 0.2f),
-                                selectedLabelColor = StudioColors.Cyan,
-                            ),
-                            modifier = Modifier
-                                .defaultMinSize(minHeight = 40.dp)
-                                .testTag("live_fx_chip_${eff.name}"),
-                        )
-                    }
-                }
+                    },
+                    testTag = "live_fx_dropdown",
+                    onSelect = { effect ->
+                        selectedLiveEffect = effect
+                        if (uiState.isLiveVoiceChangerActive) {
+                            viewModel.setLiveVoiceEffect(effect)
+                        }
+                    },
+                )
 
                 val liveToggleInteraction = remember { MutableInteractionSource() }
                 Button(
@@ -1951,7 +1930,7 @@ fun VoiceTransformerScreen(
                         } else if (viewModel.hasMicPermission()) {
                             viewModel.startLiveVoiceProcessor(selectedLiveEffect)
                         } else {
-                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            showMicPermissionRationale = true
                         }
                     },
                     interactionSource = liveToggleInteraction,
@@ -2041,6 +2020,34 @@ fun VoiceTransformerScreen(
                         voiceHistory.commit(currentVoiceSnap(acousticMode = mode))
                     },
                 )
+                VoiceModeDropdown(
+                    label = if (lang == AppLanguage.EN) "Speech language" else "لغة النطق",
+                    selected = selectedVoiceLanguage,
+                    options = AiVoiceLanguage.entries,
+                    optionLabel = { if (lang == AppLanguage.EN) it.titleEn else it.titleAr },
+                    testTag = "voice_language_dropdown",
+                    onSelect = { selectedVoiceLanguage = it },
+                )
+                if (selectedVoiceLanguage == AiVoiceLanguage.AR) {
+                    VoiceModeDropdown(
+                        label = if (lang == AppLanguage.EN) "Arabic dialect" else "اللهجة العربية",
+                        selected = selectedArabicDialect,
+                        options = AiArabicDialect.entries,
+                        optionLabel = { if (lang == AppLanguage.EN) it.titleEn else it.titleAr },
+                        testTag = "voice_arabic_dialect_dropdown",
+                        onSelect = { selectedArabicDialect = it },
+                    )
+                }
+                if (selectedVoiceLanguage == AiVoiceLanguage.EN) {
+                    VoiceModeDropdown(
+                        label = if (lang == AppLanguage.EN) "English accent" else "اللكنة الإنجليزية",
+                        selected = selectedEnglishAccent,
+                        options = AiEnglishAccent.entries,
+                        optionLabel = { if (lang == AppLanguage.EN) it.titleEn else it.titleAr },
+                        testTag = "voice_english_accent_dropdown",
+                        onSelect = { selectedEnglishAccent = it },
+                    )
+                }
             }
         }
 
@@ -2121,7 +2128,7 @@ fun VoiceTransformerScreen(
                     },
                 )
                 StudioParamSlider(
-                    label = t(lang, "voice_mix"),
+                    label = if (lang == AppLanguage.EN) "Vocal character intensity" else "شدة الشخصية الصوتية",
                     value = mix,
                     min = 0f,
                     max = 1f,
@@ -2147,49 +2154,10 @@ fun VoiceTransformerScreen(
                     )
                 }
 
-                PreviewAndApplyActionRow(
-                    isPreviewPlaying = uiState.isToolPreviewPlaying,
-                    previewEnabled = uiState.hasAudio && !uiState.isBusy,
-                    applyEnabled = uiState.hasAudio && !uiState.isBusy,
-                    language = lang,
-                    previewTag = "voice_preview_transform_button",
-                    applyTag = "voice_apply_transform_button",
-                    applyLabel = t(lang, "apply_now"),
-                    applyColor = StudioColors.Violet,
-                    onPreviewClick = {
-                        viewModel.previewVoiceTransformerOffline(
-                            pitchSemitones = pitchSemitones,
-                            formantShift = formantShift,
-                            warmthDb = warmthDb,
-                            presenceDb = presenceDb,
-                            mix = mix,
-                            acousticMode = selectedAcousticMode,
-                            style = selectedPersona?.defaultStyle ?: TtsDeliveryStyle.NATURAL_WARM,
-                            gender = selectedPersona?.gender ?: TtsGender.MALE,
-                        )
-                    },
-                    onApplyClick = {
-                        preferVmUndo = true
-                        val resolvedLabel = selectedPersona?.let {
-                            if (lang == AppLanguage.EN) it.titleEn else it.titleAr
-                        } ?: t(lang, "section_voice_transformer_title")
-                        viewModel.transformVoiceOffline(
-                            pitchSemitones = pitchSemitones,
-                            formantShift = formantShift,
-                            warmthDb = warmthDb,
-                            presenceDb = presenceDb,
-                            mix = mix,
-                            characterLabel = resolvedLabel,
-                            acousticMode = selectedAcousticMode,
-                            style = selectedPersona?.defaultStyle ?: TtsDeliveryStyle.NATURAL_WARM,
-                            gender = selectedPersona?.gender ?: TtsGender.MALE,
-                        )
-                    },
-                )
             }
         }
 
-        // Sonix Hybrid AI Voice-to-Voice Transformer (Local ONNX -> Gemini 2.5 Audio + FFmpegKit)
+        // Deterministic VoxCPM2 generation with client-side audio tuning.
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
@@ -2214,32 +2182,50 @@ fun VoiceTransformerScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = if (lang == AppLanguage.EN) {
-                                "Sonix AI Voice-to-Voice (Realistic Human)"
+                                "VoxCPM2 Cloud Character Voice"
                             } else {
-                                "تحويل الصوت البشري بالذكاء الاصطناعي (Voice-to-Voice)"
+                                "تحويل الشخصية الصوتية عبر VoxCPM2 السحابي"
                             },
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = StudioColors.Cyan,
                         )
                         Text(
-                            text = if (uiState.localModelStatus.isVoiceChangerReady) {
-                                if (lang == AppLanguage.EN) {
-                                    "Hybrid ONNX Local Model Active + Cloud Fallback"
-                                } else {
-                                    "المحرك الهجين: نموذج ONNX المحلي نشط مع دعم Gemini 2.5"
-                                }
+                            text = if (lang == AppLanguage.EN) {
+                                "Deterministic VoxCPM2 synthesis with clean, isolated output."
                             } else {
-                                if (lang == AppLanguage.EN) {
-                                    "Gemini 2.5 Audio Re-Voicing preserving words, dialect & emotion + FFmpegKit"
-                                } else {
-                                    "يعيد أداء كلامك بصوت بشري واقعي مع حفظ اللهجة والانفعال عبر Gemini 2.5 و FFmpegKit"
-                                }
+                                "توليد حتمي عبر VoxCPM2 مع إخراج صوتي منفصل وواضح."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = StudioColors.TextSecondary,
                         )
                     }
                 }
+
+                OutlinedTextField(
+                    value = targetText,
+                    onValueChange = { targetText = it },
+                    label = {
+                        Text(
+                            if (lang == AppLanguage.EN) {
+                                "Text for the selected character"
+                            } else {
+                                "النص المراد نطقه بالشخصية المختارة"
+                            },
+                        )
+                    },
+                    minLines = 3,
+                    maxLines = 6,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = StudioColors.Cyan,
+                        unfocusedBorderColor = StudioColors.Border,
+                        focusedTextColor = StudioColors.TextPrimary,
+                        unfocusedTextColor = StudioColors.TextPrimary,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("voice_character_text_input"),
+                )
 
                 uiState.voiceAiStatusNote?.takeIf { it.isNotBlank() }?.let { note ->
                     AiStatusCard(message = note, isAmber = true)
@@ -2248,6 +2234,7 @@ fun VoiceTransformerScreen(
                 if (uiState.isVoiceAiConverting) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         LinearProgressIndicator(
+                            progress = { uiState.voiceAiProgress?.coerceIn(0f, 1f) ?: 0f },
                             color = StudioColors.Cyan,
                             trackColor = StudioColors.BgTop,
                             modifier = Modifier
@@ -2255,9 +2242,14 @@ fun VoiceTransformerScreen(
                                 .height(6.dp)
                                 .clip(CircleShape),
                         )
+                        Text(
+                            text = "${((uiState.voiceAiProgress ?: 0f) * 100f).toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StudioColors.Cyan,
+                        )
                         val cancelAiVcInt = remember { MutableInteractionSource() }
                         OutlinedButton(
-                            onClick = { viewModel.cancelActiveOnlineRequest() },
+                            onClick = { viewModel.cancelCharacterVoiceWithVox() },
                             interactionSource = cancelAiVcInt,
                             border = BorderStroke(1.dp, StudioColors.RoseBright),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.RoseBright),
@@ -2274,85 +2266,89 @@ fun VoiceTransformerScreen(
                         }
                     }
                 }
-
-                val targetCharacterLabel = selectedPersona?.let {
-                    if (lang == AppLanguage.EN) it.titleEn else it.titleAr
-                } ?: if (lang == AppLanguage.EN) "Realistic Studio Voice" else "شخصية استوديو طبيعية"
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+            }
+        }
+    }
+        Card(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .imePadding()
+                .padding(16.dp),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (uiState.isVoiceAiConverting) {
+                    LinearProgressIndicator(
+                        progress = { uiState.voiceAiProgress?.coerceIn(0f, 1f) ?: 0f },
+                        color = StudioColors.Cyan,
+                        trackColor = StudioColors.BgTop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .clip(CircleShape),
+                    )
+                    Text(
+                        text = "${((uiState.voiceAiProgress ?: 0f) * 100f).toInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = StudioColors.Cyan,
+                    )
+                    uiState.voiceAiStatusNote?.let { status ->
+                        Text(status, style = MaterialTheme.typography.labelSmall, color = StudioColors.TextSecondary)
+                    }
+                }
+                Button(
+                    onClick = { runVoxGeneration(true) },
+                    enabled = targetText.isNotBlank() && !uiState.isVoiceAiConverting && !uiState.isBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Cyan,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("voice_ai_preview_button"),
                 ) {
-                    val previewAiInt = remember { MutableInteractionSource() }
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.previewVoiceWithAi(
-                                preset = null,
-                                targetLabel = targetCharacterLabel,
-                                pitchSemitones = pitchSemitones,
-                                formantShift = formantShift,
-                                warmthDb = warmthDb,
-                                presenceDb = presenceDb,
-                                targetPersona = selectedPersona,
-                                acousticMode = selectedAcousticMode,
-                            )
+                    Icon(
+                        if (uiState.isToolPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (uiState.isToolPreviewPlaying) {
+                            if (lang == AppLanguage.EN) "Stop preview" else "إيقاف المعاينة"
+                        } else {
+                            if (lang == AppLanguage.EN) "Audio Preview" else "معاينة الصوت"
                         },
-                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isVoiceAiConverting,
-                        interactionSource = previewAiInt,
-                        border = BorderStroke(1.dp, StudioColors.Cyan),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Cyan),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(previewAiInt, StudioColors.Cyan, cornerRadius = 14.dp)
-                            .testTag("voice_ai_preview_button"),
-                    ) {
-                        Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = if (lang == AppLanguage.EN) "Preview AI" else "معاينة ذكية",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-
-                    val applyAiInt = remember { MutableInteractionSource() }
-                    Button(
-                        onClick = {
-                            preferVmUndo = true
-                            viewModel.convertVoiceWithAi(
-                                preset = null,
-                                targetLabel = targetCharacterLabel,
-                                pitchSemitones = pitchSemitones,
-                                formantShift = formantShift,
-                                warmthDb = warmthDb,
-                                presenceDb = presenceDb,
-                                targetPersona = selectedPersona,
-                                acousticMode = selectedAcousticMode,
-                            )
-                        },
-                        enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isVoiceAiConverting,
-                        interactionSource = applyAiInt,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = StudioColors.Cyan,
-                            contentColor = StudioColors.BgTop,
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .defaultMinSize(minHeight = 48.dp)
-                            .lit(applyAiInt, StudioColors.Cyan, cornerRadius = 14.dp)
-                            .testTag("voice_ai_apply_button"),
-                    ) {
-                        Icon(Icons.Rounded.RecordVoiceOver, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = if (lang == AppLanguage.EN) "Convert with AI" else "تحويل AI بشري",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                    )
+                }
+                Button(
+                    onClick = {
+                        preferVmUndo = true
+                        runVoxGeneration(false)
+                    },
+                    enabled = targetText.isNotBlank() && !uiState.isVoiceAiConverting && !uiState.isBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StudioColors.Violet,
+                        contentColor = StudioColors.BgTop,
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("voice_ai_apply_button"),
+                ) {
+                    Icon(Icons.Rounded.CheckCircle, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (lang == AppLanguage.EN) "Apply & approve" else "موافقة واعتماد")
                 }
             }
         }
@@ -2375,6 +2371,57 @@ fun VoiceTransformerScreen(
         language = lang,
         onDismiss = { infoOpen = false },
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun <T> VoiceModeDropdown(
+    label: String,
+    selected: T,
+    options: List<T>,
+    optionLabel: (T) -> String,
+    testTag: String,
+    onSelect: (T) -> Unit,
+) {
+    var expanded by rememberSaveable(testTag) { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = optionLabel(selected),
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = StudioColors.Cyan,
+                unfocusedBorderColor = StudioColors.Border,
+                focusedTextColor = StudioColors.TextPrimary,
+                unfocusedTextColor = StudioColors.TextPrimary,
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .testTag(testTag),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(optionLabel(option)) },
+                    onClick = {
+                        expanded = false
+                        onSelect(option)
+                    },
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -2510,9 +2557,9 @@ private fun CategorizedVoicePersonasSection(
     ) {
         Text(
             text = when {
-                isLocalStudioTts && language == AppLanguage.EN -> "Men's Voices (Local TTS + FFmpegKit)"
+                isLocalStudioTts && (language == AppLanguage.EN || language == AppLanguage.TR) -> "Men's Voices (Local TTS + FFmpegKit)"
                 isLocalStudioTts -> "قسم نبرات الرجال (محلي + FFmpegKit)"
-                language == AppLanguage.EN -> "Men's Voices (Gemini 2.5 Audio)"
+                language == AppLanguage.EN || language == AppLanguage.TR -> "Men's Voices (Gemini 2.5 Audio)"
                 else -> "قسم نبرات الرجال (Gemini 2.5)"
             },
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
@@ -2545,9 +2592,9 @@ private fun CategorizedVoicePersonasSection(
 
         Text(
             text = when {
-                isLocalStudioTts && language == AppLanguage.EN -> "Women's Voices (Local TTS + FFmpegKit)"
+                isLocalStudioTts && (language == AppLanguage.EN || language == AppLanguage.TR) -> "Women's Voices (Local TTS + FFmpegKit)"
                 isLocalStudioTts -> "قسم نبرات النساء (محلي + FFmpegKit)"
-                language == AppLanguage.EN -> "Women's Voices (Gemini 2.5 Audio)"
+                language == AppLanguage.EN || language == AppLanguage.TR -> "Women's Voices (Gemini 2.5 Audio)"
                 else -> "قسم نبرات النساء (Gemini 2.5)"
             },
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
@@ -2997,6 +3044,19 @@ fun SettingsScreen(
                 )
             },
             confirmButton = {
+                if (uiState.authSession is AuthSession.SignedIn) {
+                    TextButton(
+                        onClick = {
+                            privacyDialogOpen = false
+                            viewModel.signOut()
+                        },
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                    ) {
+                        Text(t(lang, "auth_sign_out"), color = StudioColors.RoseBright)
+                    }
+                }
+            },
+            dismissButton = {
                 TextButton(
                     onClick = { privacyDialogOpen = false },
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp),

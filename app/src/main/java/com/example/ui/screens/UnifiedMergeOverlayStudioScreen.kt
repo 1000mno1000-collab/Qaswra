@@ -967,9 +967,11 @@ private fun DualTrackInteractiveTimelineCard(
     val layout = remember(primaryDurMs, secondaryDurMs, params) {
         computeMergeTimelineLayout(primaryDurMs, secondaryDurMs, params)
     }
-    val spanMs = remember(layout) { max(layout.totalDurationMs, 2000L) }
+    val computedSpanMs = remember(layout) { max(layout.totalDurationMs, 2000L) }
     var draggingTrack by remember { mutableIntStateOf(0) } // 0 = none, 1 = primary, 2 = secondary
     var dragBadgeMs by remember { mutableStateOf<Long?>(null) }
+    var dragScaleMs by remember { mutableLongStateOf(computedSpanMs) }
+    val spanMs = if (draggingTrack == 0) computedSpanMs else dragScaleMs
 
     Card(
         shape = RoundedCornerShape(20.dp),
@@ -1144,8 +1146,9 @@ private fun DualTrackInteractiveTimelineCard(
                             laneWidthPx = laneWidthPx,
                             tag = "merge_timeline_track_primary",
                             onDragDeltaPx = { dx ->
+                                if (draggingTrack == 0) dragScaleMs = spanMs
                                 draggingTrack = 1
-                                val dSec = (dx / laneWidthPx) * (spanMs / 1000f)
+                                val dSec = (dx / laneWidthPx) * (dragScaleMs / 1000f)
                                 val nextSec = (latestParams.primaryStartOffsetSec + dSec).coerceIn(0f, 60f)
                                 dragBadgeMs = (nextSec * 1000f).roundToLong()
                                 onUpdateParams(120L) { it.copy(primaryStartOffsetSec = nextSec) }
@@ -1169,8 +1172,9 @@ private fun DualTrackInteractiveTimelineCard(
                             laneWidthPx = laneWidthPx,
                             tag = "merge_timeline_track_secondary",
                             onDragDeltaPx = { dx ->
+                                if (draggingTrack == 0) dragScaleMs = spanMs
                                 draggingTrack = 2
-                                val dSec = (dx / laneWidthPx) * (spanMs / 1000f)
+                                val dSec = (dx / laneWidthPx) * (dragScaleMs / 1000f)
                                 when (latestParams.mode) {
                                     MergeStudioMode.OVERLAY -> {
                                         val nextSec = (latestParams.overlayStartOffsetSec + dSec).coerceIn(0f, 60f)
@@ -1320,9 +1324,12 @@ private fun TimelineTrackLane(
     onDragDeltaPx: (Float) -> Unit,
     onDragEnd: () -> Unit,
 ) {
-    val startFrac = (startMs.toFloat() / spanMs.toFloat()).coerceIn(0f, 0.94f)
+    val latestOnDragDelta by rememberUpdatedState(onDragDeltaPx)
+    val latestOnDragEnd by rememberUpdatedState(onDragEnd)
+    val startFrac = (startMs.toFloat() / spanMs.toFloat()).coerceIn(0f, 1f)
     val durFrac = if (enabled && durationMs > 0L) {
-        (durationMs.toFloat() / spanMs.toFloat()).coerceIn(0.08f, 1f - startFrac)
+        val remainingFrac = (1f - startFrac).coerceAtLeast(0.001f)
+        (durationMs.toFloat() / spanMs.toFloat()).coerceIn(minOf(0.08f, remainingFrac), remainingFrac)
     } else {
         0.30f
     }
@@ -1348,13 +1355,13 @@ private fun TimelineTrackLane(
                 .padding(vertical = 3.dp)
                 .then(
                     if (enabled) {
-                        Modifier.pointerInput(spanMs) {
+                        Modifier.pointerInput(tag) {
                             detectHorizontalDragGestures(
-                                onDragEnd = onDragEnd,
-                                onDragCancel = onDragEnd,
+                                onDragEnd = { latestOnDragEnd() },
+                                onDragCancel = { latestOnDragEnd() },
                                 onHorizontalDrag = { change, dragAmount ->
                                     change.consume()
-                                    onDragDeltaPx(dragAmount)
+                                    latestOnDragDelta(dragAmount)
                                 },
                             )
                         }

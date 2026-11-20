@@ -13,6 +13,7 @@ import com.example.audio.tts.SmartVoiceRouter
 import com.example.audio.tts.TtsTextLimits
 import com.example.audio.tts.VoiceRouteOutcome
 import com.example.audio.writeStereoWavFile
+import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.AppLanguage
 import com.example.model.StereoAudioBuffer
 import com.example.model.TtsDeliveryStyle
@@ -62,6 +63,7 @@ interface AiVoiceStudioEngine {
         backendUrl: String,
         outWavFile: File,
         bearerToken: String = "",
+        onProgress: (Float, String) -> Unit = { _, _ -> },
     ): AiVoiceSynthOutcome
 }
 
@@ -139,6 +141,7 @@ internal object BackendHttpHelper {
             connectTimeout = 15_000
             readTimeout = timeoutMs
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("Connection", "keep-alive")
             setRequestProperty("User-Agent", "Sonix-AiVoiceStudio/2.0")
             if (cleanServerBearer.isNotBlank()) {
                 setRequestProperty("X-Sonix-Bearer", cleanServerBearer)
@@ -150,6 +153,75 @@ internal object BackendHttpHelper {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             code to text
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    suspend fun uploadGradioReferenceFile(
+        endpointUrl: String,
+        file: File,
+        onProgress: (Float) -> Unit,
+    ): JSONObject? = withContext(Dispatchers.IO) {
+        if (!file.isFile || file.length() <= 0L) return@withContext null
+        val safeUrl = NetworkImmunityManager.enforceHttps(endpointUrl)
+        val boundary = "SonixVoiceUpload-${UUID.randomUUID()}"
+        val conn = (URL(safeUrl).openConnection() as HttpURLConnection).apply {
+            NetworkImmunityManager.enforceTls12Plus(this)
+            requestMethod = "POST"
+            doOutput = true
+            doInput = true
+            connectTimeout = 25_000
+            readTimeout = 60_000
+            setChunkedStreamingMode(64 * 1024)
+            setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("User-Agent", "Sonix-AiVoiceStudio/2.0")
+        }
+        try {
+            val header = "--$boundary\r\n" +
+                "Content-Disposition: form-data; name=\"files\"; filename=\"reference.wav\"\r\n" +
+                "Content-Type: audio/wav\r\n\r\n"
+            val footer = "\r\n--$boundary--\r\n"
+            onProgress(0f)
+            conn.outputStream.use { output ->
+                output.write(header.toByteArray(Charsets.UTF_8))
+                FileInputStream(file).use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    var copied = 0L
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        if (read == 0) continue
+                        output.write(buffer, 0, read)
+                        copied += read
+                        onProgress((copied.toFloat() / file.length()).coerceIn(0f, 1f))
+                    }
+                }
+                output.write(footer.toByteArray(Charsets.UTF_8))
+            }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val response = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) return@withContext null
+            onProgress(1f)
+            val value = org.json.JSONTokener(response).nextValue()
+            val fileInfo = when (value) {
+                is JSONArray -> value.optJSONObject(0)
+                    ?: value.optString(0).takeIf { it.isNotBlank() }?.let { JSONObject().put("path", it) }
+                is JSONObject -> value
+                is String -> JSONObject().put("path", value)
+                else -> null
+            } ?: return@withContext null
+            val path = fileInfo.optString("path").ifBlank { fileInfo.optString("name") }
+            if (path.isBlank()) return@withContext null
+            JSONObject()
+                .put("path", path)
+                .put("orig_name", fileInfo.optString("orig_name").ifBlank { file.name })
+                .put("size", file.length())
+                .put("mime_type", "audio/wav")
+                .put("meta", JSONObject().put("_type", "gradio.FileData"))
         } finally {
             conn.disconnect()
         }
@@ -266,6 +338,7 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         backendUrl: String,
         outWavFile: File,
         bearerToken: String,
+        onProgress: (Float, String) -> Unit,
     ): AiVoiceSynthOutcome {
         val cleanBase = backendUrl.trim().trimEnd('/')
         return if (cleanBase.isNotEmpty()) {
@@ -276,9 +349,10 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                 request = request,
                 textChunk = textChunk,
                 outWavFile = outWavFile,
+                onProgress = onProgress,
             )
         } else {
-            callPublicVoxCpmSpace(context, request, textChunk, outWavFile)
+            callPublicVoxCpmSpace(context, request, textChunk, outWavFile, onProgress)
         }
     }
 
@@ -289,6 +363,7 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         request: AiVoiceSynthRequest,
         textChunk: String,
         outWavFile: File,
+        onProgress: (Float, String) -> Unit,
     ): AiVoiceSynthOutcome {
         val refB64 = if (request.referenceAudioPath != null) {
             BackendHttpHelper.encodeFileBase64OrNull(request.referenceAudioPath)
@@ -296,6 +371,7 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
             null
         }
         val payload = AiVoicePromptBuilder.buildBackendPayloadJson(request, textChunk, refB64)
+        onProgress(0.15f, "جاري إرسال النص والعينة المرجعية إلى VoxCPM2...")
         val (code, bytes) = try {
             BackendHttpHelper.postSynthesizeJson(
                 context = context,
@@ -313,6 +389,7 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
             return BackendHttpHelper.mapHttpError(kind, "VoxCPM2", code, bytes)
         }
 
+        onProgress(0.88f, "اكتمل التوليد، جاري تجهيز الصوت...")
         return persistAudioBytesAsWav(
             context = context,
             rawBytes = bytes,
@@ -327,19 +404,9 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         request: AiVoiceSynthRequest,
         textChunk: String,
         outWavFile: File,
+        onProgress: (Float, String) -> Unit,
     ): AiVoiceSynthOutcome {
         val instruction = AiVoicePromptBuilder.buildVoxCpmInstruction(request)
-        if (!request.referenceAudioPath.isNullOrBlank()) {
-            return AiVoiceSynthOutcome.ConfigurationRequired(
-                engine = kind,
-                titleAr = "استنساخ الصوت عبر VoxCPM2 يتطلب ربط خادم GPU",
-                titleEn = "Voice Cloning Requires Your GPU Backend URL",
-                explanationAr = "الفضاء العام التجريبي على Hugging Face لا يدعم رفع عينات الاستنساخ الخاصة بك مباشرة.",
-                explanationEn = "The public Space does not support private reference audio cloning directly.",
-                setupStepsAr = "يمكنك استخدام تصميم صوتي دون عينة، أو ربط خادم GPU خاص يدعم الاستنساخ.",
-                setupStepsEn = "Use voice design without a reference, or configure a private GPU backend that supports cloning.",
-            )
-        }
 
         val (infoCode, infoJsonStr) = runCatching {
             BackendHttpHelper.getJson("$PUBLIC_SPACE_BASE/gradio_api/info", timeoutMs = 10_000)
@@ -375,9 +442,57 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         val apiSlug = endpointName.removePrefix("/")
         val endpointMeta = namedEndpoints?.optJSONObject(endpointName)
         val paramsArray = endpointMeta?.optJSONArray("parameters")
-        val dataArgs = buildGradioDataArgs(paramsArray, textChunk, instruction, request)
+        val referenceFile = request.referenceAudioPath?.takeIf { it.isNotBlank() }?.let(::File)
+        val hasReferenceInput = paramsArray?.let { params ->
+            (0 until params.length()).any { index ->
+                val parameter = params.optJSONObject(index) ?: return@any false
+                val key = "${parameter.optString("parameter_name")} ${parameter.optString("label")}"
+                key.contains("prompt", ignoreCase = true) && key.contains("wav", ignoreCase = true)
+            }
+        } == true
+        if (referenceFile != null && (!referenceFile.isFile || !hasReferenceInput)) {
+            return AiVoiceSynthOutcome.ConfigurationRequired(
+                engine = kind,
+                titleAr = "استنساخ الصوت غير مدعوم في واجهة VoxCPM2 الحالية",
+                titleEn = "Voice cloning is not supported by the current VoxCPM2 endpoint",
+                explanationAr = "تعذر العثور على مدخل آمن لرفع العينة المرجعية في الخدمة الحالية.",
+                explanationEn = "The current public endpoint does not expose a compatible reference-audio input.",
+                setupStepsAr = "أعد المحاولة لاحقاً أو استخدم نقطة خدمة تدعم العينة المرجعية.",
+                setupStepsEn = "Retry later or use an endpoint that supports reference audio.",
+            )
+        }
+        val referenceFileData = if (referenceFile != null) {
+            onProgress(0.10f, "جاري رفع العينة المرجعية إلى VoxCPM2...")
+            try {
+                BackendHttpHelper.uploadGradioReferenceFile(
+                    endpointUrl = "$PUBLIC_SPACE_BASE/gradio_api/upload",
+                    file = referenceFile,
+                ) { progress ->
+                    onProgress(
+                        0.10f + progress * 0.25f,
+                        "جاري رفع العينة المرجعية إلى VoxCPM2 (${(progress * 100).toInt()}%)...",
+                    )
+                } ?: return AiVoiceSynthOutcome.Error(
+                    engine = kind,
+                    messageAr = "تعذر رفع العينة المرجعية إلى خدمة VoxCPM2 العامة.",
+                    messageEn = "Could not upload the reference audio to the public VoxCPM2 service.",
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                return AiVoiceSynthOutcome.Error(
+                    engine = kind,
+                    messageAr = "تعذر رفع العينة المرجعية: ${e.localizedMessage ?: e.javaClass.simpleName}",
+                    messageEn = "Reference audio upload failed: ${e.localizedMessage ?: e.javaClass.simpleName}",
+                )
+            }
+        } else {
+            null
+        }
+        val dataArgs = buildGradioDataArgs(paramsArray, textChunk, instruction, request, referenceFileData)
 
         val submitPayload = JSONObject().put("data", dataArgs)
+        onProgress(0.38f, "جاري إرسال النص النظيف إلى VoxCPM2...")
         val (submitCode, submitRespBytes) = runCatching {
             BackendHttpHelper.postSynthesizeJson(
                 context = context,
@@ -405,7 +520,10 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
             )
         }
 
-        val audioUrl = pollGradioEventForAudioUrl("$PUBLIC_SPACE_BASE/gradio_api/call/$apiSlug/$eventId")
+        val audioUrl = pollGradioEventForAudioUrl(
+            eventUrl = "$PUBLIC_SPACE_BASE/gradio_api/call/$apiSlug/$eventId",
+            onProgress = onProgress,
+        )
         if (audioUrl.isNullOrBlank()) {
             return AiVoiceSynthOutcome.Error(
                 engine = kind,
@@ -422,7 +540,7 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         val audioOutcome = NetworkImmunityManager.fetchAudioWithFallback(
             urls = listOf(resolvedAudioUrl),
             context = context,
-            timeoutMs = 45_000L,
+            timeoutMs = 120_000L,
             providerLabel = "VoxCPM2SpaceAudio",
         )
         return when (audioOutcome) {
@@ -455,15 +573,17 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
             ?: keys.firstOrNull()
     }
 
-    private fun buildGradioDataArgs(
+    internal fun buildGradioDataArgs(
         paramsArray: JSONArray?,
         text: String,
         instruction: String,
         request: AiVoiceSynthRequest,
+        referenceFileData: JSONObject? = null,
     ): JSONArray {
         val arr = JSONArray()
+        val cleanText = AiVoicePromptBuilder.normalizeTargetText(text, request.language, request.dialect)
         if (paramsArray == null || paramsArray.length() == 0) {
-            arr.put("($instruction) $text")
+            arr.put(cleanText)
             return arr
         }
         for (i in 0 until paramsArray.length()) {
@@ -474,21 +594,40 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
             val defaultVal = p.opt("parameter_default")
             when {
                 key.contains("target text") || pName == "text" || pName == "text_input" -> {
-                    val combined = if (paramsArray.toString().contains("control", true)) text else "($instruction) $text"
-                    arr.put(combined)
+                    arr.put(cleanText)
                 }
-                key.contains("control") || key.contains("instruct") || key.contains("style") || key.contains("description") -> {
+                key.contains("control") || key.contains("instruct") -> {
                     arr.put(instruction)
                 }
-                key.contains("randomize") || key.contains("random_seed") -> arr.put(false)
-                key.contains("speaker id") || pName == "sid" || pName == "speaker_id" || pName == "speakerid" -> {
+                key.contains("emotion intensity") -> arr.put(request.emotionIntensity.toDouble())
+                key.contains("emotion") -> arr.put(request.emotion.id)
+                key.contains("style") -> arr.put(request.vocalStyle.id)
+                key.contains("description") -> arr.put(request.voiceDescriptionPrompt.trim())
+                key.contains("language") -> arr.put(request.language.code)
+                key.contains("dialect") -> arr.put(request.dialect.id)
+                key.contains("accent") -> arr.put(request.englishAccent.id)
+                key.contains("randomize") -> arr.put(false)
+                key.contains("random_seed") && defaultVal is Boolean -> arr.put(false)
+                key.contains("speaker") || pName == "sid" || pName == "fixed_sid" -> {
                     arr.put(request.fixedSid)
                 }
                 key.contains("seed") -> arr.put(request.fixedSeed)
+                key.contains("pause") -> arr.put(request.breathCadence.pauseAfterMs)
+                key.contains("breath") || key.contains("cadence") -> arr.put(request.breathCadence.id)
+                key.contains("pitch contour") -> arr.put(request.pitchContour.id)
+                key.contains("timbre") || key.contains("resonance") -> arr.put(request.timbre.id)
+                key.contains("formant") -> arr.put((request.fixedFormantShift * request.timbre.formantMultiplier).toDouble())
+                key.contains("clarity") -> arr.put(request.articulationClarity.toDouble())
+                key.contains("warmth") -> arr.put((request.fixedEqLowDb + request.timbre.warmthDb).toDouble())
+                key.contains("presence") -> arr.put((request.fixedEqPresenceDb + request.timbre.presenceDb).toDouble())
+                key.contains("speed") || key.contains("rate") -> arr.put(request.speechRate.toDouble())
+                key.contains("pitch") -> arr.put(request.pitchOffsetSemitones.toDouble())
+                key.contains("pace") -> arr.put(request.pace.id)
                 key.contains("cfg") -> arr.put(request.cfgValue.toDouble())
                 key.contains("step") -> arr.put(request.inferenceTimesteps)
                 key.contains("normalize") -> arr.put(request.normalizeAudio)
-                key.contains("prompt") && key.contains("wav") -> arr.put(JSONObject.NULL)
+                key.contains("prompt") && key.contains("wav") -> arr.put(referenceFileData ?: JSONObject.NULL)
+                key.contains("prompt") && key.contains("text") -> arr.put(request.referenceTranscript.trim())
                 defaultVal != null && defaultVal != JSONObject.NULL -> arr.put(defaultVal)
                 else -> arr.put(JSONObject.NULL)
             }
@@ -496,11 +635,18 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         return arr
     }
 
-    private suspend fun pollGradioEventForAudioUrl(eventUrl: String): String? = withContext(Dispatchers.IO) {
-        val deadline = System.currentTimeMillis() + 35_000L
+    private suspend fun pollGradioEventForAudioUrl(
+        eventUrl: String,
+        onProgress: (Float, String) -> Unit,
+    ): String? = withContext(Dispatchers.IO) {
+        val startedAt = System.currentTimeMillis()
+        val timeoutMs = 300_000L
+        val deadline = startedAt + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             coroutineContext.ensureActive()
-            val (code, body) = runCatching { BackendHttpHelper.getJson(eventUrl, timeoutMs = 15_000) }.getOrDefault(0 to "")
+            val (code, body) = runCatching {
+                BackendHttpHelper.getJson(eventUrl, timeoutMs = 60_000)
+            }.getOrDefault(0 to "")
             if (code in 200..299 && body.isNotBlank()) {
                 val lines = body.lines()
                 for (line in lines) {
@@ -511,13 +657,20 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                         if (first is JSONObject) {
                             val url = first.optString("url").takeIf { it.isNotBlank() }
                                 ?: first.optString("path").takeIf { it.isNotBlank() }
-                            if (!url.isNullOrBlank()) return@withContext url
+                            if (!url.isNullOrBlank()) {
+                                onProgress(0.88f, "اكتمل انتظار صف VoxCPM2، جاري تنزيل الصوت...")
+                                return@withContext url
+                            }
                         } else if (first is String && (first.endsWith(".wav", true) || first.startsWith("http"))) {
+                            onProgress(0.88f, "اكتمل انتظار صف VoxCPM2، جاري تنزيل الصوت...")
                             return@withContext first
                         }
                     }
                 }
             }
+            val waited = System.currentTimeMillis() - startedAt
+            val waitingProgress = (0.42f + 0.42f * (waited.toFloat() / timeoutMs)).coerceAtMost(0.84f)
+            onProgress(waitingProgress, "VoxCPM2 يعمل على الطلب؛ ما زال الاتصال نشطاً...")
             delay(1_200L)
         }
         null
@@ -547,10 +700,12 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
         backendUrl: String,
         outWavFile: File,
         bearerToken: String,
+        onProgress: (Float, String) -> Unit,
     ): AiVoiceSynthOutcome = withContext(Dispatchers.IO) {
-        val mappedDialect = mapToLocalDialect(request.language)
+        onProgress(0.1f, "Preparing deterministic voice processing...")
+        val mappedDialect = mapToLocalDialect(request.language, request.dialect)
         val mappedGender = when (request.category) {
-            AiVoiceCategory.FEMALE -> TtsGender.FEMALE
+            AiVoiceCategory.FEMALE, AiVoiceCategory.CHILD -> TtsGender.FEMALE
             AiVoiceCategory.MALE -> TtsGender.MALE
         }
         val mappedStyle = when (request.emotion) {
@@ -575,6 +730,7 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
         val appLang = when (request.language) {
             AiVoiceLanguage.EN -> AppLanguage.EN
             AiVoiceLanguage.FA -> AppLanguage.FA
+            AiVoiceLanguage.TR -> AppLanguage.TR
             else -> AppLanguage.AR
         }
 
@@ -606,6 +762,7 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
                 )
                 writeStereoWavFile(outWavFile, buf)
                 runCatching { outcome.result.audioFile.delete() }
+                onProgress(1f, "Voice processing complete.")
                 AiVoiceSynthOutcome.Success(
                     audioFilePath = outWavFile.absolutePath,
                     sampleRate = buf.sampleRate,
@@ -682,14 +839,13 @@ class SonixLocalStudioEngineProvider : AiVoiceStudioEngine {
         }
     }
 
-    private fun mapToLocalDialect(lang: AiVoiceLanguage): TtsDialect {
+    private fun mapToLocalDialect(lang: AiVoiceLanguage, arabicDialect: AiArabicDialect): TtsDialect {
         val list = com.example.model.TTS_DIALECTS
         return when (lang) {
             AiVoiceLanguage.EN -> list.firstOrNull { it.id == "en_us" } ?: list.first()
             AiVoiceLanguage.FA -> list.firstOrNull { it.id == "persian" } ?: list.first()
             AiVoiceLanguage.TR -> list.firstOrNull { it.id == "turkish" } ?: list.first()
-            AiVoiceLanguage.AR -> list.firstOrNull { it.id == "standard" } ?: list.first()
-            else -> list.firstOrNull { it.id == "en_us" } ?: list.first()
+            AiVoiceLanguage.AR -> list.firstOrNull { it.id == arabicDialect.id } ?: list.first()
         }
     }
 
@@ -850,8 +1006,31 @@ class AiVoiceStudioCoordinator(
                 messageEn = "Text is limited to ${TtsTextLimits.MAX_WORDS} words.",
             )
         }
-        val clean = ArabicTextDiacritizer.normalizeAndHintForTts(rawTrimmed, applyLightDiacritics = true)
-            .ifBlank { rawTrimmed }
+        val phoneticText = AiVoicePromptBuilder.normalizeTargetText(
+            rawTrimmed,
+            request.language,
+            request.dialect,
+        )
+        val dialectAwareText = if (
+            request.language == AiVoiceLanguage.AR &&
+            request.dialect != AiArabicDialect.MSA
+        ) {
+            ArabicTextDiacritizer.normalizeAndHintForTts(phoneticText, applyLightDiacritics = true)
+        } else {
+            phoneticText
+        }
+        val clean = AiVoicePromptBuilder.normalizeTargetText(
+            dialectAwareText,
+            request.language,
+            request.dialect,
+        )
+        if (clean.isBlank()) {
+            return@withContext AiVoiceSynthOutcome.Error(
+                engine = AiVoiceEngineKind.VOXCPM_2,
+                messageAr = "يرجى إدخال نص منطوق صالح.",
+                messageEn = "Please enter valid speech text.",
+            )
+        }
 
         val effectiveEngine = AiVoiceEngineKind.VOXCPM_2
         val effectiveRequest = request.copy(
@@ -880,6 +1059,7 @@ class AiVoiceStudioCoordinator(
         var lastPrompt = ""
 
         try {
+            val chunkProgressSpan = 0.78f / chunks.size.coerceAtLeast(1)
             for ((idx, chunk) in chunks.withIndex()) {
                 coroutineContext.ensureActive()
                 val pct = 0.08f + (idx.toFloat() / chunks.size.toFloat()) * 0.78f
@@ -887,7 +1067,22 @@ class AiVoiceStudioCoordinator(
                 val chunkFile = File(outputDir, "aivoice_chunk_${UUID.randomUUID()}.wav")
                 tempFiles.add(chunkFile)
 
-                when (val res = provider.synthesizeChunk(context, effectiveRequest, chunk, backendUrl, chunkFile, bearerToken)) {
+                when (
+                    val res = provider.synthesizeChunk(
+                        context = context,
+                        request = effectiveRequest,
+                        textChunk = chunk,
+                        backendUrl = backendUrl,
+                        outWavFile = chunkFile,
+                        bearerToken = bearerToken,
+                    ) { fraction, label ->
+                        onProgress(
+                            (pct + fraction.coerceIn(0f, 1f) * chunkProgressSpan)
+                                .coerceIn(pct, pct + chunkProgressSpan),
+                            label,
+                        )
+                    }
+                ) {
                     is AiVoiceSynthOutcome.ConfigurationRequired -> return@withContext AiVoiceSynthOutcome.Error(
                         engine = effectiveEngine,
                         messageAr = res.explanationAr,
@@ -1057,6 +1252,7 @@ class AiVoiceStudioCoordinator(
                 studioMasteringPolish = true,
             )
             writeStereoWavFile(output, tuned)
+            applyDeterministicFfmpegStylePolish(output, tuned.sampleRate, request)
             outcome.copy(
                 sampleRate = tuned.sampleRate,
                 durationMs = tuned.durationMs,
@@ -1070,6 +1266,41 @@ class AiVoiceStudioCoordinator(
                 messageAr = "تعذرت معالجة النبرة الصوتية بعد التوليد: ${e.localizedMessage ?: e.javaClass.simpleName}",
                 messageEn = "Vocal finishing failed: ${e.localizedMessage ?: e.javaClass.simpleName}",
             )
+        }
+    }
+
+    private suspend fun applyDeterministicFfmpegStylePolish(
+        outputFile: File,
+        sampleRate: Int,
+        request: AiVoiceSynthRequest,
+    ) {
+        if (!FfmpegKitBridge.isAvailable()) return
+        val polishedFile = File(outputFile.parentFile, "voice_polish_${UUID.randomUUID()}.wav")
+        val styleFilter = when (request.vocalStyle) {
+            AiVocalStyle.NATURAL -> "equalizer=f=3200:width_type=o:width=0.8:g=0.3"
+            AiVocalStyle.WARM -> "equalizer=f=180:width_type=o:width=1:g=1.2,equalizer=f=4300:width_type=o:width=0.8:g=-0.4"
+            AiVocalStyle.EXPRESSIVE -> "acompressor=threshold=0.14:ratio=1.5:attack=16:release=140"
+            AiVocalStyle.DRAMATIC -> "acompressor=threshold=0.12:ratio=1.8:attack=12:release=180"
+            AiVocalStyle.STORYTELLING -> "equalizer=f=220:width_type=o:width=1:g=0.7,equalizer=f=3000:width_type=o:width=0.8:g=0.6"
+            AiVocalStyle.NEWS_ANCHOR -> "equalizer=f=2800:width_type=o:width=0.8:g=0.8,acompressor=threshold=0.13:ratio=1.7:attack=10:release=120"
+            AiVocalStyle.WHISPERED -> "highpass=f=95,equalizer=f=5200:width_type=o:width=1:g=0.7"
+            AiVocalStyle.ENERGETIC -> "equalizer=f=3600:width_type=o:width=0.8:g=1.0,acompressor=threshold=0.14:ratio=1.6:attack=8:release=100"
+        }
+        val filter = "$styleFilter,alimiter=limit=0.95"
+        val inputPath = outputFile.absolutePath.replace("\"", "\\\"")
+        val polishedPath = polishedFile.absolutePath.replace("\"", "\\\"")
+        try {
+            val ok = FfmpegKitBridge.execute(
+                command = "-y -i \"$inputPath\" -af \"$filter\" -ar ${sampleRate.coerceAtLeast(8000)} -ac 2 -c:a pcm_s16le \"$polishedPath\"",
+                toolName = "AiVoiceStudioVocalPolish",
+                logNonZeroFailure = true,
+                cancelPrevious = false,
+            )
+            if (ok && polishedFile.isFile && polishedFile.length() > 44L) {
+                polishedFile.copyTo(outputFile, overwrite = true)
+            }
+        } finally {
+            polishedFile.delete()
         }
     }
 

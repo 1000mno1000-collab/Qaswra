@@ -71,6 +71,7 @@ class StudioAudioPlayer(
     @Volatile private var playhead: Double = 0.0
     private val isPlaying = AtomicBoolean(false)
     @Volatile private var loopEnabled = false
+    @Volatile private var playbackBoundsEnabled = false
     @Volatile private var loopStartFrac = 0f
     @Volatile private var loopEndFrac = 1f
     @Volatile private var liveClipGainDb = 0f
@@ -252,19 +253,45 @@ class StudioAudioPlayer(
         loopEndFrac = clamp(endFrac, (loopStartFrac + 0.0005f).coerceAtMost(1f), 1f)
     }
 
+    fun setPlaybackBounds(enabled: Boolean, startFrac: Float, endFrac: Float) {
+        playbackBoundsEnabled = enabled
+        loopStartFrac = clamp(startFrac, 0f, 0.9995f)
+        loopEndFrac = clamp(endFrac, (loopStartFrac + 0.0005f).coerceAtMost(1f), 1f)
+        if (!enabled) return
+
+        val total = totalFrameCount()
+        if (total <= 0L) return
+        val startFrame = loopStartFrac.toDouble() * total
+        val endFrame = loopEndFrac.toDouble() * total
+        if (playhead < startFrame || playhead >= endFrame) {
+            playhead = startFrame
+            pipeline?.reset()
+            val player = streamMediaPlayer
+            if (player != null && isPlaying.get()) {
+                val duration = currentDurationMs().coerceAtLeast(1L)
+                runCatching { player.seekTo((loopStartFrac * duration).toInt()) }
+            }
+            emitTelemetry()
+        }
+    }
+
     fun seekToFraction(frac: Float) {
         ExclusiveAudioController.onBeforeStudioPlayerSeek(this)
         val total = totalFrameCount()
         if (total <= 0L) return
         val clampedFrac = clamp(frac, 0f, 1f)
-        val boundedFrac = if (loopEnabled) clamp(clampedFrac, loopStartFrac, loopEndFrac) else clampedFrac
+        val boundedFrac = if (loopEnabled || playbackBoundsEnabled) {
+            clamp(clampedFrac, loopStartFrac, loopEndFrac)
+        } else {
+            clampedFrac
+        }
         playhead = boundedFrac * max(0L, total - 1L).toDouble()
         pipeline?.reset()
         val mp = streamMediaPlayer
         if (mp != null) {
             runCatching {
                 val durMs = max(1L, currentDurationMs())
-                val targetMs = (clampedFrac * durMs).toInt().coerceIn(0, durMs.toInt())
+                val targetMs = (boundedFrac * durMs).toInt().coerceIn(0, durMs.toInt())
                 mp.seekTo(targetMs)
             }
         } else if (isPlaying.get() && buffer == null && sourceFile != null) {
@@ -348,7 +375,7 @@ class StudioAudioPlayer(
         }
 
         val total = totalFrameCount().toInt().coerceAtLeast(buf.frameCount)
-        if (loopEnabled) {
+        if (loopEnabled || playbackBoundsEnabled) {
             val s = (loopStartFrac * total).toInt()
             val e = (loopEndFrac * total).toInt()
             if (playhead < s || playhead >= e) playhead = s.toDouble()
@@ -436,8 +463,8 @@ class StudioAudioPlayer(
                     }
                     if (framesTotal == 0) break
 
-                    val rangeStart = if (loopEnabled) (loopStartFrac * framesTotal).toInt() else 0
-                    val rangeEnd = if (loopEnabled) {
+                    val rangeStart = if (loopEnabled || playbackBoundsEnabled) (loopStartFrac * framesTotal).toInt() else 0
+                    val rangeEnd = if (loopEnabled || playbackBoundsEnabled) {
                         max(rangeStart + 1, (loopEndFrac * framesTotal).toInt())
                     } else {
                         framesTotal
@@ -453,6 +480,7 @@ class StudioAudioPlayer(
                     val rateRatio = (dspTempo * monitoringSpeed.toDouble()).coerceIn(0.4, 3.0)
 
                     var reachedEnd = false
+                    var rangeEndSampleIndex = blockFrames
                     if (isMergeLive && mPrimary != null && mSecondary != null) {
                         val p1Len = mPrimary.frameCount
                         val p2Len = mSecondary.frameCount
@@ -469,6 +497,7 @@ class StudioAudioPlayer(
                                     if (playhead >= rangeEnd) {
                                         if (loopEnabled) playhead = rangeStart.toDouble()
                                         else {
+                                            if (rangeEndSampleIndex == blockFrames) rangeEndSampleIndex = i
                                             tmpL[i] = 0f; tmpR[i] = 0f; reachedEnd = true; continue
                                         }
                                     }
@@ -521,6 +550,7 @@ class StudioAudioPlayer(
                                     if (playhead >= rangeEnd) {
                                         if (loopEnabled) playhead = rangeStart.toDouble()
                                         else {
+                                            if (rangeEndSampleIndex == blockFrames) rangeEndSampleIndex = i
                                             tmpL[i] = 0f; tmpR[i] = 0f; reachedEnd = true; continue
                                         }
                                     }
@@ -571,6 +601,7 @@ class StudioAudioPlayer(
                                     if (playhead >= rangeEnd) {
                                         if (loopEnabled) playhead = rangeStart.toDouble()
                                         else {
+                                            if (rangeEndSampleIndex == blockFrames) rangeEndSampleIndex = i
                                             tmpL[i] = 0f; tmpR[i] = 0f; reachedEnd = true; continue
                                         }
                                     }
@@ -634,14 +665,15 @@ class StudioAudioPlayer(
                                 if (loopEnabled) {
                                     playhead = rangeStart.toDouble()
                                 } else {
+                                    if (rangeEndSampleIndex == blockFrames) rangeEndSampleIndex = i
                                     tmpL[i] = 0f
                                     tmpR[i] = 0f
                                     reachedEnd = true
                                     continue
                                 }
                             }
-                            val i0 = clamp(floor(playhead).toInt(), 0, framesTotal - 1)
-                            val i1 = clamp(i0 + 1, 0, framesTotal - 1)
+                            val i0 = clamp(floor(playhead).toInt(), rangeStart, rangeEnd - 1)
+                            val i1 = clamp(i0 + 1, rangeStart, rangeEnd - 1)
                             val f = (playhead - i0).toFloat()
                             tmpL[i] = activeBuf.left[i0] + (activeBuf.left[i1] - activeBuf.left[i0]) * f
                             tmpR[i] = activeBuf.right[i0] + (activeBuf.right[i1] - activeBuf.right[i0]) * f
@@ -656,6 +688,12 @@ class StudioAudioPlayer(
                         for (i in 0 until blockFrames) {
                             tmpL[i] = clamp(tmpL[i] * lin, -0.98f, 0.98f)
                             tmpR[i] = clamp(tmpR[i] * lin, -0.98f, 0.98f)
+                        }
+                    }
+                    if (playbackBoundsEnabled && reachedEnd && !loopEnabled) {
+                        for (i in rangeEndSampleIndex until blockFrames) {
+                            tmpL[i] = 0f
+                            tmpR[i] = 0f
                         }
                     }
 
@@ -696,12 +734,12 @@ class StudioAudioPlayer(
                         if (tailFlushRemaining == 0) {
                             val echoOn = !cfg.bypassAll &&
                                 cfg.chain.any { it.type == EffectType.ECHO_REVERB && it.enabled }
-                            tailFlushRemaining = if (echoOn) (sr * 0.8).toInt() else 1
+                            tailFlushRemaining = if (echoOn && !playbackBoundsEnabled) (sr * 0.8).toInt() else 1
                         }
                         tailFlushRemaining -= blockFrames
                         if (tailFlushRemaining <= 0 || peak < 0.002f) {
                             isPlaying.set(false)
-                            playhead = 0.0
+                            playhead = if (playbackBoundsEnabled) rangeEnd.toDouble() else 0.0
                             latestLevel = 0f
                             latestDbfs = -60f
                             latestBars = List(48) { 0.06f }
@@ -800,7 +838,7 @@ class StudioAudioPlayer(
 
         val sr = buf.sampleRate.coerceAtLeast(8000)
         val total = buf.frameCount.toLong().coerceAtLeast(1L)
-        if (loopEnabled) {
+        if (loopEnabled || playbackBoundsEnabled) {
             val s = (loopStartFrac * total).toLong()
             val e = (loopEndFrac * total).toLong()
             if (playhead < s || playhead >= e) playhead = s.toDouble()
@@ -859,7 +897,7 @@ class StudioAudioPlayer(
 
         val sr = sourceSampleRate.coerceAtLeast(8000)
         val total = totalFrameCount().coerceAtLeast(1L)
-        if (loopEnabled) {
+        if (loopEnabled || playbackBoundsEnabled) {
             val s = (loopStartFrac * total).toLong()
             val e = (loopEndFrac * total).toLong()
             if (playhead < s || playhead >= e) playhead = s.toDouble()
@@ -873,7 +911,7 @@ class StudioAudioPlayer(
         playbackJob = scope.launch(Dispatchers.IO) {
             try {
                 val startUs = ((playhead * 1_000_000.0) / sr).toLong().coerceAtLeast(0L)
-                val streamedViaCodec = if (pitchSpeedPreviewActive) {
+                val streamedViaCodec = if (pitchSpeedPreviewActive || playbackBoundsEnabled) {
                     false
                 } else {
                     streamDiskFileWithMediaCodec(file, startUs)
@@ -1174,7 +1212,11 @@ class StudioAudioPlayer(
                 } else {
                     completed = true
                     isPlaying.set(false)
-                    playhead = 0.0
+                    playhead = if (playbackBoundsEnabled) {
+                        loopEndFrac.toDouble() * totalFrameCount()
+                    } else {
+                        0.0
+                    }
                     emitTelemetry()
                 }
             }
@@ -1197,6 +1239,16 @@ class StudioAudioPlayer(
                         val sMs = (loopStartFrac * dur).toInt().coerceIn(0, max(0, endBoundMs - 100))
                         runCatching { playerInstance.seekTo(sMs) }
                         curMs = sMs
+                    }
+                } else if (playbackBoundsEnabled && dur > 0L && loopEndFrac < 0.9995f) {
+                    val endBoundMs = (loopEndFrac * dur).toInt()
+                    if (curMs >= endBoundMs) {
+                        curMs = endBoundMs
+                        playhead = loopEndFrac.toDouble() * totalFrameCount()
+                        completed = true
+                        isPlaying.set(false)
+                        emitTelemetry()
+                        break
                     }
                 }
                 playhead = (curMs.toDouble() * sr) / 1000.0

@@ -2,6 +2,8 @@ package com.example.audio.aivoice
 
 import android.content.Context
 import android.net.Uri
+import com.example.audio.AudioFileUploader
+import com.example.audio.AudioUploadOutcome
 import com.example.audio.AudioDecodeOutcome
 import com.example.audio.AudioDecoder
 import com.example.audio.TARGET_SAMPLE_RATE
@@ -9,6 +11,7 @@ import com.example.audio.buildWavHeaderBytes
 import com.example.audio.clamp
 import com.example.audio.resampleStereo
 import com.example.audio.writeStereoWavFile
+import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.StereoAudioBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -52,28 +55,46 @@ object AiVoiceAudioStitcher {
         uri: Uri,
         outWavFile: File,
         maxSeconds: Int = 20,
+        onProgress: (Float?, String) -> Unit = { _, _ -> },
     ): PreparedReferenceAudio? = withContext(Dispatchers.IO) {
-        val rawBuf = AudioDecoder.decodeUri(context, uri) ?: return@withContext null
-        if (rawBuf.frameCount <= 0) return@withContext null
-        val targetRate = 24000
-        val resampled = resampleStereo(rawBuf, targetRate)
-        val maxFrames = (targetRate * maxSeconds).coerceAtMost(resampled.frameCount)
-        val clipped = if (resampled.frameCount > maxFrames) {
-            StereoAudioBuffer(
-                left = resampled.left.copyOf(maxFrames),
-                right = resampled.right.copyOf(maxFrames),
-                sampleRate = targetRate,
-            )
-        } else {
-            resampled
+        val upload = AudioFileUploader.copyAudioUriToCacheDetailed(context, uri) { info ->
+            onProgress(info.fraction * 0.35f, "Copying reference audio (${info.percent}%)")
         }
-        writeStereoWavFile(outWavFile, clipped)
-        PreparedReferenceAudio(
-            wavFile = outWavFile,
-            durationMs = clipped.durationMs,
-            sampleRate = targetRate,
-        )
+        val sourceFile = when (upload) {
+            is AudioUploadOutcome.Success -> upload.uploaded.file
+            is AudioUploadOutcome.Failure -> throw IllegalStateException(upload.errorMessage)
+        }
+        try {
+            outWavFile.parentFile?.mkdirs()
+            onProgress(null, "Converting reference to mono WAV...")
+            val seconds = maxSeconds.coerceIn(1, 60)
+            val command = "-y -i ${quoteFfmpegPath(sourceFile.absolutePath)} -vn -t $seconds -ac 1 -ar 24000 -c:a pcm_s16le ${quoteFfmpegPath(outWavFile.absolutePath)}"
+            val converted = FfmpegKitBridge.execute(
+                command = command,
+                toolName = "AiVoiceReferenceConversion",
+            )
+            if (!converted || !outWavFile.isFile || outWavFile.length() <= 44L) {
+                throw IllegalStateException("FFmpegKit could not convert the selected reference audio to WAV")
+            }
+            onProgress(0.9f, "Validating converted reference audio...")
+            val decoded = AudioDecoder.decodeFile(outWavFile)
+                ?: throw IllegalStateException("The converted reference audio could not be decoded")
+            if (decoded.frameCount <= 0) {
+                throw IllegalStateException("The converted reference audio is empty")
+            }
+            onProgress(1f, "Reference audio is ready")
+            PreparedReferenceAudio(
+                wavFile = outWavFile,
+                durationMs = decoded.durationMs.coerceAtMost(seconds * 1000L),
+                sampleRate = 24000,
+            )
+        } finally {
+            runCatching { sourceFile.delete() }
+        }
     }
+
+    private fun quoteFfmpegPath(path: String): String =
+        "'${path.replace("'", "'\\''")}'"
 
     /**
      * Prepares an existing StereoAudioBuffer (e.g., from current studio recording) as a cloning reference WAV.
@@ -82,8 +103,10 @@ object AiVoiceAudioStitcher {
         buffer: StereoAudioBuffer,
         outWavFile: File,
         maxSeconds: Int = 20,
+        onProgress: (Float?, String) -> Unit = { _, _ -> },
     ): PreparedReferenceAudio? = withContext(Dispatchers.IO) {
         if (buffer.frameCount <= 0) return@withContext null
+        onProgress(0.1f, "Preparing studio audio...")
         val targetRate = 24000
         val resampled = resampleStereo(buffer, targetRate)
         val maxFrames = (targetRate * maxSeconds).coerceAtMost(resampled.frameCount)
@@ -96,7 +119,9 @@ object AiVoiceAudioStitcher {
         } else {
             resampled
         }
+        onProgress(0.8f, "Writing WAV reference...")
         writeStereoWavFile(outWavFile, clipped)
+        onProgress(1f, "Reference audio is ready")
         PreparedReferenceAudio(
             wavFile = outWavFile,
             durationMs = clipped.durationMs,

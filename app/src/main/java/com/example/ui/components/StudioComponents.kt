@@ -157,12 +157,52 @@ fun StudioScrollColumn(
 }
 
 @Composable
+fun MicrophonePermissionRationaleDialog(
+    open: Boolean,
+    language: AppLanguage,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    if (!open) return
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = StudioColors.CardSurface,
+        title = {
+            Text(
+                text = t(language, "mic_permission_title"),
+                style = MaterialTheme.typography.titleMedium,
+                color = StudioColors.TextPrimary,
+            )
+        },
+        text = {
+            Text(
+                text = t(language, "mic_permission_desc"),
+                style = MaterialTheme.typography.bodyMedium,
+                color = StudioColors.TextSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(t(language, "grant_permission"), color = StudioColors.Cyan)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(t(language, "cancel"), color = StudioColors.TextSecondary)
+            }
+        },
+        modifier = Modifier.testTag("mic_permission_rationale_dialog"),
+    )
+}
+
+@Composable
 fun StudioFocusTopBar(
     title: String,
     subtitle: String? = null,
     language: AppLanguage,
     onBack: () -> Unit,
     trailing: @Composable (() -> Unit)? = null,
+    bottomContent: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(20.dp),
@@ -170,56 +210,56 @@ fun StudioFocusTopBar(
         border = BorderStroke(1.dp, StudioColors.Border),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            val backInteraction = remember { MutableInteractionSource() }
-            IconButton(
-                onClick = onBack,
-                interactionSource = backInteraction,
-                colors = IconButtonDefaults.iconButtonColors(
-                    containerColor = StudioColors.ElevatedSurface,
-                    contentColor = StudioColors.Cyan,
-                ),
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
                 modifier = Modifier
-                    .size(48.dp)
-                    .lit(backInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                    .testTag("back_button"),
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                    contentDescription = t(language, "back"),
-                )
-            }
+                val backInteraction = remember { MutableInteractionSource() }
+                IconButton(
+                    onClick = onBack,
+                    interactionSource = backInteraction,
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = StudioColors.ElevatedSurface,
+                        contentColor = StudioColors.Cyan,
+                    ),
+                    modifier = Modifier
+                        .size(34.dp)
+                        .lit(backInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 17.dp)
+                        .testTag("back_button"),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = t(language, "back"),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
 
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     color = StudioColors.TextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
-                if (!subtitle.isNullOrBlank()) {
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = StudioColors.TextSecondary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+
+                if (trailing != null) {
+                    trailing()
                 }
             }
 
-            if (trailing != null) {
-                trailing()
+            if (bottomContent != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(StudioColors.Border.copy(alpha = 0.6f)),
+                )
+                bottomContent()
             }
         }
     }
@@ -363,7 +403,7 @@ fun StudioParamSlider(
 
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -372,7 +412,7 @@ fun StudioParamSlider(
         ) {
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelLarge,
+                style = MaterialTheme.typography.labelMedium,
                 color = StudioColors.TextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -384,7 +424,7 @@ fun StudioParamSlider(
                 color = StudioColors.BgTop,
                 border = BorderStroke(1.dp, accentColor.copy(alpha = 0.5f)),
                 modifier = Modifier
-                    .defaultMinSize(minHeight = 36.dp)
+                    .defaultMinSize(minHeight = 30.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .clickable {
                         textValue = String.format(Locale.US, "%.2f", localValue.coerceIn(min, max))
@@ -395,7 +435,7 @@ fun StudioParamSlider(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                 ) {
                     Text(
                         text = formattedValue,
@@ -435,6 +475,7 @@ fun StudioParamSlider(
             ),
             modifier = Modifier
                 .fillMaxWidth()
+                .height(32.dp)
                 .testTag(testTag),
         )
     }
@@ -641,21 +682,20 @@ fun StudioPreviewControlsBar(
     onResetZero: () -> Unit,
     onOpenSaveDraft: () -> Unit,
     modifier: Modifier = Modifier,
+    embedded: Boolean = false,
 ) {
     val lang = uiState.language
     val effectiveBypass = uiState.dspConfig.bypassAll || uiState.isHoldBypassing
 
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-        border = BorderStroke(1.dp, StudioColors.Border),
-        modifier = modifier.fillMaxWidth(),
-    ) {
+    val controls: @Composable () -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(
+                    horizontal = if (embedded) 8.dp else 12.dp,
+                    vertical = if (embedded) 6.dp else 10.dp,
+                ),
+            verticalArrangement = Arrangement.spacedBy(if (embedded) 6.dp else 8.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -672,7 +712,7 @@ fun StudioPreviewControlsBar(
                     ),
                     modifier = Modifier
                         .weight(1f)
-                        .defaultMinSize(minHeight = 48.dp)
+                        .defaultMinSize(minHeight = if (embedded) 34.dp else 48.dp)
                         .lit(compareInteraction, MaterialTheme.colorScheme.primary, selected = effectiveBypass, cornerRadius = 12.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .pointerInput(Unit) {
@@ -698,7 +738,7 @@ fun StudioPreviewControlsBar(
                         .testTag("preview_compare_original_button"),
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = if (embedded) 6.dp else 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center,
                     ) {
@@ -719,48 +759,52 @@ fun StudioPreviewControlsBar(
                     }
                 }
 
-                val undoInteraction = remember { MutableInteractionSource() }
-                IconButton(
-                    onClick = onUndo,
-                    interactionSource = undoInteraction,
-                    enabled = uiState.canUndoEdit,
-                    colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = StudioColors.ElevatedSurface,
-                        contentColor = StudioColors.Cyan,
-                        disabledContainerColor = StudioColors.BgMid,
-                        disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
-                    ),
-                    modifier = Modifier
-                        .size(48.dp)
-                        .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                        .testTag("preview_undo_button"),
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.Undo,
-                        contentDescription = t(lang, "undo_edit"),
-                    )
+                if (!embedded) {
+                    val undoInteraction = remember { MutableInteractionSource() }
+                    IconButton(
+                        onClick = onUndo,
+                        interactionSource = undoInteraction,
+                        enabled = uiState.canUndoEdit,
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = StudioColors.ElevatedSurface,
+                            contentColor = StudioColors.Cyan,
+                            disabledContainerColor = StudioColors.BgMid,
+                            disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
+                        ),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                            .testTag("preview_undo_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.Undo,
+                            contentDescription = t(lang, "undo_edit"),
+                        )
+                    }
                 }
 
-                val redoInteraction = remember { MutableInteractionSource() }
-                IconButton(
-                    onClick = onRedo,
-                    interactionSource = redoInteraction,
-                    enabled = uiState.canRedoEdit,
-                    colors = IconButtonDefaults.iconButtonColors(
-                        containerColor = StudioColors.ElevatedSurface,
-                        contentColor = StudioColors.Cyan,
-                        disabledContainerColor = StudioColors.BgMid,
-                        disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
-                    ),
-                    modifier = Modifier
-                        .size(48.dp)
-                        .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
-                        .testTag("preview_redo_button"),
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.Redo,
-                        contentDescription = t(lang, "redo_edit"),
-                    )
+                if (!embedded) {
+                    val redoInteraction = remember { MutableInteractionSource() }
+                    IconButton(
+                        onClick = onRedo,
+                        interactionSource = redoInteraction,
+                        enabled = uiState.canRedoEdit,
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = StudioColors.ElevatedSurface,
+                            contentColor = StudioColors.Cyan,
+                            disabledContainerColor = StudioColors.BgMid,
+                            disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
+                        ),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                            .testTag("preview_redo_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.Redo,
+                            contentDescription = t(lang, "redo_edit"),
+                        )
+                    }
                 }
             }
 
@@ -778,7 +822,7 @@ fun StudioPreviewControlsBar(
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     modifier = Modifier
                         .weight(1f)
-                        .defaultMinSize(minHeight = 48.dp)
+                        .defaultMinSize(minHeight = if (embedded) 34.dp else 48.dp)
                         .lit(resetInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("preview_reset_zero_button"),
                 ) {
@@ -805,7 +849,7 @@ fun StudioPreviewControlsBar(
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     modifier = Modifier
                         .weight(1f)
-                        .defaultMinSize(minHeight = 48.dp)
+                        .defaultMinSize(minHeight = if (embedded) 34.dp else 48.dp)
                         .lit(saveDraftInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 12.dp)
                         .testTag("preview_save_draft_button"),
                 ) {
@@ -818,6 +862,20 @@ fun StudioPreviewControlsBar(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+            }
+        }
+        if (embedded) {
+            Box(modifier = modifier.fillMaxWidth()) {
+                controls()
+            }
+        } else {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+                border = BorderStroke(1.dp, StudioColors.Border),
+                modifier = modifier.fillMaxWidth(),
+            ) {
+                controls()
             }
         }
     }

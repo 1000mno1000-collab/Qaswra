@@ -131,7 +131,6 @@ import com.example.model.StudioRoute
 import com.example.studio.ui.lit
 import com.example.ui.components.LanguageBadgeButton
 import com.example.ui.components.LanguageSelectorDialog
-import com.example.ui.components.MiniAiRobotCompanion
 import com.example.ui.components.RealTimeWaveformCanvas
 import com.example.ui.components.SonixExitConfirmDialog
 import com.example.ui.components.ToolInfoDialog
@@ -212,13 +211,6 @@ fun HomeScreen(
                         route = StudioRoute.AiVoiceStudio,
                     ),
                     HomeToolTile(
-                        id = "tts_human",
-                        titleKey = "tool_tts_human",
-                        icon = Icons.Rounded.RecordVoiceOver,
-                        accent = StudioColors.Cyan,
-                        route = StudioRoute.TtsStudio,
-                    ),
-                    HomeToolTile(
                         id = "voice_morph",
                         titleKey = "tool_voice_morph",
                         icon = Icons.Rounded.SpatialAudioOff,
@@ -240,6 +232,14 @@ fun HomeScreen(
                         accent = StudioColors.Cyan,
                         route = StudioRoute.SpeechToText,
                         infoKey = "speech_to_text_info",
+                    ),
+                    HomeToolTile(
+                        id = "smart_assistant",
+                        titleKey = "tool_smart_assistant",
+                        icon = Icons.Rounded.AutoAwesome,
+                        accent = StudioColors.Cyan,
+                        route = StudioRoute.SmartAssistant,
+                        infoKey = "tool_smart_assistant_info",
                     ),
                 ),
             ),
@@ -600,84 +600,6 @@ fun HomeScreen(
                 }
             }
 
-            item(key = "featured_assistant_robot", contentType = "featured_assistant_robot") {
-                val assistantCardInteraction = remember { MutableInteractionSource() }
-                val signedInName = (uiState.authSession as? AuthSession.SignedIn)?.displayName
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    Card(
-                        onClick = { onNavigate(StudioRoute.SmartAssistant) },
-                        interactionSource = assistantCardInteraction,
-                        shape = RoundedCornerShape(20.dp),
-                        colors = CardDefaults.cardColors(containerColor = StudioColors.ElevatedSurface),
-                        border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.55f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 46.dp)
-                            .lit(assistantCardInteraction, StudioColors.Cyan, cornerRadius = 20.dp)
-                            .testTag("home_smart_assistant_card"),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = StudioColors.Cyan.copy(alpha = 0.16f),
-                                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
-                                modifier = Modifier.size(44.dp),
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.AutoAwesome,
-                                        contentDescription = t(lang, "tool_smart_assistant"),
-                                        tint = StudioColors.Cyan,
-                                        modifier = Modifier.size(22.dp),
-                                    )
-                                }
-                            }
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(3.dp),
-                            ) {
-                                Text(
-                                    text = t(lang, "tool_smart_assistant"),
-                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = StudioColors.TextPrimary,
-                                )
-                                Text(
-                                    text = t(lang, "assistant_smart_card_subtitle"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = StudioColors.TextSecondary,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            Surface(
-                                shape = RoundedCornerShape(999.dp),
-                                color = StudioColors.Cyan.copy(alpha = 0.15f),
-                                border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
-                            ) {
-                                Text(
-                                    text = "AI ✦",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
-                                    color = StudioColors.Cyan,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                )
-                            }
-                        }
-                    }
-
-                    MiniAiRobotCompanion(
-                        userDisplayName = signedInName,
-                        language = lang,
-                        modifier = Modifier.align(Alignment.TopCenter),
-                    )
-                }
-            }
-
             // 2) المشروع النشط (استيراد وتسجيل)
             item(key = "active_project_summary", contentType = "active_project_summary") {
                 Card(
@@ -865,77 +787,6 @@ fun HomeScreen(
                 }
             }
 
-            // 3) الذكاء الاصطناعي والصوت البشري
-            item(key = "featured_ai_voice_studio", contentType = "featured_ai_voice_studio") {
-                val aiVoiceCardInteraction = remember { MutableInteractionSource() }
-                Card(
-                    onClick = { onNavigate(StudioRoute.AiVoiceStudio) },
-                    interactionSource = aiVoiceCardInteraction,
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-                    border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.65f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .lit(aiVoiceCardInteraction, StudioColors.Violet, cornerRadius = 20.dp)
-                        .testTag("home_ai_voice_studio_card"),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = StudioColors.Violet.copy(alpha = 0.18f),
-                            border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.50f)),
-                            modifier = Modifier.size(46.dp),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.RecordVoiceOver,
-                                    contentDescription = t(lang, "tool_ai_voice_studio"),
-                                    tint = StudioColors.Cyan,
-                                    modifier = Modifier.size(24.dp),
-                                )
-                            }
-                        }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
-                        ) {
-                            Text(
-                                text = t(lang, "tool_ai_voice_studio"),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = StudioColors.TextPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = t(lang, "tool_ai_voice_studio_subtitle"),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = StudioColors.TextSecondary,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(999.dp),
-                            color = StudioColors.Violet.copy(alpha = 0.18f),
-                            border = BorderStroke(1.dp, StudioColors.Cyan.copy(alpha = 0.45f)),
-                        ) {
-                            Text(
-                                text = t(lang, "tool_ai_voice_studio_badge"),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
-                                color = StudioColors.Cyan,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            )
-                        }
-                    }
-                }
-            }
-
             val aiVoiceFamily = families.first { it.id == "ai_voice" }
             item(key = "family_card_ai_voice", contentType = "family_card") {
                 val columns = 2
@@ -972,7 +823,7 @@ fun HomeScreen(
                                         accent = tile.accent,
                                         testTag = "home_tile_${tile.id}",
                                         hasInfo = tile.infoKey != null,
-                                        aspectRatio = 1.52f,
+                                        aspectRatio = 1f,
                                         onInfoClick = {
                                             tile.infoKey?.let { key ->
                                                 activeToolInfo = t(lang, tile.titleKey) to t(lang, key)

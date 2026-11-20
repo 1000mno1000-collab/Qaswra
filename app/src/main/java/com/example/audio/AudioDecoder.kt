@@ -204,9 +204,10 @@ object AudioDecoder {
         val isRiffWave = isRiffWavHeader(file)
 
         if (isRiffWave) {
-            onProgress(0.25f)
             try {
-                val wavBuf = readStereoWavFile(file)
+                val wavBuf = readStereoWavFile(file) { fraction ->
+                    onProgress((0.25f + fraction * 0.65f).coerceIn(0.25f, 0.90f))
+                }
                 if (wavBuf != null && wavBuf.frameCount > 0) {
                     onProgress(1.0f)
                     return@withContext AudioDecodeOutcome.Success(wavBuf)
@@ -273,6 +274,7 @@ object AudioDecoder {
     suspend fun inspectLargeAudioStreaming(
         file: File,
         buckets: Int = 800,
+        @Suppress("UNUSED_PARAMETER")
         context: Context? = null,
         onProgress: (Float) -> Unit,
     ): StreamedAudioMetadata? = withContext(Dispatchers.IO) {
@@ -296,22 +298,13 @@ object AudioDecoder {
         onProgress(0.18f)
 
         val safeBuckets = buckets.coerceIn(64, 1500)
-        val peaks: List<Float> = RealWaveformExtractor.extractPeaks(
-            file = file,
-            buckets = safeBuckets,
-            context = context,
-            durationHintMs = durationMs,
-            onProgress = { f ->
-                onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
-            },
-        ).ifEmpty {
-            when {
-                wavHeader != null -> extractWavPeaksChunked8K(file, wavHeader, safeBuckets) { f ->
-                    onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
-                }
-                else -> extractCompressedPeaksFastZeroRam(file, durationMs, safeBuckets) { f ->
-                    onProgress((0.18f + f * 0.80f).coerceIn(0.18f, 0.98f))
-                }
+        val peaks = if (wavHeader != null) {
+            extractWavPeaksChunked8K(file, wavHeader, safeBuckets) { fraction ->
+                onProgress((0.18f + fraction * 0.80f).coerceIn(0.18f, 0.98f))
+            }
+        } else {
+            extractCompressedPeaksFastZeroRam(file, durationMs, safeBuckets) { fraction ->
+                onProgress((0.18f + fraction * 0.80f).coerceIn(0.18f, 0.98f))
             }
         }
 
@@ -570,7 +563,15 @@ object AudioDecoder {
                         val v = when {
                             meta.audioFormat == 3 && meta.bitsPerSample == 32 -> abs(bb.float)
                             meta.bitsPerSample == 16 -> abs(bb.short / 32768f)
-                            else -> abs(((bb.get().toInt() and 0xFF) - 128) / 128f)
+                            meta.bitsPerSample == 8 -> abs(((bb.get().toInt() and 0xFF) - 128) / 128f)
+                            meta.bitsPerSample == 24 -> {
+                                val b0 = bb.get().toInt() and 0xFF
+                                val b1 = bb.get().toInt() and 0xFF
+                                val b2 = bb.get().toInt()
+                                abs(((b2 shl 16) or (b1 shl 8) or b0) / 8388608f)
+                            }
+                            meta.bitsPerSample == 32 -> abs(bb.int / 2147483648f)
+                            else -> 0f
                         }
                         if (v > peak) peak = v
                         f += stride

@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -69,7 +70,12 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -81,6 +87,7 @@ import com.example.model.AudioPickerTarget
 import com.example.studio.ui.lit
 import com.example.ui.components.ExportFormatDialog
 import com.example.ui.components.InfoBadgeButton
+import com.example.ui.components.MicrophonePermissionRationaleDialog
 import com.example.ui.components.StudioFocusTopBar
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioScrollColumn
@@ -105,7 +112,6 @@ private data class SpeechLocaleChoice(
 fun SpeechToTextScreen(
     uiState: StudioUiState,
     viewModel: StudioViewModel,
-    onOpenPicker: (AudioPickerTarget) -> Unit,
     onBack: () -> Unit,
 ) {
     val lang = uiState.language
@@ -113,11 +119,14 @@ fun SpeechToTextScreen(
     @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
     val stt = uiState.speechState
-    val systemRecognizerAvailable = remember { viewModel.isSpeechRecognizerAvailable() }
-    val recognizerAvailable = systemRecognizerAvailable || stt.localModelState.isInstalled
+    val systemRecognizerAvailable = remember(context) {
+        SpeechRecognizer.isRecognitionAvailable(context.applicationContext)
+    }
+    val recognizerAvailable = systemRecognizerAvailable ||
+        (stt.localeTag.startsWith("ar", ignoreCase = true) && viewModel.canTranscribeClipOffline())
 
     var infoDialogOpen by remember { mutableStateOf(false) }
-    var pendingClipRouteAfterGrant by remember { mutableStateOf(false) }
+    var showMicPermissionRationale by remember { mutableStateOf(false) }
     val textHistory = rememberEditHistory(stt.displayText)
 
     LaunchedEffect(stt.displayText) {
@@ -130,16 +139,21 @@ fun SpeechToTextScreen(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted) {
-            if (pendingClipRouteAfterGrant) {
-                viewModel.startStudioClipSpeechTranscription()
-            } else {
-                viewModel.startLiveSpeechDictation()
-            }
+            viewModel.startLiveSpeechDictation()
         } else {
             viewModel.showStatusBanner(t(lang, "mic_permission_desc"))
         }
-        pendingClipRouteAfterGrant = false
     }
+
+    MicrophonePermissionRationaleDialog(
+        open = showMicPermissionRationale,
+        language = lang,
+        onDismiss = { showMicPermissionRationale = false },
+        onConfirm = {
+            showMicPermissionRationale = false
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        },
+    )
 
     DisposableEffect(Unit) {
         onDispose {
@@ -151,23 +165,43 @@ fun SpeechToTextScreen(
 
     val locales = remember {
         listOf(
-            SpeechLocaleChoice("ar-IQ", "العربية (العراق)", "Arabic (Iraq)", "عربی عراقی"),
-            SpeechLocaleChoice("ar-SA", "العربية (الفصحى)", "Arabic (MSA)", "عربی فصیح"),
+            SpeechLocaleChoice("ar", "العربية", "Arabic", "عربی"),
             SpeechLocaleChoice("en-US", "English", "English", "انگلیسی"),
             SpeechLocaleChoice("fa-IR", "فارسی", "Persian", "فارسی"),
+            SpeechLocaleChoice("tr-TR", "Türkçe", "Turkish", "ترکی"),
         )
     }
 
-    fun launchWithMicPermission(isClip: Boolean) {
+    fun launchWithMicPermission() {
         val granted = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED
         if (granted) {
-            if (isClip) viewModel.startStudioClipSpeechTranscription() else viewModel.startLiveSpeechDictation()
+            viewModel.startLiveSpeechDictation()
         } else {
-            pendingClipRouteAfterGrant = isClip
-            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            showMicPermissionRationale = true
+        }
+    }
+
+    val transcriptVisualTransformation = remember(stt.uncertainWordRanges) {
+        VisualTransformation { original ->
+            val annotated = AnnotatedString.Builder(original.text)
+            stt.uncertainWordRanges.forEach { range ->
+                val start = range.first.coerceAtLeast(0)
+                val end = (range.last + 1).coerceAtMost(original.length)
+                if (start < end) {
+                    annotated.addStyle(
+                        SpanStyle(
+                            color = StudioColors.RoseBright.copy(alpha = 0.85f),
+                            textDecoration = TextDecoration.Underline,
+                        ),
+                        start,
+                        end,
+                    )
+                }
+            }
+            TransformedText(annotated.toAnnotatedString(), OffsetMapping.Identity)
         }
     }
 
@@ -316,6 +350,8 @@ fun SpeechToTextScreen(
                         ).forEach { (mode, label) ->
                             FilterChip(
                                 selected = stt.backendMode == mode,
+                                enabled = mode != SttBackendMode.LOCAL_MOONSHINE_AR ||
+                                    stt.localeTag.startsWith("ar", ignoreCase = true),
                                 onClick = { viewModel.setSpeechBackendMode(mode) },
                                 label = { Text(label, maxLines = 1) },
                                 colors = FilterChipDefaults.filterChipColors(
@@ -412,6 +448,7 @@ fun SpeechToTextScreen(
                             AppLanguage.AR -> loc.labelAr
                             AppLanguage.EN -> loc.labelEn
                             AppLanguage.FA -> loc.labelFa
+                            AppLanguage.TR -> loc.labelEn
                         }
                         val selected = stt.localeTag == loc.tag
                         val localeInteraction = remember { MutableInteractionSource() }
@@ -535,7 +572,7 @@ fun SpeechToTextScreen(
                     } else {
                         val dictateInteraction = remember { MutableInteractionSource() }
                         Button(
-                            onClick = { launchWithMicPermission(isClip = false) },
+                            onClick = { launchWithMicPermission() },
                             enabled = recognizerAvailable,
                             interactionSource = dictateInteraction,
                             colors = ButtonDefaults.buttonColors(
@@ -544,55 +581,14 @@ fun SpeechToTextScreen(
                             ),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
-                                .weight(1f)
+                                .fillMaxWidth()
                                 .defaultMinSize(minHeight = 48.dp)
                                 .lit(dictateInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
                                 .testTag("stt_mic_dictate_button"),
                         ) {
                             Icon(Icons.Rounded.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = t(lang, "stt_dictate_mic"),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-
-                        val clipInteraction = remember { MutableInteractionSource() }
-                        OutlinedButton(
-                            onClick = {
-                                if (uiState.hasAudio) {
-                                    if (viewModel.canTranscribeClipOffline()) {
-                                        viewModel.startStudioClipSpeechTranscription()
-                                    } else {
-                                        launchWithMicPermission(isClip = true)
-                                    }
-                                } else {
-                                    onOpenPicker(AudioPickerTarget.IMPORT_MAIN)
-                                }
-                            },
-                            enabled = if (uiState.hasAudio) {
-                                viewModel.canTranscribeClipOffline() || systemRecognizerAvailable
-                            } else {
-                                true
-                            },
-                            interactionSource = clipInteraction,
-                            border = BorderStroke(1.dp, StudioColors.Violet.copy(alpha = 0.6f)),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = StudioColors.Violet),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 48.dp)
-                                .lit(clipInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                                .testTag("stt_clip_transcribe_button"),
-                        ) {
-                            Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = if (uiState.hasAudio) t(lang, "stt_transcribe_clip") else t(lang, "audio_tools_pick_source"),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            Text(t(lang, "stt_dictate_mic"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -650,6 +646,7 @@ fun SpeechToTextScreen(
                         textHistory.commit(it, debounceMs = 350L)
                         viewModel.updateSpeechTranscript(it)
                     },
+                    visualTransformation = transcriptVisualTransformation,
                     minLines = 6,
                     maxLines = 14,
                     placeholder = {
@@ -669,6 +666,18 @@ fun SpeechToTextScreen(
                         .fillMaxWidth()
                         .testTag("stt_transcript_editor"),
                 )
+
+                if (stt.uncertainWordRanges.isNotEmpty()) {
+                    Text(
+                        text = if (lang == AppLanguage.EN) {
+                            "Red underlines mark low-confidence recognition; tap and edit to correct."
+                        } else {
+                            "الكلمات ذات التسطير الأحمر قد تكون غير مؤكدة؛ المسها لتعديلها."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioColors.TextSecondary,
+                    )
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

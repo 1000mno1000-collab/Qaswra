@@ -92,7 +92,6 @@ object SmartAssistantAndSearch {
     private val VALID_TOOL_IDS = setOf(
         "noise_reduction",
         "voice_changer",
-        "human_tts",
         "reels_audio_templates",
         "extract_video",
         "smart_mixer",
@@ -108,7 +107,7 @@ object SmartAssistantAndSearch {
         "ريلز", "بودكاست", "فيديو", "تنين", "شبح", "وحش", "رعب", "مقال", "نص",
         "باس", "مكتوم", "سرعه", "طبقه", "تلاوه", "تفريغ", "محيطي", "ستيريو",
         "noise", "denoise", "voice", "echo", "reverb", "eq", "bass", "mix", "trim",
-        "reels", "podcast", "tts", "video", "extract", "speed", "pitch", "stereo", "help", "tool",
+        "reels", "podcast", "video", "extract", "speed", "pitch", "stereo", "help", "tool",
     )
 
     private val CONTEXTUAL_AUDIO_THESAURUS: List<Pair<List<String>, String>> = listOf(
@@ -145,7 +144,6 @@ object SmartAssistantAndSearch {
     fun toolDisplayLabel(toolId: String, language: AppLanguage): String = when (toolId) {
         "noise_reduction" -> if (language == AppLanguage.EN) "Voice Purifier & Denoise" else "منقّي الصوت وعزل الضوضاء"
         "voice_changer" -> if (language == AppLanguage.EN) "Voice & Mythical FX" else "تغيير الصوت والشخصيات"
-        "human_tts" -> if (language == AppLanguage.EN) "Human Neural TTS" else "تحويل النص لصوت بشري"
         "reels_audio_templates" -> if (language == AppLanguage.EN) "Reels & Podcast -14 LUFS" else "قوالب الريلز والبودكاست -14 LUFS"
         "extract_video" -> if (language == AppLanguage.EN) "Extract Audio from Video" else "استخراج الصوت من الفيديو"
         "smart_mixer" -> if (language == AppLanguage.EN) "Merge & Smart Mixer" else "الدمج والميكس الذكي"
@@ -187,20 +185,6 @@ object SmartAssistantAndSearch {
                     howToUseSteps = listOf(
                         "1. اختر الشخصية المناسبة.",
                         "2. اضغط معاينة التعديل للاستماع قبل الحفظ.",
-                    ),
-                ),
-            )
-        }
-
-        if (q.containsAny("نص", "كتابه", "قراءه", "نطق", "تكلم", "معلق", "بشري", "عراقي", "سعودي", "مصري", "فصحى", "سوري", "مقال", "رابط", "tts", "speech")) {
-            results.add(
-                ToolGuideResult(
-                    toolId = "human_tts",
-                    toolName = "استوديو الصوت البشري وقارئ المقالات (أونلاين)",
-                    matchReason = "لتحويل النصوص أو روابط المقالات إلى تعليق صوتي بشري طبيعي.",
-                    howToUseSteps = listOf(
-                        "1. أدخل النص أو رابط المقال.",
-                        "2. اختر اللهجة العربية أو العالمية ونبرة الإلقاء.",
                     ),
                 ),
             )
@@ -359,6 +343,11 @@ object SmartAssistantAndSearch {
             } else {
                 "سلام و درود! من عالی هستم و آماده کمک به مهندسی صدای شما هستم. بگویید روی چه پروژه‌ای کار می‌کنید؟"
             }
+            AppLanguage.TR -> if (isThanks) {
+                "Rica ederim! Sonix'te ses temizliği, miks veya vokal düzenleme için her zaman yardımcı olabilirim."
+            } else {
+                "Merhaba! Ses mühendisliği konusunda yardımcı olmaya hazırım. Bugün hangi proje üzerinde çalışıyorsunuz?"
+            }
             AppLanguage.AR -> if (isThanks) {
                 "حبيبي تدلل! أي وقت تحتاج مساعدة بتصفية الصوت، الهندسة، أو المونتاج الصوتي في Sonix أنا بالخدمة دائماً."
             } else {
@@ -426,6 +415,7 @@ object SmartAssistantAndSearch {
             AppLanguage.AR -> "Arabic (understand Iraqi, Gulf, Egyptian, Levantine, and Fusha naturally)"
             AppLanguage.EN -> "English"
             AppLanguage.FA -> "Persian"
+            AppLanguage.TR -> "Turkish"
         }
 
         val systemPrompt = buildString {
@@ -434,7 +424,7 @@ object SmartAssistantAndSearch {
             append("Return STRICT valid JSON only with NO extra text: {\"reply\":\"your concise friendly answer\",\"toolId\":\"best_single_tool_id_or_empty\",\"toolLabel\":\"short tool title\"}. ")
             append("Leave toolId as \"\" if the user is just chatting or no specific studio tool applies. ")
             append("Allowed non-empty toolId values ONLY: ")
-            append("noise_reduction, voice_changer, human_tts, reels_audio_templates, extract_video, smart_mixer, audio_editor, presets_echo, surround_stereo, equalizer, pitch_speed.")
+            append("noise_reduction, voice_changer, reels_audio_templates, extract_video, smart_mixer, audio_editor, presets_echo, surround_stereo, equalizer, pitch_speed.")
         }
 
         val messagesArray = JSONArray().apply {
@@ -486,11 +476,13 @@ object SmartAssistantAndSearch {
             when (language) {
                 AppLanguage.EN -> "${it.matchReason} Tap the button below to open ${it.toolName}."
                 AppLanguage.FA -> "${it.matchReason} برای باز کردن ابزار روی دکمه زیر بزنید."
+                AppLanguage.TR -> "${it.matchReason} Aracı açmak için aşağıdaki düğmeye dokunun."
                 AppLanguage.AR -> "${it.matchReason} اضغط على زر الأداة بالأسفل للانتقال إليها مباشرة."
             }
         } ?: when (language) {
             AppLanguage.EN -> "Tell me what you want to do with your audio (remove noise, boost vocals, -14 LUFS Reels, extract audio from video, or merge tracks)."
             AppLanguage.FA -> "بفرمایید روی صدا چه کاری می‌خواهید انجام دهید (حذف نویز، تقویت صدا، قالب ریلز -14 LUFS یا میکس) تا دقیق راهنمایی کنم."
+            AppLanguage.TR -> "Sesinizle ne yapmak istediğinizi söyleyin (gürültüyü giderme, vokalleri güçlendirme, Reels sesini düzenleme veya parçaları birleştirme)."
             AppLanguage.AR -> "اشرح لي مشكلتك الصوتية (عزل ضوضاء، رفع صوت، قالب ريلز -14 LUFS، استخراج صوت من فيديو، أو دمج مقاطع) وسأساعدك فوراً."
         }
 

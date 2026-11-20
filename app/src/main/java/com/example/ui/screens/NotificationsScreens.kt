@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,13 +12,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -50,7 +46,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -99,8 +94,8 @@ fun NotificationsListScreen(
                             contentColor = StudioColors.RoseBright,
                         ),
                         modifier = Modifier
-                            .size(48.dp)
-                            .lit(clearInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                            .size(34.dp)
+                            .lit(clearInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 17.dp)
                             .testTag("notifications_clear_all"),
                     ) {
                         Icon(
@@ -163,8 +158,8 @@ private fun DiagnosticEntryCard(
     val accent = if (isCritical) StudioColors.RoseBright else StudioColors.Amber
     val interaction = remember { MutableInteractionSource() }
 
-    val title = if (lang == AppLanguage.EN) entry.titleEn else entry.titleAr
-    val cause = if (lang == AppLanguage.EN) entry.causeEn else entry.causeAr
+    val title = AppDiagnosticLog.userFacingTitle(entry, lang)
+    val cause = AppDiagnosticLog.userFacingCause(entry, lang)
 
     Card(
         onClick = onClick,
@@ -207,7 +202,7 @@ private fun DiagnosticEntryCard(
                     color = accent.copy(alpha = 0.16f),
                 ) {
                     Text(
-                        text = entry.toolName,
+                        text = if (lang == AppLanguage.EN) "Audio" else "الصوت",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = accent,
                         maxLines = 1,
@@ -261,18 +256,6 @@ private fun DiagnosticEntryCard(
                         color = StudioColors.TextMuted,
                     )
                 }
-                val repeatText = if (entry.occurrenceCount > 1) {
-                    "${entry.errorCode} • ${t(lang, "notifications_repeat_count")} ×${entry.occurrenceCount}"
-                } else {
-                    entry.errorCode
-                }
-                Text(
-                    text = repeatText,
-                    style = TelemetryTextStyle.copy(fontSize = 11.sp),
-                    color = StudioColors.Cyan,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
         }
     }
@@ -296,7 +279,7 @@ fun NotificationDetailScreen(
     StudioScrollColumn {
         StudioFocusTopBar(
             title = t(lang, "notification_detail_title"),
-            subtitle = entry?.toolName ?: "",
+            subtitle = if (lang == AppLanguage.EN) "Audio alert" else "تنبيه صوتي",
             language = lang,
             onBack = onBack,
         )
@@ -319,8 +302,8 @@ fun NotificationDetailScreen(
         } else {
             val isCritical = entry.severity == DiagnosticSeverity.CRITICAL
             val accent = if (isCritical) StudioColors.RoseBright else StudioColors.Amber
-            val title = if (lang == AppLanguage.EN) entry.titleEn else entry.titleAr
-            val cause = if (lang == AppLanguage.EN) entry.causeEn else entry.causeAr
+            val title = AppDiagnosticLog.userFacingTitle(entry, lang)
+            val cause = AppDiagnosticLog.userFacingCause(entry, lang)
 
             Card(
                 shape = RoundedCornerShape(20.dp),
@@ -351,7 +334,7 @@ fun NotificationDetailScreen(
                                 color = StudioColors.TextPrimary,
                             )
                             Text(
-                                text = "${entry.toolName} • ${AppDiagnosticLog.formatTimestamp(entry.timestampMs)}",
+                                text = "${if (lang == AppLanguage.EN) "Audio" else "الصوت"} • ${AppDiagnosticLog.formatTimestamp(entry.timestampMs)}",
                                 style = TelemetryTextStyle.copy(fontSize = 11.sp),
                                 color = StudioColors.TextSecondary,
                             )
@@ -369,7 +352,7 @@ fun NotificationDetailScreen(
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Text(
-                                text = if (lang == AppLanguage.EN) "Technical Cause & Error Code" else "السبب التقني وكود الخطأ",
+                                text = if (lang == AppLanguage.EN) "What happened" else "ملخص التنبيه",
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                 color = StudioColors.Cyan,
                             )
@@ -378,39 +361,13 @@ fun NotificationDetailScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = StudioColors.TextPrimary,
                             )
-                            val countSuffix = if (entry.occurrenceCount > 1) {
-                                " • ${t(lang, "notifications_repeat_count")} ×${entry.occurrenceCount}"
-                            } else {
-                                ""
+                            if (entry.occurrenceCount > 1) {
+                                Text(
+                                    text = "${t(lang, "notifications_repeat_count")} ×${entry.occurrenceCount}",
+                                    style = TelemetryTextStyle.copy(fontSize = 11.sp),
+                                    color = accent,
+                                )
                             }
-                            Text(
-                                text = "Code: ${entry.errorCode} (${entry.severity.name})$countSuffix",
-                                style = TelemetryTextStyle.copy(fontSize = 11.sp),
-                                color = accent,
-                            )
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = StudioColors.BgTop,
-                        border = BorderStroke(1.dp, StudioColors.Border),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 120.dp, max = 320.dp),
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .verticalScroll(rememberScrollState())
-                                .horizontalScroll(rememberScrollState())
-                                .padding(12.dp),
-                        ) {
-                            Text(
-                                text = entry.stackTrace,
-                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                color = StudioColors.TextSecondary,
-                            )
                         }
                     }
 
@@ -453,9 +410,9 @@ fun NotificationDetailScreen(
                     OutlinedButton(
                         onClick = {
                             val subject = if (lang == AppLanguage.EN) {
-                                "Sonix Diagnostic Report [${entry.errorCode}]"
+                                "Sonix Support Summary"
                             } else {
-                                "تقرير خطأ تقني لتطبيق Sonix [${entry.errorCode}]"
+                                "ملخص دعم تطبيق Sonix"
                             }
                             val feedback = launchSupportEmail(
                                 context = context,

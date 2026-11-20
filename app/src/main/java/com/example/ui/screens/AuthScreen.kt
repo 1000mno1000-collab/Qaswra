@@ -1022,6 +1022,7 @@ private fun AuthScreenContent(
                                     when (lang) {
                                         AppLanguage.EN -> "Fetching accounts..."
                                         AppLanguage.FA -> "در حال دریافت حساب‌ها..."
+                                        AppLanguage.TR -> "Hesaplar yükleniyor..."
                                         AppLanguage.AR -> "جاري جلب الحسابات..."
                                     }
                                 } else {

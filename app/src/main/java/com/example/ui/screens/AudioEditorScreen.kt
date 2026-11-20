@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -146,6 +147,7 @@ fun AudioEditorScreen(
 
     LaunchedEffect(Unit) {
         viewModel.beginClipGainSession()
+        viewModel.setEditorPlaybackBoundsEnabled(true)
     }
 
     BackHandler {
@@ -182,6 +184,7 @@ fun AudioEditorScreen(
 
     DisposableEffect(Unit) {
         onDispose {
+            viewModel.setEditorPlaybackBoundsEnabled(false)
             viewModel.stopToolPreview()
             viewModel.discardUnapprovedClipGainSession()
             val cur = latestState
@@ -244,11 +247,11 @@ fun AudioEditorScreen(
                                     disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
                                 ),
                                 modifier = Modifier
-                                    .size(48.dp)
-                                    .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                                    .size(34.dp)
+                                    .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 17.dp)
                                     .testTag("editor_undo_button"),
                             ) {
-                                Icon(Icons.AutoMirrored.Rounded.Undo, contentDescription = t(lang, "undo_edit"))
+                                Icon(Icons.AutoMirrored.Rounded.Undo, contentDescription = t(lang, "undo_edit"), modifier = Modifier.size(18.dp))
                             }
                             val redoInteraction = remember { MutableInteractionSource() }
                             IconButton(
@@ -261,11 +264,11 @@ fun AudioEditorScreen(
                                     disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.4f),
                                 ),
                                 modifier = Modifier
-                                    .size(48.dp)
-                                    .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                                    .size(34.dp)
+                                    .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 17.dp)
                                     .testTag("editor_redo_button"),
                             ) {
-                                Icon(Icons.AutoMirrored.Rounded.Redo, contentDescription = t(lang, "redo_edit"))
+                                Icon(Icons.AutoMirrored.Rounded.Redo, contentDescription = t(lang, "redo_edit"), modifier = Modifier.size(18.dp))
                             }
                         }
                     },
@@ -276,7 +279,7 @@ fun AudioEditorScreen(
                 item(key = "editor_import_progress") {
                     val byteTransferActive = !uiState.importBytesLabel.isNullOrBlank()
                     val byteFraction = uiState.importBytesProgress
-                    val pct = ((byteFraction ?: prog).coerceIn(0f, 1f) * 100f).toInt()
+                    val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = StudioColors.CardSurface,
@@ -329,7 +332,7 @@ fun AudioEditorScreen(
                                 )
                             } else {
                                 LinearProgressIndicator(
-                                    progress = { (byteFraction ?: prog).coerceIn(0f, 1f) },
+                                    progress = { prog.coerceIn(0f, 1f) },
                                     color = StudioColors.Cyan,
                                     trackColor = StudioColors.BgTop,
                                     modifier = Modifier
@@ -771,6 +774,8 @@ fun AudioEditorScreen(
                             EditorPlayheadOverlay(
                                 playbackFlow = viewModel.playbackTelemetry,
                                 durationMs = durationMs,
+                                selectionStartMs = startMs,
+                                selectionEndMs = endMs,
                                 zoomLevel = zoomLevel,
                                 panFraction = panFraction,
                                 edgePadPx = edgePadPx,
@@ -931,42 +936,6 @@ fun AudioEditorScreen(
                             checkedTrackColor = StudioColors.Cyan,
                         ),
                         modifier = Modifier.testTag("editor_auto_fade_toggle"),
-                    )
-                }
-
-                // Preview Edit FIRST Button
-                val previewSelInteraction = remember { MutableInteractionSource() }
-                Button(
-                    onClick = {
-                        viewModel.previewEditorSelectionOrFade(
-                            fadeInSec = fadeInSec,
-                            fadeOutSec = fadeOutSec,
-                            autoFadeEdges = autoFadeEdges,
-                            previewSelectionOnly = true,
-                        )
-                    },
-                    enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
-                    interactionSource = previewSelInteraction,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Cyan,
-                        contentColor = StudioColors.BgTop,
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .lit(previewSelInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
-                        .testTag("editor_preview_button"),
-                ) {
-                    Icon(
-                        imageVector = if (uiState.isToolPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = if (uiState.isToolPreviewPlaying) t(lang, "stop_preview_edit") else t(lang, "preview_edit"),
-                        style = MaterialTheme.typography.labelLarge,
                     )
                 }
 
@@ -1446,6 +1415,45 @@ fun AudioEditorScreen(
             Spacer(Modifier.height(12.dp))
         }
         } // end LazyColumn
+
+        val previewSelInteraction = remember { MutableInteractionSource() }
+        Button(
+            onClick = {
+                viewModel.previewEditorSelectionOrFade(
+                    fadeInSec = fadeInSec,
+                    fadeOutSec = fadeOutSec,
+                    autoFadeEdges = autoFadeEdges,
+                    previewSelectionOnly = true,
+                )
+            },
+            enabled = uiState.hasAudio && !uiState.isBusy && !uiState.isProcessing,
+            interactionSource = previewSelInteraction,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (uiState.isToolPreviewPlaying) StudioColors.Amber else StudioColors.Cyan,
+                contentColor = StudioColors.BgTop,
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .imePadding()
+                .widthIn(max = 640.dp)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .defaultMinSize(minHeight = 48.dp)
+                .lit(previewSelInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 14.dp)
+                .testTag("editor_preview_button"),
+        ) {
+            Icon(
+                imageVector = if (uiState.isToolPreviewPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (uiState.isToolPreviewPlaying) t(lang, "stop_preview_edit") else t(lang, "preview_edit"),
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
     } // end Box
 
     SaveDraftDialog(
@@ -1475,26 +1483,30 @@ fun AudioEditorScreen(
 private fun EditorPlayheadOverlay(
     playbackFlow: StateFlow<PlaybackTelemetry>,
     durationMs: Long,
+    selectionStartMs: Long,
+    selectionEndMs: Long,
     zoomLevel: Float,
     panFraction: Float,
     edgePadPx: Float,
     modifier: Modifier = Modifier,
 ) {
     val playback by playbackFlow.collectAsStateWithLifecycle()
-    var smoothPosMs by remember { mutableLongStateOf(playback.positionMs) }
+    val boundedStartMs = selectionStartMs.coerceIn(0L, durationMs)
+    val boundedEndMs = selectionEndMs.coerceIn(boundedStartMs, durationMs)
+    var smoothPosMs by remember { mutableLongStateOf(playback.positionMs.coerceIn(boundedStartMs, boundedEndMs)) }
 
-    LaunchedEffect(playback.positionMs, playback.isPlaying, durationMs) {
-        smoothPosMs = playback.positionMs
+    LaunchedEffect(playback.positionMs, playback.isPlaying, durationMs, boundedStartMs, boundedEndMs) {
+        smoothPosMs = playback.positionMs.coerceIn(boundedStartMs, boundedEndMs)
         if (!playback.isPlaying) return@LaunchedEffect
-        val anchorPos = playback.positionMs
+        val anchorPos = playback.positionMs.coerceIn(boundedStartMs, boundedEndMs)
         val startFrameNanos = withFrameNanos { it }
         while (true) {
             withFrameNanos { nowNanos ->
                 val elapsedMs = ((nowNanos - startFrameNanos) / 1_000_000L).coerceAtLeast(0L)
                 smoothPosMs = if (durationMs > 0L) {
-                    (anchorPos + elapsedMs).coerceIn(0L, durationMs)
+                    (anchorPos + elapsedMs).coerceIn(boundedStartMs, boundedEndMs)
                 } else {
-                    anchorPos + elapsedMs
+                    (anchorPos + elapsedMs).coerceIn(boundedStartMs, boundedEndMs)
                 }
             }
         }

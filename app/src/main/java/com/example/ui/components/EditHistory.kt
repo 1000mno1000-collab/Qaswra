@@ -116,8 +116,8 @@ fun UndoRedoActionsRow(
                 disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
             ),
             modifier = Modifier
-                .size(48.dp)
-                .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                .size(34.dp)
+                .lit(undoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 17.dp)
                 .testTag(undoTag),
         ) {
             Icon(
@@ -137,8 +137,8 @@ fun UndoRedoActionsRow(
                 disabledContentColor = StudioColors.TextMuted.copy(alpha = 0.35f),
             ),
             modifier = Modifier
-                .size(48.dp)
-                .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 24.dp)
+                .size(34.dp)
+                .lit(redoInteraction, MaterialTheme.colorScheme.primary, cornerRadius = 17.dp)
                 .testTag(redoTag),
         ) {
             Icon(

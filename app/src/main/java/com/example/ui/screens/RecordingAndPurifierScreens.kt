@@ -92,6 +92,7 @@ import com.example.studio.ui.lit
 import com.example.ui.components.SaveDraftDialog
 import com.example.ui.components.SpectrumVisualizer
 import com.example.ui.components.StudioFocusTopBar
+import com.example.ui.components.MicrophonePermissionRationaleDialog
 import com.example.ui.components.StudioParamSlider
 import com.example.ui.components.StudioPreviewControlsBar
 import com.example.ui.components.StudioScrollColumn
@@ -118,6 +119,7 @@ fun RecordingStudioScreen(
 ) {
     val lang = uiState.language
     val context = LocalContext.current
+    var showMicPermissionRationale by remember { mutableStateOf(false) }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -126,6 +128,24 @@ fun RecordingStudioScreen(
             viewModel.startRecording()
         } else {
             viewModel.setMicPermissionDeniedError()
+        }
+    }
+
+    MicrophonePermissionRationaleDialog(
+        open = showMicPermissionRationale,
+        language = lang,
+        onDismiss = { showMicPermissionRationale = false },
+        onConfirm = {
+            showMicPermissionRationale = false
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        },
+    )
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (viewModel.uiState.value.recorder.isRecording) {
+                viewModel.finishRecording()
+            }
         }
     }
 
@@ -182,7 +202,7 @@ fun RecordingStudioScreen(
                     )
                     val grantMicInteraction = remember { MutableInteractionSource() }
                     Button(
-                        onClick = { micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                        onClick = { showMicPermissionRationale = true },
                         interactionSource = grantMicInteraction,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = StudioColors.Rose,
@@ -256,7 +276,7 @@ fun RecordingStudioScreen(
                             if (hasPerm) {
                                 viewModel.startRecording()
                             } else {
-                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                showMicPermissionRationale = true
                             }
                         },
                         interactionSource = startRecInteraction,
@@ -368,7 +388,7 @@ fun RecordingStudioScreen(
                 uiState.importProgress?.let { prog ->
                     val byteTransferActive = !uiState.importBytesLabel.isNullOrBlank()
                     val byteFraction = uiState.importBytesProgress
-                    val pct = ((byteFraction ?: prog).coerceIn(0f, 1f) * 100f).toInt()
+                    val pct = (prog.coerceIn(0f, 1f) * 100f).toInt()
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = StudioColors.BgMid,
@@ -421,7 +441,7 @@ fun RecordingStudioScreen(
                                 )
                             } else {
                                 LinearProgressIndicator(
-                                    progress = { (byteFraction ?: prog).coerceIn(0f, 1f) },
+                                    progress = { prog.coerceIn(0f, 1f) },
                                     color = StudioColors.Cyan,
                                     trackColor = StudioColors.BgTop,
                                     modifier = Modifier
@@ -624,16 +644,18 @@ fun VoicePurifierScreen(
                     },
                 )
             },
-        )
-
-        StudioPreviewControlsBar(
-            uiState = uiState,
-            onHoldBypassChange = { viewModel.setHoldBypass(it) },
-            onToggleBypass = { viewModel.toggleBypass() },
-            onUndo = { viewModel.undoLastEdit() },
-            onRedo = { viewModel.redoLastEdit() },
-            onResetZero = { viewModel.resetAllEffects() },
-            onOpenSaveDraft = { saveDraftDialogOpen = true },
+            bottomContent = {
+                StudioPreviewControlsBar(
+                    uiState = uiState,
+                    onHoldBypassChange = { viewModel.setHoldBypass(it) },
+                    onToggleBypass = { viewModel.toggleBypass() },
+                    onUndo = { viewModel.undoLastEdit() },
+                    onRedo = { viewModel.redoLastEdit() },
+                    onResetZero = { viewModel.resetAllEffects() },
+                    onOpenSaveDraft = { saveDraftDialogOpen = true },
+                    embedded = true,
+                )
+            },
         )
 
         // Live Noise Suppression Telemetry Meter (isolated telemetry collector)

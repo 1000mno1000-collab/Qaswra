@@ -1043,6 +1043,7 @@ object SonixUnifiedAIEngine {
             val langInstr = when (language) {
                 AppLanguage.EN -> "Answer clearly in English as a senior audio mastering engineer."
                 AppLanguage.FA -> "به زبان فارسی روان و تخصصی به عنوان مهندس صدابرداری پاسخ بده."
+                AppLanguage.TR -> "Kıdemli bir ses mastering mühendisi olarak Türkçe ve anlaşılır yanıt ver."
                 AppLanguage.AR -> "أجب باللغة العربية الاحترافية الواضحة بصفتك مهندس صوت وماسترينغ خبير."
             }
             val payload = JSONObject().apply {
@@ -1124,6 +1125,11 @@ object SonixUnifiedAIEngine {
                 append("راهنمای هوشمند صدابرداری (محلی):\n")
                 append("• حذف نویز: از تصفیه‌کننده صدا (High-pass 80Hz + کاهش نویز طیفی) استفاده کنید.\n")
                 append("• وضوح صدا: فرکانس 2.5kHz تا 3kHz را 2-3 dB تقویت و 220Hz را کمی کاهش دهید.")
+            }
+            AppLanguage.TR -> buildString {
+                append("Akıllı Ses Rehberi (Yerel):\n")
+                append("• Gürültüyü temizlemek için Ses Arındırıcı'yı (80 Hz high-pass + spektral gürültü azaltma) kullanın.\n")
+                append("• Konuşma netliği için 2,5–3 kHz bandını 2–3 dB artırıp 220 Hz'i hafifçe azaltın.")
             }
             AppLanguage.AR -> buildString {
                 append("مرشد الهندسة الصوتية الذكي (محلي):\n")

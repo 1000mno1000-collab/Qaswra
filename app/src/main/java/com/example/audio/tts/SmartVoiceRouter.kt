@@ -295,6 +295,7 @@ class SmartVoiceRouter(
             else -> when (fallback) {
                 AppLanguage.EN -> AiVoiceLanguage.EN
                 AppLanguage.FA -> AiVoiceLanguage.FA
+                AppLanguage.TR -> AiVoiceLanguage.TR
                 AppLanguage.AR -> AiVoiceLanguage.AR
             }
         }

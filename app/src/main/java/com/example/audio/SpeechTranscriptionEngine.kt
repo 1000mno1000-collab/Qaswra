@@ -26,9 +26,10 @@ import java.io.File
 data class NativeSpeechState(
     val isListening: Boolean = false,
     val isRoutingClip: Boolean = false,
-    val localeTag: String = "ar-IQ",
+    val localeTag: String = "ar",
     val partialText: String = "",
     val committedText: String = "",
+    val uncertainWordRanges: List<IntRange> = emptyList(),
     val rmsDb: Float = 0f,
     val errorMessage: String? = null,
     val backendMode: SttBackendMode = SttBackendMode.AUTO,
@@ -55,7 +56,7 @@ class StudioSpeechTranscriber(private val context: Context) {
     private val sessionGuard = Any()
     private var recognizer: SpeechRecognizer? = null
     @Volatile private var keepListening = false
-    @Volatile private var currentLocaleTag = "ar-IQ"
+    @Volatile private var currentLocaleTag = "ar"
     @Volatile private var currentSessionId = 0L
     @Volatile private var currentBackendMode = SttBackendMode.AUTO
     @Volatile private var lastSessionStartMs = 0L
@@ -115,6 +116,7 @@ class StudioSpeechTranscriber(private val context: Context) {
             it.copy(
                 committedText = newText,
                 partialText = "",
+                uncertainWordRanges = emptyList(),
                 errorMessage = null,
             )
         }
@@ -137,6 +139,7 @@ class StudioSpeechTranscriber(private val context: Context) {
             it.copy(
                 committedText = "",
                 partialText = "",
+                uncertainWordRanges = emptyList(),
                 errorMessage = null,
             )
         }
@@ -284,7 +287,11 @@ class StudioSpeechTranscriber(private val context: Context) {
             destroyAndroidRecognizerOnMain()
 
             val useLocal = shouldUseLocalMoonshine(localeTag, isClipRouting)
-            if (currentBackendMode == SttBackendMode.LOCAL_MOONSHINE_AR && !localMoonshineEngine.isModelReady()) {
+            if (
+                currentBackendMode == SttBackendMode.LOCAL_MOONSHINE_AR &&
+                localeTag.startsWith("ar", ignoreCase = true) &&
+                !localMoonshineEngine.isModelReady()
+            ) {
                 _state.update {
                     it.copy(
                         isListening = false,
@@ -569,10 +576,28 @@ class StudioSpeechTranscriber(private val context: Context) {
                 consecutiveFastDisconnects = 0
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val top = matches?.firstOrNull()?.trim().orEmpty()
+                val confidence = results
+                    ?.getFloatArray(RecognizerIntent.EXTRA_CONFIDENCE_SCORES)
+                    ?.firstOrNull()
                 if (top.isNotEmpty()) {
                     _state.update { cur ->
                         val nextCommitted = mergeTranscriptText(cur.committedText, top)
-                        cur.copy(committedText = nextCommitted, partialText = "", errorMessage = null)
+                        val resultStart = nextCommitted.lastIndexOf(top)
+                        val uncertainRanges = if (
+                            confidence != null && confidence >= 0f && confidence < 0.4f && resultStart >= 0
+                        ) {
+                            Regex("\\S+").findAll(top).map { match ->
+                                (resultStart + match.range.first)..(resultStart + match.range.last)
+                            }.toList()
+                        } else {
+                            cur.uncertainWordRanges
+                        }
+                        cur.copy(
+                            committedText = nextCommitted,
+                            partialText = "",
+                            uncertainWordRanges = uncertainRanges,
+                            errorMessage = null,
+                        )
                     }
                 } else {
                     commitPartialIntoTranscript()
@@ -605,8 +630,8 @@ class StudioSpeechTranscriber(private val context: Context) {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, currentLocaleTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 15_000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 12_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 30_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 25_000L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 5_000L)
         }
         runCatching { sr.startListening(intent) }.onFailure { err ->
