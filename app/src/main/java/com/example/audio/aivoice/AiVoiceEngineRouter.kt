@@ -2,6 +2,7 @@ package com.example.audio.aivoice
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import com.example.audio.AudioDecodeOutcome
 import com.example.audio.AudioDecoder
 import com.example.audio.TARGET_SAMPLE_RATE
@@ -29,7 +30,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.net.ConnectException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
@@ -854,8 +857,21 @@ class AiVoiceStudioCoordinator(
         val effectiveRequest = request.copy(
             engine = effectiveEngine,
             text = clean,
-            fixedSeed = FIXED_DETERMINISTIC_SEED,
+            fixedSeed = request.fixedSeed,
         )
+
+        outputDir.mkdirs()
+        val cacheFile = try {
+            stableSynthesisCacheFile(context, effectiveRequest, backendUrl)
+        } catch (e: Exception) {
+            Log.w("AiVoiceCache", "Could not compute deterministic synthesis cache key", e)
+            null
+        }
+        val cachedOutcome = cacheFile?.let { readCachedSynthesis(it, outputDir, effectiveRequest) }
+        if (cachedOutcome != null) {
+            onProgress(1f, "Loaded the exact matching voice print from cache.")
+            return@withContext cachedOutcome
+        }
 
         val chunks = AiVoicePromptBuilder.splitTextIntoChunks(clean, maxCharsPerChunk = 260)
         val provider = getProvider(effectiveEngine)
@@ -879,8 +895,21 @@ class AiVoiceStudioCoordinator(
                     )
                     is AiVoiceSynthOutcome.Error -> return@withContext res
                     is AiVoiceSynthOutcome.Success -> {
-                        lastPrompt = res.appliedPromptSummary
-                        segments.add(WavStitchSegment(File(res.audioFilePath), pauseAfterMs = 180))
+                        val tuned = applyClientVoiceTuning(
+                            outcome = res,
+                            request = effectiveRequest,
+                            applyPublicPitch = backendUrl.isBlank(),
+                        )
+                        if (tuned !is AiVoiceSynthOutcome.Success) {
+                            return@withContext tuned
+                        }
+                        lastPrompt = tuned.appliedPromptSummary
+                        segments.add(
+                            WavStitchSegment(
+                                File(tuned.audioFilePath),
+                                pauseAfterMs = effectiveRequest.breathCadence.pauseAfterMs,
+                            ),
+                        )
                     }
                 }
             }
@@ -892,6 +921,7 @@ class AiVoiceStudioCoordinator(
                 outFile = finalFile,
                 targetSampleRate = TARGET_SAMPLE_RATE,
             )
+            cacheFile?.let { persistStableSynthesisCache(it, stitched.outputFile) }
             onProgress(1f, "اكتمل التوليد بنجاح")
             AiVoiceSynthOutcome.Success(
                 audioFilePath = stitched.outputFile.absolutePath,
@@ -903,6 +933,143 @@ class AiVoiceStudioCoordinator(
             )
         } finally {
             tempFiles.forEach { runCatching { it.delete() } }
+        }
+    }
+
+    private fun stableSynthesisCacheFile(
+        context: Context,
+        request: AiVoiceSynthRequest,
+        backendUrl: String,
+    ): File? {
+        val referenceFingerprint = request.referenceAudioPath?.let { path ->
+            val reference = File(path)
+            if (!reference.isFile) return null
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileInputStream(reference).use { input ->
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it) }
+        }.orEmpty()
+        val userId = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull().orEmpty()
+        val keyData = "voxcpm-output-v2|$userId|${backendUrl.trim().trimEnd('/')}|$request|$referenceFingerprint"
+        val key = MessageDigest.getInstance("SHA-256")
+            .digest(keyData.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return File(File(context.cacheDir, "ai_voice_deterministic_cache"), "$key.wav")
+    }
+
+    private fun readCachedSynthesis(
+        cacheFile: File,
+        outputDir: File,
+        request: AiVoiceSynthRequest,
+    ): AiVoiceSynthOutcome.Success? {
+        if (!cacheFile.isFile) return null
+        val cachedBuffer = try {
+            AiVoiceAudioStitcher.readSimplePcmWav(cacheFile)
+        } catch (e: Exception) {
+            Log.w("AiVoiceCache", "Could not read cached voice output: ${cacheFile.name}", e)
+            null
+        }
+        if (cachedBuffer == null) {
+            if (!cacheFile.delete()) {
+                Log.w("AiVoiceCache", "Could not remove invalid cached voice output: ${cacheFile.name}")
+            }
+            return null
+        }
+        val outputFile = File(outputDir, "sonix_aivoice_${UUID.randomUUID()}.wav")
+        return try {
+            cacheFile.copyTo(outputFile, overwrite = true)
+            cacheFile.setLastModified(System.currentTimeMillis())
+            AiVoiceSynthOutcome.Success(
+                audioFilePath = outputFile.absolutePath,
+                sampleRate = cachedBuffer.sampleRate,
+                durationMs = cachedBuffer.durationMs,
+                engineUsed = request.engine,
+                appliedPromptSummary = "${request.vocalStyle.titleEn} • ${request.emotion.titleEn} • deterministic cache",
+                isCloudGenerated = true,
+            )
+        } catch (e: Exception) {
+            Log.w("AiVoiceCache", "Could not copy cached voice output; synthesizing again.", e)
+            null
+        }
+    }
+
+    private fun persistStableSynthesisCache(cacheFile: File, sourceFile: File) {
+        try {
+            cacheFile.parentFile?.mkdirs()
+            sourceFile.copyTo(cacheFile, overwrite = true)
+            cacheFile.setLastModified(System.currentTimeMillis())
+            val cachedFiles = cacheFile.parentFile
+                ?.listFiles { file -> file.isFile && file.extension.equals("wav", ignoreCase = true) }
+                .orEmpty()
+                .sortedBy { it.lastModified() }
+            var totalBytes = cachedFiles.sumOf { it.length() }
+            var remainingCount = cachedFiles.size
+            for (file in cachedFiles) {
+                if (remainingCount <= 24 && totalBytes <= 96L * 1024L * 1024L) break
+                if (file.absolutePath == cacheFile.absolutePath) continue
+                val length = file.length()
+                if (file.delete()) {
+                    totalBytes -= length
+                    remainingCount--
+                } else {
+                    Log.w("AiVoiceCache", "Could not prune old cached voice output: ${file.name}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("AiVoiceCache", "Could not persist deterministic voice output cache", e)
+        }
+    }
+
+    private suspend fun applyClientVoiceTuning(
+        outcome: AiVoiceSynthOutcome.Success,
+        request: AiVoiceSynthRequest,
+        applyPublicPitch: Boolean,
+    ): AiVoiceSynthOutcome {
+        return try {
+            val output = File(outcome.audioFilePath)
+            val source = AiVoiceAudioStitcher.readSimplePcmWav(output)
+                ?: return AiVoiceSynthOutcome.Error(
+                    engine = outcome.engineUsed,
+                    messageAr = "تعذر قراءة ملف VoxCPM2 لمعالجة إعدادات الصوت.",
+                    messageEn = "Could not read the VoxCPM2 output for vocal processing.",
+                )
+            val clarityDb = (request.articulationClarity.coerceIn(0f, 1f) - 0.5f) * 6f
+            val publicPitch = if (applyPublicPitch) {
+                request.pitchOffsetSemitones + request.emotion.pitchBiasSemitones * request.emotionIntensity
+            } else {
+                0f
+            }
+            val tuned = transformVoiceOffline(
+                source = source,
+                pitchSemitones = publicPitch + request.pitchContour.semitoneBias,
+                formantShift = (request.fixedFormantShift * request.timbre.formantMultiplier).coerceIn(0.84f, 1.20f),
+                warmthDb = request.fixedEqLowDb + request.timbre.warmthDb,
+                presenceDb = request.fixedEqPresenceDb + request.timbre.presenceDb + clarityDb,
+                mix = 0.85f,
+                vibratoHz = request.pitchContour.vibratoHz,
+                vibratoDepth = request.pitchContour.vibratoDepth,
+                studioMasteringPolish = true,
+            )
+            writeStereoWavFile(output, tuned)
+            outcome.copy(
+                sampleRate = tuned.sampleRate,
+                durationMs = tuned.durationMs,
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Log.e("AiVoiceStudio", "Vocal finishing failed", e)
+            AiVoiceSynthOutcome.Error(
+                engine = outcome.engineUsed,
+                messageAr = "تعذرت معالجة النبرة الصوتية بعد التوليد: ${e.localizedMessage ?: e.javaClass.simpleName}",
+                messageEn = "Vocal finishing failed: ${e.localizedMessage ?: e.javaClass.simpleName}",
+            )
         }
     }
 
@@ -966,6 +1133,11 @@ class AiVoiceStudioCoordinator(
                     fixedFormantShift = character.fixedFormantShift,
                     fixedEqLowDb = character.fixedEqLowDb,
                     fixedEqPresenceDb = character.fixedEqPresenceDb,
+                    vocalStyle = character.defaultVocalStyle,
+                    breathCadence = character.defaultBreathCadence,
+                    pitchContour = character.defaultPitchContour,
+                    timbre = character.defaultTimbre,
+                    articulationClarity = character.defaultArticulationClarity,
                     referenceAudioPath = character.referenceAudioPath,
                     referenceTranscript = character.referenceTranscript,
                 )

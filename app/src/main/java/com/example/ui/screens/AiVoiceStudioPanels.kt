@@ -1066,9 +1066,9 @@ fun AiVoiceServerSetupTab(
                 )
                 Text(
                     text = if (isEnglish) {
-                        "The public demo may be unavailable and does not expose a fixed speaker ID or seed; exact voice locking is not guaranteed."
+                        "The public demo does not expose a speaker ID or seed. Matching requests reuse the exact processed audio from a bounded on-device cache; a new uncached generation cannot be guaranteed identical by the public service."
                     } else {
-                        "قد تتوقف الخدمة العامة مؤقتاً، ولا توفر معرف متحدث أو بذرة ثابتة؛ لذلك لا يمكن ضمان تطابق البصمة الصوتية تماماً."
+                        "الخدمة العامة لا توفر معرف متحدث أو بذرة ثابتة. يعيد التطبيق الصوت المعالج نفسه للطلبات المطابقة من ذاكرة مؤقتة محدودة؛ ولا يمكن ضمان تطابق توليد جديد غير مخزن عبر الخدمة العامة."
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = StudioColors.TextSecondary,

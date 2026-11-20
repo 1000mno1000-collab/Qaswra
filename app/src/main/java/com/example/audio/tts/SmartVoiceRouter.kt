@@ -6,16 +6,21 @@ import com.example.audio.OnlineGuard
 import com.example.audio.fx.StudioLuxuryAudioFilter
 import com.example.audio.writeStereoWavFile
 import com.example.audio.aivoice.AiArabicDialect
+import com.example.audio.aivoice.AiBreathCadence
 import com.example.audio.aivoice.AiVoiceCategory
 import com.example.audio.aivoice.AiVoiceEmotion
 import com.example.audio.aivoice.AiVoiceEngineKind
 import com.example.audio.aivoice.AiVoiceLanguage
+import com.example.audio.aivoice.AiPitchContour
+import com.example.audio.aivoice.AiVoiceTimbre
+import com.example.audio.aivoice.AiVocalStyle
 import com.example.audio.aivoice.AiVoiceStudioCoordinator
 import com.example.audio.aivoice.AiVoiceSynthOutcome
 import com.example.audio.aivoice.AiVoiceSynthRequest
 import com.example.model.AppLanguage
 import com.example.model.StereoAudioBuffer
 import com.example.model.TTS_DIALECTS
+import com.example.model.TTS_VOICE_PERSONAS
 import com.example.model.TtsDeliveryStyle
 import com.example.model.TtsDialect
 import com.example.model.TtsEngineMode
@@ -56,7 +61,7 @@ class SmartVoiceRouter(
         studioLuxuryEnhancement: Boolean = FreeEmotionalTtsClient.getSavedStudioLuxuryEnhancement(context),
         persona: TtsVoicePersona? = null,
         acousticMode: TtsPersonaAcousticMode? = null,
-        fixedSid: Int? = 0,
+        fixedSid: Int? = null,
     ): VoiceRouteOutcome = withContext(Dispatchers.IO) {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) {
@@ -110,8 +115,21 @@ class SmartVoiceRouter(
             emotionIntensity = 0.65f,
             speechRate = speechRate.coerceIn(0.60f, 1.50f),
             pitchOffsetSemitones = (12.0 * kotlin.math.ln(pitch.coerceIn(0.62f, 1.65f)) / kotlin.math.ln(2.0)).toFloat(),
-            fixedSid = fixedSid ?: 0,
+            fixedSid = fixedSid ?: persona.toStableSpeakerId(),
             fixedSeed = 42,
+            fixedFormantShift = persona?.defaultFormantShift ?: 1f,
+            fixedEqLowDb = persona?.defaultWarmthDb ?: 0f,
+            fixedEqPresenceDb = persona?.defaultPresenceDb ?: 0f,
+            vocalStyle = style.toAiVocalStyle(),
+            breathCadence = style.toAiBreathCadence(),
+            pitchContour = style.toAiPitchContour(),
+            timbre = acousticMode.toAiVoiceTimbre(),
+            articulationClarity = when (style) {
+                TtsDeliveryStyle.RADIO_ANCHOR -> 0.82f
+                TtsDeliveryStyle.ENERGETIC -> 0.88f
+                TtsDeliveryStyle.STORYTELLING -> 0.66f
+                else -> 0.72f
+            },
         )
         when (
             val outcome = coordinator.synthesizeSingle(
@@ -234,6 +252,38 @@ class SmartVoiceRouter(
         TtsDeliveryStyle.DRAMATIC, TtsDeliveryStyle.RADIO_ANCHOR -> AiVoiceEmotion.SERIOUS
         TtsDeliveryStyle.STORYTELLING -> AiVoiceEmotion.CALM
         TtsDeliveryStyle.NATURAL_WARM -> AiVoiceEmotion.NEUTRAL
+    }
+
+    private fun TtsVoicePersona?.toStableSpeakerId(): Int {
+        val selected = this ?: return 0
+        val builtInIndex = TTS_VOICE_PERSONAS.indexOfFirst { it.id == selected.id }
+        return builtInIndex.takeIf { it >= 0 }?.plus(1) ?: 0
+    }
+
+    private fun TtsDeliveryStyle.toAiVocalStyle(): AiVocalStyle = when (this) {
+        TtsDeliveryStyle.NATURAL_WARM -> AiVocalStyle.WARM
+        TtsDeliveryStyle.ENERGETIC, TtsDeliveryStyle.ANGRY -> AiVocalStyle.ENERGETIC
+        TtsDeliveryStyle.SAD, TtsDeliveryStyle.STORYTELLING -> AiVocalStyle.STORYTELLING
+        TtsDeliveryStyle.DRAMATIC -> AiVocalStyle.DRAMATIC
+        TtsDeliveryStyle.RADIO_ANCHOR -> AiVocalStyle.NEWS_ANCHOR
+    }
+
+    private fun TtsDeliveryStyle.toAiBreathCadence(): AiBreathCadence = when (this) {
+        TtsDeliveryStyle.DRAMATIC, TtsDeliveryStyle.SAD, TtsDeliveryStyle.STORYTELLING -> AiBreathCadence.MEASURED
+        TtsDeliveryStyle.ENERGETIC, TtsDeliveryStyle.ANGRY -> AiBreathCadence.BRISK
+        else -> AiBreathCadence.NATURAL
+    }
+
+    private fun TtsDeliveryStyle.toAiPitchContour(): AiPitchContour = when (this) {
+        TtsDeliveryStyle.ENERGETIC -> AiPitchContour.GENTLE_RISE
+        TtsDeliveryStyle.STORYTELLING, TtsDeliveryStyle.DRAMATIC, TtsDeliveryStyle.SAD -> AiPitchContour.GENTLE_FALL
+        else -> AiPitchContour.STEADY
+    }
+
+    private fun TtsPersonaAcousticMode?.toAiVoiceTimbre(): AiVoiceTimbre = when (this) {
+        TtsPersonaAcousticMode.DOCUMENTARY -> AiVoiceTimbre.DEEP
+        TtsPersonaAcousticMode.PODCAST -> AiVoiceTimbre.WARM
+        TtsPersonaAcousticMode.HALL_ECHO, TtsPersonaAcousticMode.NATURAL, null -> AiVoiceTimbre.BALANCED
     }
 
     private fun TtsDialect.toAiLanguage(fallback: AppLanguage): AiVoiceLanguage =

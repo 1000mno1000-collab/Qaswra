@@ -39,8 +39,11 @@ import com.example.audio.ai.SmartAssistantAndSearch
 import com.example.audio.ai.SonixUnifiedAIEngine
 import com.example.audio.ai.ToolGuideResult
 import com.example.audio.aivoice.AiArabicDialect
+import com.example.audio.aivoice.AiBreathCadence
 import com.example.audio.aivoice.AiDeliveryPace
 import com.example.audio.aivoice.AiDialogueTurn
+import com.example.audio.aivoice.AiPitchContour
+import com.example.audio.aivoice.AiStudioPreset
 import com.example.audio.aivoice.AiVoiceAudioStitcher
 import com.example.audio.aivoice.AiVoiceCategory
 import com.example.audio.aivoice.AiVoiceCharacter
@@ -51,6 +54,9 @@ import com.example.audio.aivoice.AiVoiceStudioCoordinator
 import com.example.audio.aivoice.AiVoiceStudioUiState
 import com.example.audio.aivoice.AiVoiceSynthOutcome
 import com.example.audio.aivoice.AiVoiceSynthRequest
+import com.example.audio.aivoice.AiVoiceTimbre
+import com.example.audio.aivoice.AiVocalStyle
+import com.example.audio.aivoice.defaultVocalStyle
 import com.example.audio.fx.StudioLuxuryAudioFilter
 import com.example.audio.fx.VoiceEffect
 import com.example.audio.fx.VoiceProcessor
@@ -5395,7 +5401,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
                     persona = persona,
                     acousticMode = acousticMode,
-                    fixedSid = 0,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -5580,7 +5585,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     studioLuxuryEnhancement = cur.studioLuxuryEnhancement,
                     persona = persona,
                     acousticMode = acousticMode,
-                    fixedSid = 0,
                 )
                 when (outcome) {
                     is VoiceRouteOutcome.Success -> {
@@ -7348,27 +7352,147 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setAiVoiceLanguage(language: AiVoiceLanguage) {
-        _aiVoiceUiState.update { it.copy(selectedLanguage = language) }
+        _aiVoiceUiState.update {
+            it.copy(selectedLanguage = language, selectedStudioPreset = AiStudioPreset.CUSTOM)
+        }
     }
 
     fun setAiVoiceDialect(dialect: AiArabicDialect) {
-        _aiVoiceUiState.update { it.copy(selectedDialect = dialect) }
+        _aiVoiceUiState.update {
+            it.copy(selectedDialect = dialect, selectedStudioPreset = AiStudioPreset.CUSTOM)
+        }
     }
 
     fun setAiVoiceCategory(category: AiVoiceCategory) {
-        _aiVoiceUiState.update { it.copy(selectedCategory = category) }
+        _aiVoiceUiState.update {
+            it.copy(selectedCategory = category, selectedStudioPreset = AiStudioPreset.CUSTOM)
+        }
     }
 
     fun setAiVoiceEmotion(emotion: AiVoiceEmotion) {
-        _aiVoiceUiState.update { it.copy(selectedEmotion = emotion) }
+        _aiVoiceUiState.update {
+            it.copy(selectedEmotion = emotion, selectedStudioPreset = AiStudioPreset.CUSTOM)
+        }
+    }
+
+    fun setAiVocalStyle(style: AiVocalStyle) {
+        _aiVoiceUiState.update {
+            it.copy(selectedVocalStyle = style, selectedStudioPreset = AiStudioPreset.CUSTOM)
+        }
+    }
+
+    fun setAiBreathCadence(cadence: AiBreathCadence) {
+        _aiVoiceUiState.update {
+            it.copy(selectedBreathCadence = cadence, selectedStudioPreset = AiStudioPreset.CUSTOM)
+        }
+    }
+
+    fun setAiPitchContour(contour: AiPitchContour) {
+        _aiVoiceUiState.update {
+            it.copy(selectedPitchContour = contour, selectedStudioPreset = AiStudioPreset.CUSTOM)
+        }
+    }
+
+    fun setAiVoiceTimbre(timbre: AiVoiceTimbre) {
+        _aiVoiceUiState.update {
+            it.copy(selectedTimbre = timbre, selectedStudioPreset = AiStudioPreset.CUSTOM)
+        }
+    }
+
+    fun setAiArticulationClarity(clarity: Float) {
+        _aiVoiceUiState.update {
+            it.copy(
+                articulationClarity = clarity.coerceIn(0f, 1f),
+                selectedStudioPreset = AiStudioPreset.CUSTOM,
+            )
+        }
+    }
+
+    fun setAiVoiceStudioPreset(preset: AiStudioPreset) {
+        _aiVoiceUiState.update { cur ->
+            when (preset) {
+                AiStudioPreset.CUSTOM -> cur.copy(selectedStudioPreset = preset)
+                AiStudioPreset.BROADCAST -> cur.copy(
+                    selectedStudioPreset = preset,
+                    selectedVocalStyle = AiVocalStyle.NEWS_ANCHOR,
+                    selectedEmotion = AiVoiceEmotion.SERIOUS,
+                    selectedBreathCadence = AiBreathCadence.NATURAL,
+                    selectedPitchContour = AiPitchContour.STEADY,
+                    selectedTimbre = AiVoiceTimbre.BALANCED,
+                    articulationClarity = 0.78f,
+                    selectedPace = AiDeliveryPace.NORMAL,
+                    speechRate = 1.0f,
+                    emotionIntensity = 0.65f,
+                )
+                AiStudioPreset.WARM_PODCAST -> cur.copy(
+                    selectedStudioPreset = preset,
+                    selectedVocalStyle = AiVocalStyle.WARM,
+                    selectedEmotion = AiVoiceEmotion.CALM,
+                    selectedBreathCadence = AiBreathCadence.NATURAL,
+                    selectedPitchContour = AiPitchContour.STEADY,
+                    selectedTimbre = AiVoiceTimbre.WARM,
+                    articulationClarity = 0.68f,
+                    selectedPace = AiDeliveryPace.NORMAL,
+                    speechRate = 1.0f,
+                    emotionIntensity = 0.55f,
+                )
+                AiStudioPreset.CINEMATIC_STORY -> cur.copy(
+                    selectedStudioPreset = preset,
+                    selectedVocalStyle = AiVocalStyle.STORYTELLING,
+                    selectedEmotion = AiVoiceEmotion.CALM,
+                    selectedBreathCadence = AiBreathCadence.MEASURED,
+                    selectedPitchContour = AiPitchContour.GENTLE_FALL,
+                    selectedTimbre = AiVoiceTimbre.DEEP,
+                    articulationClarity = 0.62f,
+                    selectedPace = AiDeliveryPace.SLOW,
+                    speechRate = 0.92f,
+                    emotionIntensity = 0.70f,
+                )
+                AiStudioPreset.BRIGHT_PROMO -> cur.copy(
+                    selectedStudioPreset = preset,
+                    selectedVocalStyle = AiVocalStyle.ENERGETIC,
+                    selectedEmotion = AiVoiceEmotion.EXCITED,
+                    selectedBreathCadence = AiBreathCadence.BRISK,
+                    selectedPitchContour = AiPitchContour.GENTLE_RISE,
+                    selectedTimbre = AiVoiceTimbre.BRIGHT,
+                    articulationClarity = 0.86f,
+                    selectedPace = AiDeliveryPace.FAST,
+                    speechRate = 1.08f,
+                    emotionIntensity = 0.72f,
+                )
+                AiStudioPreset.INTIMATE_WHISPER -> cur.copy(
+                    selectedStudioPreset = preset,
+                    selectedVocalStyle = AiVocalStyle.WHISPERED,
+                    selectedEmotion = AiVoiceEmotion.WHISPER,
+                    selectedBreathCadence = AiBreathCadence.MEASURED,
+                    selectedPitchContour = AiPitchContour.STEADY,
+                    selectedTimbre = AiVoiceTimbre.AIRY,
+                    articulationClarity = 0.58f,
+                    selectedPace = AiDeliveryPace.SLOW,
+                    speechRate = 0.90f,
+                    emotionIntensity = 0.65f,
+                )
+            }
+        }
     }
 
     fun setAiVoiceEmotionIntensity(intensity: Float) {
-        _aiVoiceUiState.update { it.copy(emotionIntensity = intensity.coerceIn(0.1f, 1.0f)) }
+        _aiVoiceUiState.update {
+            it.copy(
+                emotionIntensity = intensity.coerceIn(0.1f, 1.0f),
+                selectedStudioPreset = AiStudioPreset.CUSTOM,
+            )
+        }
     }
 
     fun setAiVoicePace(pace: AiDeliveryPace) {
-        _aiVoiceUiState.update { it.copy(selectedPace = pace, speechRate = pace.speedMultiplier) }
+        _aiVoiceUiState.update {
+            it.copy(
+                selectedPace = pace,
+                speechRate = pace.speedMultiplier,
+                selectedStudioPreset = AiStudioPreset.CUSTOM,
+            )
+        }
     }
 
     fun setAiVoiceSpeechRate(rate: Float) {
@@ -7377,6 +7501,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 speechRate = clamped,
                 selectedPace = AiDeliveryPace.fromSpeechRate(clamped),
+                selectedStudioPreset = AiStudioPreset.CUSTOM,
             )
         }
     }
@@ -7387,6 +7512,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val defaultRate = activeChar?.defaultSpeechRate ?: 1.0f
             cur.copy(
                 selectedEmotion = activeChar?.defaultEmotion ?: AiVoiceEmotion.NEUTRAL,
+                selectedVocalStyle = activeChar?.defaultVocalStyle ?: AiVoiceEmotion.NEUTRAL.defaultVocalStyle(),
+                selectedBreathCadence = activeChar?.defaultBreathCadence ?: AiBreathCadence.NATURAL,
+                selectedPitchContour = activeChar?.defaultPitchContour ?: AiPitchContour.STEADY,
+                selectedTimbre = activeChar?.defaultTimbre ?: AiVoiceTimbre.BALANCED,
+                articulationClarity = activeChar?.defaultArticulationClarity ?: 0.55f,
+                selectedStudioPreset = AiStudioPreset.CUSTOM,
                 emotionIntensity = activeChar?.defaultEmotionIntensity ?: 0.65f,
                 speechRate = defaultRate,
                 selectedPace = activeChar?.defaultPace ?: AiDeliveryPace.fromSpeechRate(defaultRate),
@@ -7396,7 +7527,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setAiVoicePitchOffset(semitones: Float) {
-        _aiVoiceUiState.update { it.copy(pitchOffsetSemitones = semitones.coerceIn(-8f, 8f)) }
+        _aiVoiceUiState.update {
+            it.copy(
+                pitchOffsetSemitones = semitones.coerceIn(-8f, 8f),
+                selectedStudioPreset = AiStudioPreset.CUSTOM,
+            )
+        }
     }
 
     fun setAiVoiceDescriptionPrompt(prompt: String) {
@@ -7474,12 +7610,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 selectedDialect = character.dialect,
                 selectedCategory = character.category,
                 selectedEmotion = safeEmotion,
+                selectedVocalStyle = character.defaultVocalStyle,
+                selectedBreathCadence = character.defaultBreathCadence,
+                selectedPitchContour = character.defaultPitchContour,
+                selectedTimbre = character.defaultTimbre,
+                articulationClarity = character.defaultArticulationClarity,
+                selectedStudioPreset = AiStudioPreset.CUSTOM,
                 emotionIntensity = character.defaultEmotionIntensity,
                 selectedPace = character.defaultPace,
                 speechRate = character.defaultSpeechRate,
                 pitchOffsetSemitones = character.pitchOffsetSemitones,
                 fixedSid = character.fixedSid,
-                fixedSeed = 42,
+                fixedSeed = character.fixedSeed,
                 fixedFormantShift = character.fixedFormantShift,
                 fixedEqLowDb = character.fixedEqLowDb,
                 fixedEqPresenceDb = character.fixedEqPresenceDb,
@@ -7579,12 +7721,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             preferredEngine = cur.selectedEngine,
             voiceDescriptionPrompt = cur.voiceDescriptionPrompt.trim(),
             defaultEmotion = cur.selectedEmotion,
+            defaultVocalStyle = cur.selectedVocalStyle,
+            defaultBreathCadence = cur.selectedBreathCadence,
+            defaultPitchContour = cur.selectedPitchContour,
+            defaultTimbre = cur.selectedTimbre,
+            defaultArticulationClarity = cur.articulationClarity,
             defaultEmotionIntensity = cur.emotionIntensity,
             defaultPace = cur.selectedPace,
             defaultSpeechRate = cur.speechRate,
             pitchOffsetSemitones = cur.pitchOffsetSemitones,
             fixedSid = cur.fixedSid,
-            fixedSeed = 42,
+            fixedSeed = cur.fixedSeed,
             fixedFormantShift = cur.fixedFormantShift,
             fixedEqLowDb = cur.fixedEqLowDb,
             fixedEqPresenceDb = cur.fixedEqPresenceDb,
@@ -7743,10 +7890,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 speechRate = cur.speechRate,
                 pitchOffsetSemitones = cur.pitchOffsetSemitones,
                 fixedSid = cur.fixedSid,
-                fixedSeed = 42,
+                fixedSeed = cur.fixedSeed,
                 fixedFormantShift = cur.fixedFormantShift,
                 fixedEqLowDb = cur.fixedEqLowDb,
                 fixedEqPresenceDb = cur.fixedEqPresenceDb,
+                vocalStyle = cur.selectedVocalStyle,
+                breathCadence = cur.selectedBreathCadence,
+                pitchContour = cur.selectedPitchContour,
+                timbre = cur.selectedTimbre,
+                articulationClarity = cur.articulationClarity,
                 referenceAudioPath = cur.referenceAudioPath,
                 referenceTranscript = cur.referenceTranscript.trim(),
             )

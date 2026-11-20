@@ -154,6 +154,93 @@ enum class AiVoiceEmotion(
 }
 
 @Serializable
+enum class AiVocalStyle(
+    val id: String,
+    val titleAr: String,
+    val titleEn: String,
+    val instructionEn: String,
+) {
+    NATURAL("natural", "محادثة طبيعية", "Natural Conversation", "natural conversational delivery"),
+    WARM("warm", "دافئ", "Warm", "warm, close and reassuring delivery"),
+    EXPRESSIVE("expressive", "تعبيري", "Expressive", "expressive delivery with natural dynamic variation"),
+    DRAMATIC("dramatic", "درامي", "Dramatic", "dramatic delivery with deliberate emphasis"),
+    STORYTELLING("storytelling", "سرد قصصي", "Storytelling", "engaging storytelling with thoughtful phrasing"),
+    NEWS_ANCHOR("news_anchor", "مذيع إخباري", "News Anchor", "confident broadcast news-anchor delivery"),
+    WHISPERED("whispered", "همس", "Whispered", "soft intimate near-whisper delivery"),
+    ENERGETIC("energetic", "حيوي", "Energetic", "bright energetic delivery with clear projection"),
+}
+
+@Serializable
+enum class AiBreathCadence(
+    val id: String,
+    val titleAr: String,
+    val titleEn: String,
+    val instructionEn: String,
+    val pauseAfterMs: Int,
+) {
+    NATURAL("natural", "تنفس طبيعي", "Natural", "natural breath groups and conversational pauses", 180),
+    MEASURED("measured", "متأنٍ", "Measured", "measured phrasing with relaxed pauses between clauses", 320),
+    BRISK("brisk", "إيقاع سريع", "Brisk", "brisk connected phrasing with short pauses", 100),
+    DRAMATIC("dramatic", "وقفات درامية", "Dramatic", "deliberate dramatic pauses at phrase boundaries", 520),
+}
+
+@Serializable
+enum class AiPitchContour(
+    val id: String,
+    val titleAr: String,
+    val titleEn: String,
+    val instructionEn: String,
+    val semitoneBias: Float,
+    val vibratoHz: Float,
+    val vibratoDepth: Float,
+) {
+    STEADY("steady", "ثابت", "Steady", "a steady, controlled pitch contour", 0f, 0f, 0f),
+    GENTLE_RISE("gentle_rise", "ارتفاع لطيف", "Gentle Rise", "a gentle upward pitch inflection", 0.35f, 0f, 0f),
+    GENTLE_FALL("gentle_fall", "انخفاض لطيف", "Gentle Fall", "a gentle downward pitch inflection", -0.35f, 0f, 0f),
+    EXPRESSIVE_SWELL("expressive_swell", "منحنى تعبيري", "Expressive Swell", "a subtle expressive pitch contour", 0.1f, 4.8f, 0.045f),
+}
+
+@Serializable
+enum class AiVoiceTimbre(
+    val id: String,
+    val titleAr: String,
+    val titleEn: String,
+    val instructionEn: String,
+    val formantMultiplier: Float,
+    val warmthDb: Float,
+    val presenceDb: Float,
+) {
+    BALANCED("balanced", "متوازن", "Balanced", "balanced natural vocal resonance", 1f, 0f, 0f),
+    WARM("warm", "دافئ", "Warm", "warm, rounded vocal resonance", 0.99f, 2f, 0.5f),
+    DEEP("deep", "عميق", "Deep", "deep, full-bodied vocal resonance", 0.93f, 3.5f, -0.5f),
+    BRIGHT("bright", "مشرق", "Bright", "bright, clear vocal resonance", 1.05f, -0.5f, 2.5f),
+    AIRY("airy", "هوائي", "Airy", "light, airy vocal resonance without harshness", 1.03f, -1f, 3f),
+}
+
+@Serializable
+enum class AiStudioPreset(
+    val id: String,
+    val titleAr: String,
+    val titleEn: String,
+) {
+    CUSTOM("custom", "مخصص", "Custom"),
+    BROADCAST("broadcast", "إذاعي احترافي", "Broadcast"),
+    WARM_PODCAST("warm_podcast", "بودكاست دافئ", "Warm Podcast"),
+    CINEMATIC_STORY("cinematic_story", "سرد سينمائي", "Cinematic Story"),
+    BRIGHT_PROMO("bright_promo", "إعلان حيوي", "Bright Promo"),
+    INTIMATE_WHISPER("intimate_whisper", "همس حميم", "Intimate Whisper"),
+}
+
+fun AiVoiceEmotion.defaultVocalStyle(): AiVocalStyle = when (this) {
+    AiVoiceEmotion.NEUTRAL -> AiVocalStyle.NATURAL
+    AiVoiceEmotion.EXCITED -> AiVocalStyle.ENERGETIC
+    AiVoiceEmotion.CALM -> AiVocalStyle.WARM
+    AiVoiceEmotion.SAD -> AiVocalStyle.STORYTELLING
+    AiVoiceEmotion.SERIOUS -> AiVocalStyle.NEWS_ANCHOR
+    AiVoiceEmotion.WHISPER -> AiVocalStyle.WHISPERED
+}
+
+@Serializable
 enum class AiDeliveryPace(
     val id: String,
     val titleAr: String,
@@ -228,6 +315,11 @@ data class AiVoiceCharacter(
     val fixedFormantShift: Float = 1.0f,
     val fixedEqLowDb: Float = 0f,
     val fixedEqPresenceDb: Float = 0f,
+    val defaultVocalStyle: AiVocalStyle = AiVocalStyle.NATURAL,
+    val defaultBreathCadence: AiBreathCadence = AiBreathCadence.NATURAL,
+    val defaultPitchContour: AiPitchContour = AiPitchContour.STEADY,
+    val defaultTimbre: AiVoiceTimbre = AiVoiceTimbre.BALANCED,
+    val defaultArticulationClarity: Float = 0.55f,
     val referenceAudioPath: String? = null,
     val referenceAudioName: String? = null,
     val referenceTranscript: String = "",
@@ -273,6 +365,11 @@ data class AiVoiceSynthRequest(
     val fixedFormantShift: Float = 1.0f,
     val fixedEqLowDb: Float = 0f,
     val fixedEqPresenceDb: Float = 0f,
+    val vocalStyle: AiVocalStyle = AiVocalStyle.NATURAL,
+    val breathCadence: AiBreathCadence = AiBreathCadence.NATURAL,
+    val pitchContour: AiPitchContour = AiPitchContour.STEADY,
+    val timbre: AiVoiceTimbre = AiVoiceTimbre.BALANCED,
+    val articulationClarity: Float = 0.55f,
     val referenceAudioPath: String? = null,
     val referenceTranscript: String = "",
     val cfgValue: Float = 2.0f,
@@ -334,6 +431,12 @@ data class AiVoiceStudioUiState(
     val selectedCategory: AiVoiceCategory = AiVoiceCategory.MALE,
     val selectedCharacterId: String = "male_news_podcast",
     val selectedEmotion: AiVoiceEmotion = AiVoiceEmotion.NEUTRAL,
+    val selectedVocalStyle: AiVocalStyle = AiVocalStyle.NEWS_ANCHOR,
+    val selectedBreathCadence: AiBreathCadence = AiBreathCadence.NATURAL,
+    val selectedPitchContour: AiPitchContour = AiPitchContour.STEADY,
+    val selectedTimbre: AiVoiceTimbre = AiVoiceTimbre.BALANCED,
+    val articulationClarity: Float = 0.55f,
+    val selectedStudioPreset: AiStudioPreset = AiStudioPreset.CUSTOM,
     val emotionIntensity: Float = 0.65f,
     val selectedPace: AiDeliveryPace = AiDeliveryPace.NORMAL,
     val speechRate: Float = 1.0f,
@@ -400,6 +503,8 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         fixedFormantShift = 0.96f,
         fixedEqLowDb = 2.0f,
         fixedEqPresenceDb = 2.4f,
+        defaultVocalStyle = AiVocalStyle.NEWS_ANCHOR,
+        defaultArticulationClarity = 0.72f,
         isBuiltIn = true,
     ),
     AiVoiceCharacter(
@@ -423,6 +528,11 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         fixedFormantShift = 0.89f,
         fixedEqLowDb = 4.2f,
         fixedEqPresenceDb = 1.8f,
+        defaultVocalStyle = AiVocalStyle.STORYTELLING,
+        defaultBreathCadence = AiBreathCadence.MEASURED,
+        defaultPitchContour = AiPitchContour.GENTLE_FALL,
+        defaultTimbre = AiVoiceTimbre.DEEP,
+        defaultArticulationClarity = 0.64f,
         isBuiltIn = true,
     ),
     AiVoiceCharacter(
@@ -446,6 +556,10 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         fixedFormantShift = 1.02f,
         fixedEqLowDb = 1.4f,
         fixedEqPresenceDb = 3.0f,
+        defaultVocalStyle = AiVocalStyle.DRAMATIC,
+        defaultBreathCadence = AiBreathCadence.DRAMATIC,
+        defaultPitchContour = AiPitchContour.EXPRESSIVE_SWELL,
+        defaultArticulationClarity = 0.70f,
         isBuiltIn = true,
     ),
 
@@ -471,6 +585,9 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         fixedFormantShift = 1.06f,
         fixedEqLowDb = 1.6f,
         fixedEqPresenceDb = 2.6f,
+        defaultVocalStyle = AiVocalStyle.WARM,
+        defaultTimbre = AiVoiceTimbre.WARM,
+        defaultArticulationClarity = 0.72f,
         isBuiltIn = true,
     ),
     AiVoiceCharacter(
@@ -494,6 +611,11 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         fixedFormantShift = 0.99f,
         fixedEqLowDb = 2.4f,
         fixedEqPresenceDb = 1.6f,
+        defaultVocalStyle = AiVocalStyle.STORYTELLING,
+        defaultBreathCadence = AiBreathCadence.MEASURED,
+        defaultPitchContour = AiPitchContour.GENTLE_FALL,
+        defaultTimbre = AiVoiceTimbre.WARM,
+        defaultArticulationClarity = 0.68f,
         isBuiltIn = true,
     ),
     AiVoiceCharacter(
@@ -517,6 +639,11 @@ val BUILT_IN_AI_VOICE_CHARACTERS: List<AiVoiceCharacter> = listOf(
         fixedFormantShift = 1.11f,
         fixedEqLowDb = 0.6f,
         fixedEqPresenceDb = 3.4f,
+        defaultVocalStyle = AiVocalStyle.ENERGETIC,
+        defaultBreathCadence = AiBreathCadence.BRISK,
+        defaultPitchContour = AiPitchContour.GENTLE_RISE,
+        defaultTimbre = AiVoiceTimbre.BRIGHT,
+        defaultArticulationClarity = 0.82f,
         isBuiltIn = true,
     ),
 )

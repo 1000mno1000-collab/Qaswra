@@ -42,11 +42,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.audio.aivoice.AiDialogueTurn
+import com.example.audio.aivoice.AiBreathCadence
+import com.example.audio.aivoice.AiPitchContour
+import com.example.audio.aivoice.AiStudioPreset
 import com.example.audio.aivoice.AiVoiceCharacter
 import com.example.audio.aivoice.AiVoiceEmotion
 import com.example.audio.aivoice.AiVoiceEngineKind
 import com.example.audio.aivoice.AiVoiceLanguage
 import com.example.audio.aivoice.AiVoiceStudioUiState
+import com.example.audio.aivoice.AiVoiceTimbre
+import com.example.audio.aivoice.AiVocalStyle
 import com.example.i18n.t
 import com.example.model.AppLanguage
 import com.example.ui.components.StudioFocusTopBar
@@ -83,16 +88,30 @@ fun AiVoiceStudioScreen(
             append(state.activeTab).append('|')
             append(state.selectedEngine.id).append('|')
             append(state.selectedLanguage.code).append('|')
+            append(state.selectedDialect.id).append('|')
+            append(state.selectedCategory.id).append('|')
             append(state.selectedCharacterId).append('|')
             append(state.fixedSid).append('|')
             append(state.fixedSeed).append('|')
             append(state.selectedEmotion.id).append('|')
+            append(state.selectedVocalStyle.id).append('|')
+            append(state.selectedBreathCadence.id).append('|')
+            append(state.selectedPitchContour.id).append('|')
+            append(state.selectedTimbre.id).append('|')
+            append(state.articulationClarity).append('|')
+            append(state.selectedStudioPreset.id).append('|')
             append(state.speechRate).append('|')
             append(state.emotionIntensity).append('|')
+            append(state.pitchOffsetSemitones).append('|')
+            append(state.fixedFormantShift).append('|')
+            append(state.fixedEqLowDb).append('|')
+            append(state.fixedEqPresenceDb).append('|')
+            append(state.voiceDescriptionPrompt).append('|')
             append(state.scriptText).append('|')
             append(state.referenceAudioPath.orEmpty()).append('|')
             append(state.referenceTranscript).append('|')
             append(state.referenceRightsConfirmed).append('|')
+            append(state.backendServerUrl).append('|')
             append(
                 state.dialogueTurns.joinToString(";") { turn ->
                     "${turn.id}:${turn.characterId}:${turn.text}:${turn.emotion.id}:${turn.emotionIntensity}:${turn.pace.id}:${turn.pauseAfterMs}"
@@ -135,8 +154,14 @@ fun AiVoiceStudioScreen(
         onSelectCharacter = viewModel::selectAiVoiceCharacter,
         onToggleFavorite = viewModel::toggleAiVoiceCharacterFavorite,
         onSelectEmotion = viewModel::setAiVoiceEmotion,
+        onSelectVocalStyle = viewModel::setAiVocalStyle,
         onSpeechRateChange = viewModel::setAiVoiceSpeechRate,
         onIntensityChange = viewModel::setAiVoiceEmotionIntensity,
+        onSelectStudioPreset = viewModel::setAiVoiceStudioPreset,
+        onSelectBreathCadence = viewModel::setAiBreathCadence,
+        onSelectPitchContour = viewModel::setAiPitchContour,
+        onSelectTimbre = viewModel::setAiVoiceTimbre,
+        onArticulationClarityChange = viewModel::setAiArticulationClarity,
         onResetTuning = viewModel::resetAiVoiceTuning,
         onPickReferenceFile = { pickReferenceAudioLauncher.launch(arrayOf("audio/*")) },
         onUseStudioBufferAsReference = viewModel::importAiVoiceReferenceFromCurrentBuffer,
@@ -241,8 +266,14 @@ fun AiVoiceStudioContentLayout(
     onSelectCharacter: (AiVoiceCharacter) -> Unit,
     onToggleFavorite: (String) -> Unit,
     onSelectEmotion: (AiVoiceEmotion) -> Unit,
+    onSelectVocalStyle: (AiVocalStyle) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
     onIntensityChange: (Float) -> Unit,
+    onSelectStudioPreset: (AiStudioPreset) -> Unit,
+    onSelectBreathCadence: (AiBreathCadence) -> Unit,
+    onSelectPitchContour: (AiPitchContour) -> Unit,
+    onSelectTimbre: (AiVoiceTimbre) -> Unit,
+    onArticulationClarityChange: (Float) -> Unit,
     onResetTuning: () -> Unit,
     onPickReferenceFile: () -> Unit,
     onUseStudioBufferAsReference: () -> Unit,
@@ -411,6 +442,7 @@ fun AiVoiceStudioContentLayout(
                                     state = state,
                                     isEnglish = isEnglish,
                                     onSelectEmotion = onSelectEmotion,
+                                    onSelectVocalStyle = onSelectVocalStyle,
                                 )
                             }
                             item(key = "card_4_controls") {
@@ -419,6 +451,11 @@ fun AiVoiceStudioContentLayout(
                                     isEnglish = isEnglish,
                                     onSpeechRateChange = onSpeechRateChange,
                                     onIntensityChange = onIntensityChange,
+                                    onSelectStudioPreset = onSelectStudioPreset,
+                                    onSelectBreathCadence = onSelectBreathCadence,
+                                    onSelectPitchContour = onSelectPitchContour,
+                                    onSelectTimbre = onSelectTimbre,
+                                    onArticulationClarityChange = onArticulationClarityChange,
                                     onResetTuning = onResetTuning,
                                 )
                             }

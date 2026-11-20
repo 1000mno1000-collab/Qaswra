@@ -27,7 +27,25 @@ object AiVoicePromptBuilder {
         }
 
         parts.add("with $intensityLabel ${request.emotion.voxDesignHintEn}")
+        parts.add("Vocal style: ${request.vocalStyle.instructionEn}")
+        parts.add("Breath and pause cadence: ${request.breathCadence.instructionEn}")
+        parts.add("Pitch contour: ${request.pitchContour.instructionEn}")
+        parts.add("Resonance: ${request.timbre.instructionEn}")
+        val clarity = request.articulationClarity.coerceIn(0f, 1f)
+        parts.add(
+            "Articulation clarity: ${
+                when {
+                    clarity >= 0.75f -> "crisp and precise"
+                    clarity <= 0.30f -> "soft and relaxed"
+                    else -> "clear and natural"
+                }
+            }",
+        )
         parts.add("at ${request.pace.promptHintEn} (rate=${"%.2f".format(java.util.Locale.US, request.speechRate)}x)")
+        parts.add(
+            "Keep one consistent voice identity (speaker ${request.fixedSid}, seed ${request.fixedSeed}); " +
+                "do not change the speaker's age, accent, or timbre.",
+        )
 
         val userPrompt = request.voiceDescriptionPrompt.trim()
         if (userPrompt.isNotEmpty()) {

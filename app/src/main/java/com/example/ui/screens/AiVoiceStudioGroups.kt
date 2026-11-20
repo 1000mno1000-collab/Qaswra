@@ -79,11 +79,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.audio.aivoice.AiVoiceCharacter
+import com.example.audio.aivoice.AiBreathCadence
 import com.example.audio.aivoice.AiVoiceEmotion
 import com.example.audio.aivoice.AiVoiceEngineKind
 import com.example.audio.aivoice.AiVoiceGroupFilter
 import com.example.audio.aivoice.AiVoiceLanguage
+import com.example.audio.aivoice.AiPitchContour
+import com.example.audio.aivoice.AiStudioPreset
 import com.example.audio.aivoice.AiVoiceStudioUiState
+import com.example.audio.aivoice.AiVoiceTimbre
+import com.example.audio.aivoice.AiVocalStyle
 import com.example.audio.tts.TtsTextLimits
 import com.example.ui.theme.StudioColors
 import com.example.ui.theme.TelemetryTextStyle
@@ -633,16 +638,15 @@ internal fun AiVoiceGroup2VoiceSelectionCard(
 }
 
 // =========================================================================
-// Card 3: النبرة والمشاعر (6 Core Impactful Emotions in a Neat 2x3 Grid)
+// Card 3: emotion and vocal-style selectors
 // =========================================================================
 @Composable
 internal fun AiVoiceGroup3EmotionCard(
     state: AiVoiceStudioUiState,
     isEnglish: Boolean,
     onSelectEmotion: (AiVoiceEmotion) -> Unit,
+    onSelectVocalStyle: (AiVocalStyle) -> Unit,
 ) {
-    val emotions = remember(state.selectedEngine) { state.selectedEngine.supportedEmotions() }
-    val rows = remember(emotions) { emotions.chunked(3) }
     val focusManager = LocalFocusManager.current
 
     Card(
@@ -676,53 +680,55 @@ internal fun AiVoiceGroup3EmotionCard(
                 )
             }
 
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                rows.forEach { rowEmotions ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        rowEmotions.forEach { emo ->
-                            val isSelected = state.selectedEmotion == emo
-                            Surface(
-                                onClick = {
-                                    focusManager.clearFocus()
-                                    onSelectEmotion(emo)
-                                },
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (isSelected) StudioColors.Cyan.copy(alpha = 0.18f) else StudioColors.ElevatedSurface,
-                                border = BorderStroke(
-                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = if (isSelected) StudioColors.Cyan else StudioColors.Border,
-                                ),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .defaultMinSize(minHeight = 52.dp)
-                                    .testTag("ai_voice_emotion_${emo.id}"),
-                            ) {
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 10.dp),
-                                ) {
-                                    Text(
-                                        text = if (isEnglish) emo.titleEn else emo.titleAr,
-                                        style = MaterialTheme.typography.labelMedium.copy(
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        ),
-                                        color = if (isSelected) StudioColors.Cyan else StudioColors.TextPrimary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        textAlign = TextAlign.Center,
-                                    )
-                                }
-                            }
-                        }
-                        repeat(3 - rowEmotions.size) {
-                            Spacer(modifier = Modifier.weight(1f))
-                        }
+                CompactDropdownField(
+                    label = if (isEnglish) "Expression" else "الانفعال",
+                    selectedText = if (isEnglish) state.selectedEmotion.titleEn else state.selectedEmotion.titleAr,
+                    buttonTag = "ai_voice_emotion_dropdown",
+                    modifier = Modifier.weight(1f),
+                ) { _, dismiss ->
+                    state.selectedEngine.supportedEmotions().forEach { emotion ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = if (isEnglish) emotion.titleEn else emotion.titleAr,
+                                    color = if (state.selectedEmotion == emotion) StudioColors.Cyan else StudioColors.TextPrimary,
+                                )
+                            },
+                            onClick = {
+                                focusManager.clearFocus()
+                                onSelectEmotion(emotion)
+                                dismiss()
+                            },
+                            modifier = Modifier.testTag("ai_voice_emotion_${emotion.id}"),
+                        )
+                    }
+                }
+
+                CompactDropdownField(
+                    label = if (isEnglish) "Vocal style" else "أسلوب الإلقاء",
+                    selectedText = if (isEnglish) state.selectedVocalStyle.titleEn else state.selectedVocalStyle.titleAr,
+                    buttonTag = "ai_voice_vocal_style_dropdown",
+                    modifier = Modifier.weight(1f),
+                ) { _, dismiss ->
+                    AiVocalStyle.entries.forEach { style ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = if (isEnglish) style.titleEn else style.titleAr,
+                                    color = if (state.selectedVocalStyle == style) StudioColors.Cyan else StudioColors.TextPrimary,
+                                )
+                            },
+                            onClick = {
+                                focusManager.clearFocus()
+                                onSelectVocalStyle(style)
+                                dismiss()
+                            },
+                            modifier = Modifier.testTag("ai_voice_vocal_style_${style.id}"),
+                        )
                     }
                 }
             }
@@ -731,7 +737,7 @@ internal fun AiVoiceGroup3EmotionCard(
 }
 
 // =========================================================================
-// Card 4: الضبط الدقيق (2 Clean Sliders: Speech Rate + Emotion Intensity % + Reset Button)
+// Card 4: synthesis controls and studio presets
 // =========================================================================
 @Composable
 internal fun AiVoiceGroup4ControlsCard(
@@ -739,6 +745,11 @@ internal fun AiVoiceGroup4ControlsCard(
     isEnglish: Boolean,
     onSpeechRateChange: (Float) -> Unit,
     onIntensityChange: (Float) -> Unit,
+    onSelectStudioPreset: (AiStudioPreset) -> Unit,
+    onSelectBreathCadence: (AiBreathCadence) -> Unit,
+    onSelectPitchContour: (AiPitchContour) -> Unit,
+    onSelectTimbre: (AiVoiceTimbre) -> Unit,
+    onArticulationClarityChange: (Float) -> Unit,
     onResetTuning: () -> Unit,
 ) {
     Card(
@@ -801,6 +812,100 @@ internal fun AiVoiceGroup4ControlsCard(
 
             HorizontalDivider(color = StudioColors.Border)
 
+            CompactDropdownField(
+                label = if (isEnglish) "Studio vocal preset" else "إعداد صوتي استوديو",
+                selectedText = if (isEnglish) state.selectedStudioPreset.titleEn else state.selectedStudioPreset.titleAr,
+                buttonTag = "ai_voice_studio_preset_dropdown",
+            ) { _, dismiss ->
+                AiStudioPreset.entries.filter { it != AiStudioPreset.CUSTOM }.forEach { preset ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = if (isEnglish) preset.titleEn else preset.titleAr,
+                                color = if (state.selectedStudioPreset == preset) StudioColors.Cyan else StudioColors.TextPrimary,
+                            )
+                        },
+                        onClick = {
+                            onSelectStudioPreset(preset)
+                            dismiss()
+                        },
+                        modifier = Modifier.testTag("ai_voice_studio_preset_${preset.id}"),
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CompactDropdownField(
+                    label = if (isEnglish) "Breath cadence" else "إيقاع التنفس",
+                    selectedText = if (isEnglish) state.selectedBreathCadence.titleEn else state.selectedBreathCadence.titleAr,
+                    buttonTag = "ai_voice_breath_cadence_dropdown",
+                    modifier = Modifier.weight(1f),
+                ) { _, dismiss ->
+                    AiBreathCadence.entries.forEach { cadence ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = if (isEnglish) cadence.titleEn else cadence.titleAr,
+                                    color = if (state.selectedBreathCadence == cadence) StudioColors.Cyan else StudioColors.TextPrimary,
+                                )
+                            },
+                            onClick = {
+                                onSelectBreathCadence(cadence)
+                                dismiss()
+                            },
+                            modifier = Modifier.testTag("ai_voice_breath_cadence_${cadence.id}"),
+                        )
+                    }
+                }
+                CompactDropdownField(
+                    label = if (isEnglish) "Pitch contour" else "منحنى الطبقة",
+                    selectedText = if (isEnglish) state.selectedPitchContour.titleEn else state.selectedPitchContour.titleAr,
+                    buttonTag = "ai_voice_pitch_contour_dropdown",
+                    modifier = Modifier.weight(1f),
+                ) { _, dismiss ->
+                    AiPitchContour.entries.forEach { contour ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = if (isEnglish) contour.titleEn else contour.titleAr,
+                                    color = if (state.selectedPitchContour == contour) StudioColors.Cyan else StudioColors.TextPrimary,
+                                )
+                            },
+                            onClick = {
+                                onSelectPitchContour(contour)
+                                dismiss()
+                            },
+                            modifier = Modifier.testTag("ai_voice_pitch_contour_${contour.id}"),
+                        )
+                    }
+                }
+            }
+
+            CompactDropdownField(
+                label = if (isEnglish) "Resonance & timbre" else "الرنين وطابع الصوت",
+                selectedText = if (isEnglish) state.selectedTimbre.titleEn else state.selectedTimbre.titleAr,
+                buttonTag = "ai_voice_timbre_dropdown",
+            ) { _, dismiss ->
+                AiVoiceTimbre.entries.forEach { timbre ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = if (isEnglish) timbre.titleEn else timbre.titleAr,
+                                color = if (state.selectedTimbre == timbre) StudioColors.Cyan else StudioColors.TextPrimary,
+                            )
+                        },
+                        onClick = {
+                            onSelectTimbre(timbre)
+                            dismiss()
+                        },
+                        modifier = Modifier.testTag("ai_voice_timbre_${timbre.id}"),
+                    )
+                }
+            }
+
             // Slider 1: Speech Rate (سرعة الكلام)
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(
@@ -829,6 +934,36 @@ internal fun AiVoiceGroup4ControlsCard(
                         inactiveTrackColor = StudioColors.BgTop,
                     ),
                     modifier = Modifier.testTag("ai_voice_speed_slider"),
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (isEnglish) "Articulation Clarity" else "وضوح النطق",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = StudioColors.TextPrimary,
+                    )
+                    Text(
+                        text = "${(state.articulationClarity * 100).roundToInt()}%",
+                        style = TelemetryTextStyle,
+                        color = StudioColors.Cyan,
+                    )
+                }
+                Slider(
+                    value = state.articulationClarity,
+                    onValueChange = onArticulationClarityChange,
+                    valueRange = 0f..1f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = StudioColors.Cyan,
+                        activeTrackColor = StudioColors.Cyan,
+                        inactiveTrackColor = StudioColors.BgTop,
+                    ),
+                    modifier = Modifier.testTag("ai_voice_articulation_clarity_slider"),
                 )
             }
 
