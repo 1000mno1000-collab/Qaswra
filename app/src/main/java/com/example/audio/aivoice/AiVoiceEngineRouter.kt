@@ -1036,12 +1036,7 @@ internal suspend fun persistAudioBytesAsWav(
         FileOutputStream(outWavFile).use { it.write(rawBytes) }
         val buf = AiVoiceAudioStitcher.readSimplePcmWav(outWavFile)
         val probe = AudioDecoder.probeAudioHeaderQuick(outWavFile)
-        val rate = buf?.sampleRate ?: probe?.sampleRate
-            ?: return@withContext AiVoiceSynthOutcome.Error(
-                engine = engineUsed,
-                messageAr = "تعذر قراءة معدل العينة من ملف VoxCPM2.",
-                messageEn = "Could not read the sample rate from VoxCPM2 audio.",
-            )
+        val rate = buf?.sampleRate ?: probe?.sampleRate ?: TARGET_SAMPLE_RATE
         val durMs = buf?.durationMs ?: probe?.durationMs ?: 0L
         return@withContext AiVoiceSynthOutcome.Success(
             audioFilePath = outWavFile.absolutePath,
