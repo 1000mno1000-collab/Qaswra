@@ -864,19 +864,20 @@ fun StudioPreviewControlsBar(
                 }
             }
         }
-        if (embedded) {
-            Box(modifier = modifier.fillMaxWidth()) {
-                controls()
-            }
-        } else {
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
-                border = BorderStroke(1.dp, StudioColors.Border),
-                modifier = modifier.fillMaxWidth(),
-            ) {
-                controls()
-            }
+    }
+
+    if (embedded) {
+        Box(modifier = modifier.fillMaxWidth()) {
+            controls()
+        }
+    } else {
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = StudioColors.CardSurface),
+            border = BorderStroke(1.dp, StudioColors.Border),
+            modifier = modifier.fillMaxWidth(),
+        ) {
+            controls()
         }
     }
 }

@@ -122,6 +122,7 @@ import com.example.viewmodel.StudioUiState
 import com.example.viewmodel.StudioViewModel
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -1090,7 +1091,7 @@ fun EffectsChainScreen(
                             onDrag = { change, amount ->
                                 change.consume()
                                 dragOffsetY += amount.y
-                                val draggedCenter = dragOriginY + dragOffsetY
+                                val draggedCenter: Float = dragOriginY + dragOffsetY
                                 val targetIndex = latestChain.indices.minByOrNull { candidate ->
                                     val candidateCenter = itemCenters[latestChain[candidate].type]
                                         ?: Float.POSITIVE_INFINITY
