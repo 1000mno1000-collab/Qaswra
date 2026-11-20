@@ -714,9 +714,9 @@ internal fun AiVoiceCloudPackCard(
         ) {
             Text(
                 text = if (isEnglish) {
-                    "Caches the fixed voice profiles and a short warm-up sample; the VoxCPM2 model remains cloud-hosted."
+                    "Downloads a generated reference for the selected character and saves it with the voice profiles on this device. VoxCPM2 synthesis still requires internet."
                 } else {
-                    "يحفظ ملفات تعريف الأصوات الثابتة وعينة تهيئة قصيرة؛ يبقى نموذج VoxCPM2 مستضافاً سحابياً."
+                    "ينزّل مرجعاً صوتياً مولداً للشخصية المحددة ويحفظه مع ملفات التعريف على الجهاز. يظل التوليد عبر VoxCPM2 بحاجة إلى الإنترنت."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = StudioColors.TextSecondary,
@@ -734,11 +734,11 @@ internal fun AiVoiceCloudPackCard(
                 Spacer(Modifier.width(8.dp))
                 Text(
                     text = if (state.isPreparingCloudVoicePack) {
-                        if (isEnglish) "Preparing Cloud Voice Pack..." else "جاري تهيئة ملفات الصوت..."
+                        if (isEnglish) "Downloading Voice Reference..." else "جاري تنزيل المرجع الصوتي..."
                     } else if (isEnglish) {
-                        "Download & Prepare Cloud Voice Pack"
+                        "Download Cloud Voice Pack"
                     } else {
-                        "تحميل وتهيئة ملفات الصوت السحابية"
+                        "تحميل ملفات الصوت السحابية"
                     },
                     maxLines = 2,
                 )

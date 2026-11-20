@@ -34,9 +34,13 @@ object AiVoicePromptBuilder {
         }
         parts.add(catHint)
         parts.add("speaking ${request.language.titleEn}")
+        if (request.language == AiVoiceLanguage.AR) {
+            parts.add("Arabic dialect: ${request.dialect.promptHintEn}")
+        }
         if (request.language == AiVoiceLanguage.EN) {
             parts.add("English accent: ${request.englishAccent.titleEn}")
         }
+        parts.add("Natural human voice; apply the requested speech pace during synthesis without post-generation time stretching")
 
         val intensityLabel = when {
             request.emotionIntensity >= 0.80f -> "strong intense"
@@ -48,6 +52,9 @@ object AiVoicePromptBuilder {
         parts.add("Vocal style: ${request.vocalStyle.instructionEn}")
         parts.add("Breath and pause cadence: ${request.breathCadence.instructionEn}")
         parts.add("Pitch contour: ${request.pitchContour.instructionEn}")
+        parts.add(
+            "Natural pitch offset: ${"%.2f".format(java.util.Locale.US, request.pitchOffsetSemitones)} semitones from the character's base voice",
+        )
         parts.add("Resonance: ${request.timbre.instructionEn}")
         val clarity = request.articulationClarity.coerceIn(0f, 1f)
         parts.add(

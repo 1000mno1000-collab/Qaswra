@@ -409,6 +409,7 @@ data class AiVoiceSynthRequest(
     val cfgValue: Float = 2.0f,
     val inferenceTimesteps: Int = 10,
     val normalizeAudio: Boolean = true,
+    val referenceAudioOptional: Boolean = false,
 )
 
 sealed interface AiVoiceSynthOutcome {

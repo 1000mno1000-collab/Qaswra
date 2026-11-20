@@ -382,6 +382,14 @@ fun AiVoiceStudioContentLayout(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(bottom = 16.dp),
                 ) {
+                    item(key = "cloud_voice_pack") {
+                        AiVoiceCloudPackCard(
+                            state = state,
+                            isEnglish = isEnglish,
+                            onPrepare = onPrepareCloudPack,
+                        )
+                    }
+
                     if (!state.errorTitle.isNullOrBlank()) {
                         item(key = "status_banner") {
                             AiVoiceConfigurationBanner(
@@ -420,13 +428,6 @@ fun AiVoiceStudioContentLayout(
                                     onSelectEnglishAccent = onSelectEnglishAccent,
                                     onSelectCharacter = onSelectCharacter,
                                     onToggleFavorite = onToggleFavorite,
-                                )
-                            }
-                            item(key = "cloud_voice_pack") {
-                                AiVoiceCloudPackCard(
-                                    state = state,
-                                    isEnglish = isEnglish,
-                                    onPrepare = onPrepareCloudPack,
                                 )
                             }
                             item(key = "card_3_emotion") {

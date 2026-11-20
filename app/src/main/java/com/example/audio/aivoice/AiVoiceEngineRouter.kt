@@ -13,7 +13,6 @@ import com.example.audio.tts.SmartVoiceRouter
 import com.example.audio.tts.TtsTextLimits
 import com.example.audio.tts.VoiceRouteOutcome
 import com.example.audio.writeStereoWavFile
-import com.example.diagnostics.FfmpegKitBridge
 import com.example.model.AppLanguage
 import com.example.model.StereoAudioBuffer
 import com.example.model.TtsDeliveryStyle
@@ -33,6 +32,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.security.MessageDigest
 import java.net.ConnectException
 import java.net.HttpURLConnection
@@ -40,6 +40,7 @@ import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.UnknownHostException
 import java.util.UUID
+import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLException
 import kotlin.coroutines.coroutineContext
 import kotlin.math.pow
@@ -65,6 +66,11 @@ interface AiVoiceStudioEngine {
         bearerToken: String = "",
         onProgress: (Float, String) -> Unit = { _, _ -> },
     ): AiVoiceSynthOutcome
+}
+
+internal fun aiVoiceCloudPackReferenceFile(context: Context, characterId: String): File {
+    val safeCharacterId = characterId.replace(Regex("[^A-Za-z0-9._-]"), "_")
+    return File(File(File(context.filesDir, "ai_voice_cloud_pack"), "references"), "$safeCharacterId.wav")
 }
 
 internal object BackendHttpHelper {
@@ -442,7 +448,8 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         val apiSlug = endpointName.removePrefix("/")
         val endpointMeta = namedEndpoints?.optJSONObject(endpointName)
         val paramsArray = endpointMeta?.optJSONArray("parameters")
-        val referenceFile = request.referenceAudioPath?.takeIf { it.isNotBlank() }?.let(::File)
+        val requestedReferenceFile = request.referenceAudioPath?.takeIf { it.isNotBlank() }?.let(::File)
+        val referenceFile = requestedReferenceFile?.takeIf { it.isFile }
         val hasReferenceInput = paramsArray?.let { params ->
             (0 until params.length()).any { index ->
                 val parameter = params.optJSONObject(index) ?: return@any false
@@ -450,7 +457,11 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
                 key.contains("prompt", ignoreCase = true) && key.contains("wav", ignoreCase = true)
             }
         } == true
-        if (referenceFile != null && (!referenceFile.isFile || !hasReferenceInput)) {
+        if (
+            !request.referenceAudioOptional &&
+            requestedReferenceFile != null &&
+            (referenceFile == null || !hasReferenceInput)
+        ) {
             return AiVoiceSynthOutcome.ConfigurationRequired(
                 engine = kind,
                 titleAr = "استنساخ الصوت غير مدعوم في واجهة VoxCPM2 الحالية",
@@ -537,29 +548,151 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         } else {
             "$PUBLIC_SPACE_BASE/gradio_api/file=$audioUrl"
         }
-        val audioOutcome = NetworkImmunityManager.fetchAudioWithFallback(
-            urls = listOf(resolvedAudioUrl),
-            context = context,
-            timeoutMs = 120_000L,
-            providerLabel = "VoxCPM2SpaceAudio",
-        )
-        return when (audioOutcome) {
-            is com.example.audio.network.NetworkFetchOutcome.Success -> persistAudioBytesAsWav(
-                context = context,
-                rawBytes = audioOutcome.value.bytes,
+        val downloadedAudio = File(outWavFile.parentFile, "voxcpm_download_${UUID.randomUUID()}.bin")
+        return try {
+            downloadAudioToFile(resolvedAudioUrl, downloadedAudio, onProgress)
+            persistAudioFileAsWav(
+                sourceFile = downloadedAudio,
                 outWavFile = outWavFile,
                 engineUsed = kind,
                 appliedPromptSummary = "${request.emotion.titleAr} • seed=${request.fixedSeed}",
             )
-            is com.example.audio.network.NetworkFetchOutcome.Offline -> AiVoiceSynthOutcome.Error(
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            AiVoiceSynthOutcome.Error(
                 engine = kind,
-                messageAr = "انقطع الاتصال أثناء تنزيل الصوت من VoxCPM2.",
-                messageEn = "Network offline while downloading VoxCPM2 audio.",
+                messageAr = "فشل تنزيل الصوت المولد من VoxCPM2: ${e.localizedMessage ?: e.javaClass.simpleName}",
+                messageEn = "Failed downloading VoxCPM2 audio: ${e.localizedMessage ?: e.javaClass.simpleName}",
             )
-            is com.example.audio.network.NetworkFetchOutcome.Failure -> AiVoiceSynthOutcome.Error(
-                engine = kind,
-                messageAr = "فشل تنزيل الصوت المولد من VoxCPM2: ${audioOutcome.message}",
-                messageEn = "Failed downloading VoxCPM2 output: ${audioOutcome.message}",
+        } finally {
+            downloadedAudio.delete()
+        }
+    }
+
+    private suspend fun downloadAudioToFile(
+        audioUrl: String,
+        outputFile: File,
+        onProgress: (Float, String) -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        val safeUrl = NetworkImmunityManager.enforceHttps(audioUrl)
+        val connection = (URL(safeUrl).openConnection() as? HttpsURLConnection)
+            ?: throw IOException("VoxCPM2 audio URL must use HTTPS")
+        try {
+            NetworkImmunityManager.enforceTls12(connection)
+            connection.apply {
+                requestMethod = "GET"
+                connectTimeout = 30_000
+                readTimeout = 60_000
+                instanceFollowRedirects = true
+            }
+            val responseCode = connection.responseCode
+            if (responseCode !in 200..299) {
+                throw IOException("VoxCPM2 audio download returned HTTP $responseCode")
+            }
+            val contentType = connection.contentType.orEmpty().lowercase()
+            if (
+                contentType.contains("text/html") ||
+                contentType.contains("application/json") ||
+                contentType.startsWith("text/")
+            ) {
+                throw IOException("VoxCPM2 returned a non-audio response ($contentType)")
+            }
+            val contentLength = connection.contentLengthLong
+            outputFile.parentFile?.mkdirs()
+            var downloadedBytes = 0L
+            FileOutputStream(outputFile).use { output ->
+                connection.inputStream.use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        downloadedBytes += count
+                        if (contentLength > 0L) {
+                            val fraction = (downloadedBytes.toFloat() / contentLength).coerceIn(0f, 1f)
+                            onProgress(
+                                0.88f + fraction * 0.10f,
+                                "Downloading VoxCPM2 audio (${downloadedBytes / 1024} / ${contentLength / 1024} KB)...",
+                            )
+                        } else {
+                            onProgress(0.88f, "Downloaded ${downloadedBytes / (1024 * 1024)} MB from VoxCPM2...")
+                        }
+                    }
+                }
+            }
+            if (downloadedBytes <= NetworkImmunityManager.MIN_VALID_AUDIO_BYTES) {
+                throw IOException("VoxCPM2 audio response is empty or too small")
+            }
+            val prefix = ByteArray(48)
+            val prefixSize = FileInputStream(outputFile).use { it.read(prefix) }
+            val header = String(prefix, 0, prefixSize.coerceAtLeast(0), Charsets.US_ASCII)
+            val looksLikeAudio = (header.startsWith("RIFF") && header.substring(8.coerceAtMost(header.length)).startsWith("WAVE")) ||
+                header.startsWith("ID3") ||
+                header.startsWith("OggS") ||
+                header.startsWith("fLaC") ||
+                contentType.startsWith("audio/")
+            if (!looksLikeAudio || header.trimStart().startsWith("<") || header.trimStart().startsWith("{")) {
+                throw IOException("VoxCPM2 response is not a valid audio file")
+            }
+            onProgress(0.99f, "VoxCPM2 audio downloaded; validating sample rate...")
+        } catch (ce: CancellationException) {
+            outputFile.delete()
+            throw ce
+        } catch (e: Exception) {
+            outputFile.delete()
+            throw e
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private suspend fun persistAudioFileAsWav(
+        sourceFile: File,
+        outWavFile: File,
+        engineUsed: AiVoiceEngineKind,
+        appliedPromptSummary: String,
+    ): AiVoiceSynthOutcome = withContext(Dispatchers.IO) {
+        outWavFile.parentFile?.mkdirs()
+        val prefix = ByteArray(12)
+        val prefixSize = FileInputStream(sourceFile).use { it.read(prefix) }
+        val isWav = prefixSize == 12 &&
+            String(prefix, 0, 4, Charsets.US_ASCII) == "RIFF" &&
+            String(prefix, 8, 4, Charsets.US_ASCII) == "WAVE"
+        if (isWav) {
+            sourceFile.copyTo(outWavFile, overwrite = true)
+            val probe = AudioDecoder.probeAudioHeaderQuick(outWavFile)
+                ?: return@withContext AiVoiceSynthOutcome.Error(
+                    engine = engineUsed,
+                    messageAr = "تعذر قراءة معدل العينة من ملف VoxCPM2.",
+                    messageEn = "Could not read the sample rate from VoxCPM2 audio.",
+                )
+            return@withContext AiVoiceSynthOutcome.Success(
+                audioFilePath = outWavFile.absolutePath,
+                sampleRate = probe.sampleRate,
+                durationMs = probe.durationMs,
+                engineUsed = engineUsed,
+                appliedPromptSummary = appliedPromptSummary,
+                isCloudGenerated = true,
+            )
+        }
+        when (val decoded = AudioDecoder.decodeFileDetailedWithProgress(sourceFile) {}) {
+            is AudioDecodeOutcome.Success -> {
+                writeStereoWavFile(outWavFile, decoded.buffer)
+                AiVoiceSynthOutcome.Success(
+                    audioFilePath = outWavFile.absolutePath,
+                    sampleRate = decoded.buffer.sampleRate,
+                    durationMs = decoded.buffer.durationMs,
+                    engineUsed = engineUsed,
+                    appliedPromptSummary = appliedPromptSummary,
+                    isCloudGenerated = true,
+                )
+            }
+            is AudioDecodeOutcome.Failure -> AiVoiceSynthOutcome.Error(
+                engine = engineUsed,
+                messageAr = "تعذر فك ترميز الملف الصوتي المستلم: ${decoded.reason}",
+                messageEn = "Failed decoding returned audio: ${decoded.reason}",
             )
         }
     }
@@ -903,7 +1036,12 @@ internal suspend fun persistAudioBytesAsWav(
         FileOutputStream(outWavFile).use { it.write(rawBytes) }
         val buf = AiVoiceAudioStitcher.readSimplePcmWav(outWavFile)
         val probe = AudioDecoder.probeAudioHeaderQuick(outWavFile)
-        val rate = buf?.sampleRate ?: probe?.sampleRate ?: TARGET_SAMPLE_RATE
+        val rate = buf?.sampleRate ?: probe?.sampleRate
+            ?: return@withContext AiVoiceSynthOutcome.Error(
+                engine = engineUsed,
+                messageAr = "تعذر قراءة معدل العينة من ملف VoxCPM2.",
+                messageEn = "Could not read the sample rate from VoxCPM2 audio.",
+            )
         val durMs = buf?.durationMs ?: probe?.durationMs ?: 0L
         return@withContext AiVoiceSynthOutcome.Success(
             audioFilePath = outWavFile.absolutePath,
@@ -1090,18 +1228,10 @@ class AiVoiceStudioCoordinator(
                     )
                     is AiVoiceSynthOutcome.Error -> return@withContext res
                     is AiVoiceSynthOutcome.Success -> {
-                        val tuned = applyClientVoiceTuning(
-                            outcome = res,
-                            request = effectiveRequest,
-                            applyPublicPitch = backendUrl.isBlank(),
-                        )
-                        if (tuned !is AiVoiceSynthOutcome.Success) {
-                            return@withContext tuned
-                        }
-                        lastPrompt = tuned.appliedPromptSummary
+                        lastPrompt = res.appliedPromptSummary
                         segments.add(
                             WavStitchSegment(
-                                File(tuned.audioFilePath),
+                                File(res.audioFilePath),
                                 pauseAfterMs = effectiveRequest.breathCadence.pauseAfterMs,
                             ),
                         )
@@ -1221,89 +1351,6 @@ class AiVoiceStudioCoordinator(
         }
     }
 
-    private suspend fun applyClientVoiceTuning(
-        outcome: AiVoiceSynthOutcome.Success,
-        request: AiVoiceSynthRequest,
-        applyPublicPitch: Boolean,
-    ): AiVoiceSynthOutcome {
-        return try {
-            val output = File(outcome.audioFilePath)
-            val source = AiVoiceAudioStitcher.readSimplePcmWav(output)
-                ?: return AiVoiceSynthOutcome.Error(
-                    engine = outcome.engineUsed,
-                    messageAr = "تعذر قراءة ملف VoxCPM2 لمعالجة إعدادات الصوت.",
-                    messageEn = "Could not read the VoxCPM2 output for vocal processing.",
-                )
-            val clarityDb = (request.articulationClarity.coerceIn(0f, 1f) - 0.5f) * 6f
-            val publicPitch = if (applyPublicPitch) {
-                request.pitchOffsetSemitones + request.emotion.pitchBiasSemitones * request.emotionIntensity
-            } else {
-                0f
-            }
-            val tuned = transformVoiceOffline(
-                source = source,
-                pitchSemitones = publicPitch + request.pitchContour.semitoneBias,
-                formantShift = (request.fixedFormantShift * request.timbre.formantMultiplier).coerceIn(0.84f, 1.20f),
-                warmthDb = request.fixedEqLowDb + request.timbre.warmthDb,
-                presenceDb = request.fixedEqPresenceDb + request.timbre.presenceDb + clarityDb,
-                mix = 0.85f,
-                vibratoHz = request.pitchContour.vibratoHz,
-                vibratoDepth = request.pitchContour.vibratoDepth,
-                studioMasteringPolish = true,
-            )
-            writeStereoWavFile(output, tuned)
-            applyDeterministicFfmpegStylePolish(output, tuned.sampleRate, request)
-            outcome.copy(
-                sampleRate = tuned.sampleRate,
-                durationMs = tuned.durationMs,
-            )
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (e: Exception) {
-            Log.e("AiVoiceStudio", "Vocal finishing failed", e)
-            AiVoiceSynthOutcome.Error(
-                engine = outcome.engineUsed,
-                messageAr = "تعذرت معالجة النبرة الصوتية بعد التوليد: ${e.localizedMessage ?: e.javaClass.simpleName}",
-                messageEn = "Vocal finishing failed: ${e.localizedMessage ?: e.javaClass.simpleName}",
-            )
-        }
-    }
-
-    private suspend fun applyDeterministicFfmpegStylePolish(
-        outputFile: File,
-        sampleRate: Int,
-        request: AiVoiceSynthRequest,
-    ) {
-        if (!FfmpegKitBridge.isAvailable()) return
-        val polishedFile = File(outputFile.parentFile, "voice_polish_${UUID.randomUUID()}.wav")
-        val styleFilter = when (request.vocalStyle) {
-            AiVocalStyle.NATURAL -> "equalizer=f=3200:width_type=o:width=0.8:g=0.3"
-            AiVocalStyle.WARM -> "equalizer=f=180:width_type=o:width=1:g=1.2,equalizer=f=4300:width_type=o:width=0.8:g=-0.4"
-            AiVocalStyle.EXPRESSIVE -> "acompressor=threshold=0.14:ratio=1.5:attack=16:release=140"
-            AiVocalStyle.DRAMATIC -> "acompressor=threshold=0.12:ratio=1.8:attack=12:release=180"
-            AiVocalStyle.STORYTELLING -> "equalizer=f=220:width_type=o:width=1:g=0.7,equalizer=f=3000:width_type=o:width=0.8:g=0.6"
-            AiVocalStyle.NEWS_ANCHOR -> "equalizer=f=2800:width_type=o:width=0.8:g=0.8,acompressor=threshold=0.13:ratio=1.7:attack=10:release=120"
-            AiVocalStyle.WHISPERED -> "highpass=f=95,equalizer=f=5200:width_type=o:width=1:g=0.7"
-            AiVocalStyle.ENERGETIC -> "equalizer=f=3600:width_type=o:width=0.8:g=1.0,acompressor=threshold=0.14:ratio=1.6:attack=8:release=100"
-        }
-        val filter = "$styleFilter,alimiter=limit=0.95"
-        val inputPath = outputFile.absolutePath.replace("\"", "\\\"")
-        val polishedPath = polishedFile.absolutePath.replace("\"", "\\\"")
-        try {
-            val ok = FfmpegKitBridge.execute(
-                command = "-y -i \"$inputPath\" -af \"$filter\" -ar ${sampleRate.coerceAtLeast(8000)} -ac 2 -c:a pcm_s16le \"$polishedPath\"",
-                toolName = "AiVoiceStudioVocalPolish",
-                logNonZeroFailure = true,
-                cancelPrevious = false,
-            )
-            if (ok && polishedFile.isFile && polishedFile.length() > 44L) {
-                polishedFile.copyTo(outputFile, overwrite = true)
-            }
-        } finally {
-            polishedFile.delete()
-        }
-    }
-
     suspend fun synthesizeMultiCharacterDialogue(
         context: Context,
         turns: List<AiDialogueTurn>,
@@ -1342,6 +1389,9 @@ class AiVoiceStudioCoordinator(
                 val character = characters.firstOrNull { it.id == turn.characterId } ?: characters.first()
                 val engine = selectedEngineOverride ?: character.preferredEngine
                 primaryEngine = engine
+                val packagedReference = aiVoiceCloudPackReferenceFile(context, character.id)
+                    .takeIf { it.isFile }?.absolutePath
+                val referencePath = character.referenceAudioPath ?: packagedReference
                 onProgress(
                     0.05f + (idx.toFloat() / activeTurns.size.toFloat()) * 0.80f,
                     "توليد جملة ${idx + 1}/${activeTurns.size} (${character.nameAr})...",
@@ -1369,8 +1419,10 @@ class AiVoiceStudioCoordinator(
                     pitchContour = character.defaultPitchContour,
                     timbre = character.defaultTimbre,
                     articulationClarity = character.defaultArticulationClarity,
-                    referenceAudioPath = character.referenceAudioPath,
+                    referenceAudioPath = referencePath,
                     referenceTranscript = character.referenceTranscript,
+                    referenceAudioOptional = character.referenceAudioPath.isNullOrBlank() &&
+                        packagedReference != null,
                 )
 
                 val turnWav = File(outputDir, "dialogue_turn_${idx}_${UUID.randomUUID()}.wav")
@@ -1393,7 +1445,7 @@ class AiVoiceStudioCoordinator(
             val stitched = AiVoiceAudioStitcher.stitchWavSegments(
                 segments = segments,
                 outFile = finalDialogueWav,
-                targetSampleRate = if (primaryEngine == AiVoiceEngineKind.VOXCPM_2 && anyCloud) 48000 else TARGET_SAMPLE_RATE,
+                targetSampleRate = TARGET_SAMPLE_RATE,
             )
             onProgress(1f, "تم إنتاج الحوار المتكامل بنجاح")
             AiVoiceSynthOutcome.Success(
