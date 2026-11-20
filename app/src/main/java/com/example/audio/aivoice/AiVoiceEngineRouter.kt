@@ -579,7 +579,6 @@ class VoxCpm2CloudProvider : AiVoiceStudioEngine {
         val connection = (URL(safeUrl).openConnection() as? HttpsURLConnection)
             ?: throw IOException("VoxCPM2 audio URL must use HTTPS")
         try {
-            NetworkImmunityManager.enforceTls12(connection)
             connection.apply {
                 requestMethod = "GET"
                 connectTimeout = 30_000
